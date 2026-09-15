@@ -638,6 +638,24 @@ def test_chain_cap_is_respected(store, config):
     assert store.get_task(queued["id"])["status"] == "queued"
 
 
+def test_run_queue_task_is_not_pulled(store, config):
+    """task-queue spec: "Run queue task is not pulled" -- a task in a
+    project's run queue (lane='serial') belongs to the scheduler only."""
+    store.upsert_session("s1", cwd="/work/app")
+    store.update_session("s1", auto_pull=True)
+    store.create_task(kind="prompt", body="original", status="running", source="hook",
+                       session_id="s1", cwd="/work/app", prompt_id="p1")
+    queued = store.create_task(kind="prompt", body="queue task", status="queued", source="cli",
+                                cwd="/work/app")
+    store.enqueue_task(queued["id"], "default")
+
+    result = handle(_event("Stop", prompt_id="p1", stop_hook_active=True,
+                            last_assistant_message="done", background_tasks=[]), store, config, {})
+
+    assert result is None
+    assert store.get_task(queued["id"])["status"] == "queued"
+
+
 def test_chain_cap_holds_across_a_notification_between_pulls(store, config):
     capped = dataclasses.replace(config, max_chain=1)
     store.upsert_session("s1", cwd="/work/app")

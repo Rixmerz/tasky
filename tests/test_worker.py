@@ -255,6 +255,207 @@ def test_run_task_post_claim_sqlite_error_marks_task_failed(store, config, tmp_p
     assert "database is locked" in failed["result"]
 
 
+def test_run_task_now_sets_run_mode(store, config, tmp_path):
+    task = _queued_task(store, config, tmp_path)
+    fake = FakePopen()
+
+    updated = run_task(store, config, task["id"], mode="now", popen=fake)
+
+    assert updated["run_mode"] == "now"
+    assert updated["permission_mode"] == "default"
+    assert updated["fork_of"] is None
+
+
+def test_run_task_rejects_unknown_mode(store, config, tmp_path):
+    task = _queued_task(store, config, tmp_path)
+    fake = FakePopen()
+
+    with pytest.raises(WorkerError):
+        run_task(store, config, task["id"], mode="whenever", popen=fake)
+
+    assert fake.calls == []
+    assert store.get_task(task["id"])["status"] == "queued"
+
+
+# -- fork mode ----------------------------------------------------------------
+
+
+def test_run_task_fork_clones_the_task_own_session(store, config, tmp_path):
+    source_cwd = tmp_path / "source"
+    source_cwd.mkdir()
+    source_id = str(uuid.uuid4())
+    transcript = tmp_path / f"{source_id}.jsonl"
+    transcript.write_text("{}\n")
+    store.upsert_session(
+        source_id, cwd=str(source_cwd), transcript_path=str(transcript), source="hook"
+    )
+    task = store.create_task(
+        kind="prompt",
+        body="continue",
+        status="queued",
+        source="ui",
+        cwd=str(tmp_path),
+        session_id=source_id,
+    )
+    fake = FakePopen()
+
+    updated = run_task(store, config, task["id"], mode="fork", popen=fake)
+
+    assert updated["run_mode"] == "fork"
+    assert updated["fork_of"] == source_id
+    args, kwargs = fake.calls[0]
+    # cwd is the *source* session's directory, not the task's own cwd.
+    assert kwargs["cwd"] == str(source_cwd)
+    assert args[8] == config.claude_bin
+    assert args[9] == "-p"
+    assert args[10] == "--resume"
+    assert args[11] == source_id
+    assert args[12] == "--fork-session"
+    assert args[13] == "--session-id"
+    assert args[14] == updated["session_id"]
+    assert args[14] != source_id
+
+
+def test_run_task_fork_falls_back_to_latest_session_in_cwd(store, config, tmp_path):
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    older = str(uuid.uuid4())
+    newer = str(uuid.uuid4())
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("{}\n")
+    store.upsert_session(
+        older, cwd=str(cwd), transcript_path=str(transcript), at="2020-01-01T00:00:00.000Z"
+    )
+    store.upsert_session(
+        newer, cwd=str(cwd), transcript_path=str(transcript), at="2021-01-01T00:00:00.000Z"
+    )
+    task = store.create_task(
+        kind="prompt", body="continue", status="queued", source="ui", cwd=str(cwd)
+    )
+    fake = FakePopen()
+
+    updated = run_task(store, config, task["id"], mode="fork", popen=fake)
+
+    assert updated["fork_of"] == newer
+
+
+def test_run_task_fork_prefers_user_session_over_newer_worker(store, config, tmp_path):
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("{}\n")
+    user_session = str(uuid.uuid4())
+    store.upsert_session(
+        user_session, cwd=str(cwd), transcript_path=str(transcript),
+        at="2020-01-01T00:00:00.000Z",
+    )
+    store.upsert_session(
+        str(uuid.uuid4()), cwd=str(cwd), transcript_path=str(transcript), source="worker",
+        at="2021-01-01T00:00:00.000Z",
+    )
+    store.upsert_session(str(uuid.uuid4()), cwd=str(cwd), at="2022-01-01T00:00:00.000Z")
+    task = store.create_task(
+        kind="prompt", body="continue", status="queued", source="ui", cwd=str(cwd)
+    )
+    fake = FakePopen()
+
+    updated = run_task(store, config, task["id"], mode="fork", popen=fake)
+
+    assert updated["fork_of"] == user_session
+
+
+def test_run_task_fork_source_without_transcript_file_refused(store, config, tmp_path):
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    source_id = str(uuid.uuid4())
+    store.upsert_session(source_id, cwd=str(cwd), transcript_path=str(tmp_path / "gone.jsonl"))
+    task = store.create_task(
+        kind="prompt", body="continue", status="queued", source="ui", cwd=str(cwd),
+        session_id=source_id,
+    )
+    fake = FakePopen()
+
+    with pytest.raises(WorkerError):
+        run_task(store, config, task["id"], mode="fork", popen=fake)
+
+    assert fake.calls == []
+    assert store.get_task(task["id"])["status"] == "queued"
+
+
+def test_run_task_fork_nothing_to_clone_raises_and_leaves_task_queued(store, config, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="continue", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    fake = FakePopen()
+
+    with pytest.raises(WorkerError, match="no session"):
+        run_task(store, config, task["id"], mode="fork", popen=fake)
+
+    assert fake.calls == []
+    assert store.get_task(task["id"])["status"] == "queued"
+
+
+def test_run_task_fork_invalid_source_session_id_refused_before_claim(store, config, tmp_path):
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    store.upsert_session("not-a-uuid", cwd=str(cwd))
+    task = store.create_task(
+        kind="prompt", body="continue", status="queued", source="ui", cwd=str(cwd)
+    )
+    fake = FakePopen()
+
+    with pytest.raises(WorkerError):
+        run_task(store, config, task["id"], mode="fork", popen=fake)
+
+    assert fake.calls == []
+    assert store.get_task(task["id"])["status"] == "queued"
+
+
+def test_run_task_fork_source_cwd_must_exist(store, config, tmp_path):
+    missing_cwd = str(tmp_path / "gone")
+    source_id = str(uuid.uuid4())
+    store.upsert_session(source_id, cwd=missing_cwd)
+    task = store.create_task(
+        kind="prompt", body="continue", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    fake = FakePopen()
+
+    with pytest.raises(WorkerError):
+        run_task(store, config, task["id"], mode="fork", popen=fake)
+
+    assert fake.calls == []
+
+
+# -- serial mode (scheduler-only) ---------------------------------------------
+
+
+def test_run_task_serial_launches_an_already_claimed_task(store, config, tmp_path):
+    task = _queued_task(store, config, tmp_path)
+    session_id = str(uuid.uuid4())
+    store.enqueue_task(task["id"], "acceptEdits")
+    claimed_task = store.claim_serial_head(task["cwd"], session_id)
+    fake = FakePopen()
+
+    launched = run_task(store, config, claimed_task["id"], mode="serial", popen=fake)
+
+    assert launched["session_id"] == session_id
+    assert launched["run_mode"] == "serial"
+    assert len(fake.calls) == 1
+    args, kwargs = fake.calls[0]
+    assert args[12] == "--permission-mode"
+    assert args[13] == "acceptEdits"
+
+
+def test_run_task_serial_rejects_a_task_not_claimed_for_the_queue(store, config, tmp_path):
+    task = _queued_task(store, config, tmp_path)
+    fake = FakePopen()
+
+    with pytest.raises(WorkerError):
+        run_task(store, config, task["id"], mode="serial", popen=fake)
+
+    assert fake.calls == []
+
+
 def test_run_task_concurrent_claims_exactly_once(config, tmp_path):
     """Eight racing callers, each with their own Store connection: one claim wins."""
     import threading
@@ -290,3 +491,32 @@ def test_run_task_concurrent_claims_exactly_once(config, tmp_path):
     assert len(successes) == 1
     assert results.count(None) == 7
     assert len(fake.calls) == 1
+
+
+def test_run_task_fork_source_id_with_trailing_newline_refused(store, config, tmp_path):
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    store.upsert_session(str(uuid.uuid4()) + "\n", cwd=str(cwd))
+    task = store.create_task(
+        kind="prompt", body="continue", status="queued", source="ui", cwd=str(cwd)
+    )
+    fake = FakePopen()
+
+    with pytest.raises(WorkerError):
+        run_task(store, config, task["id"], mode="fork", popen=fake)
+
+    assert fake.calls == []
+
+
+def test_run_task_serial_bypass_refused_at_launch_when_not_allowed(store, config, tmp_path):
+    task = _queued_task(store, config, tmp_path)
+    store.enqueue_task(task["id"], "acceptEdits")
+    store.update_task(task["id"], permission_mode="bypassPermissions")
+    claimed_task = store.claim_serial_head(task["cwd"], str(uuid.uuid4()))
+    fake = FakePopen()
+
+    with pytest.raises(WorkerError):
+        run_task(store, config, claimed_task["id"], mode="serial", popen=fake)
+
+    assert fake.calls == []
+    assert store.get_task(task["id"])["status"] == "failed"

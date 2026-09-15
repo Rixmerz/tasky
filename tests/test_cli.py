@@ -133,7 +133,7 @@ def test_import_prints_report(env, monkeypatch):
 def test_run_success_and_worker_error(env, tmp_path, monkeypatch, capsys):
     from tasky import worker
 
-    def fake_run(store, config, task_id, permission_mode="default"):
+    def fake_run(store, config, task_id, permission_mode="default", mode="now"):
         if task_id == 2:
             raise worker.WorkerError("task #2 is not queued")
         return {"id": task_id, "session_id": "sess-1"}
@@ -145,6 +145,91 @@ def test_run_success_and_worker_error(env, tmp_path, monkeypatch, capsys):
         "#1 running in session sess-1\n",
     )
     code, _ = run(env, "run", "2")
+    assert code == 1
+    assert "not queued" in capsys.readouterr().err
+
+
+def test_run_passes_mode_to_worker(env, tmp_path, monkeypatch):
+    from tasky import worker
+
+    calls = []
+
+    def fake_run(store, config, task_id, permission_mode="default", mode="now"):
+        calls.append((task_id, permission_mode, mode))
+        return {"id": task_id, "session_id": "sess-1"}
+
+    monkeypatch.setattr(worker, "run_task", fake_run)
+
+    run(env, "run", "1", "--mode", "fork")
+
+    assert calls == [(1, "default", "fork")]
+
+
+def test_enqueue_moves_task_into_its_run_queue(env, tmp_path, monkeypatch):
+    # scheduler.kick() launches through worker.run_task; stub it here so an
+    # idle lane's immediate kick never spawns a real `claude` process.
+    from tasky import worker
+
+    calls = []
+
+    def fake_run_task(store, config, task_id, permission_mode="default", mode="now", popen=None):
+        calls.append((task_id, mode))
+        return store.update_task(task_id, status="running", session_id="s1")
+
+    monkeypatch.setattr(worker, "run_task", fake_run_task)
+
+    project = tmp_path / "app"
+    project.mkdir()
+    run(env, "add", "do it", "--cwd", str(project))
+
+    code, output = run(env, "enqueue", "1", "--permission-mode", "acceptEdits")
+
+    assert code == 0
+    assert "#1" in output
+    with open_store(env) as store:
+        task = store.get_task(1)
+    assert task["lane"] == "serial"
+    assert task["permission_mode"] == "acceptEdits"
+    assert task["status"] == "running"  # an idle lane starts it right away
+    assert calls == [(1, "serial")]
+
+
+def test_enqueue_unknown_task_reports_not_found(env, capsys):
+    code, _ = run(env, "enqueue", "99")
+    assert code == 1
+    assert "not found: 99" in capsys.readouterr().err
+
+
+def test_enqueue_rejects_invalid_permission_mode(env, tmp_path, capsys):
+    run(env, "add", "do it", "--cwd", str(tmp_path))
+    code, _ = run(env, "enqueue", "1", "--permission-mode", "yolo")
+    assert code == 1
+    assert "invalid permission mode" in capsys.readouterr().err
+    with open_store(env) as store:
+        assert store.get_task(1)["lane"] is None
+
+
+def test_enqueue_rejects_bypass_permissions_without_allow_bypass(env, tmp_path, capsys):
+    run(env, "add", "do it", "--cwd", str(tmp_path))
+    code, _ = run(env, "enqueue", "1", "--permission-mode", "bypassPermissions")
+    assert code == 1
+    assert "TASKY_ALLOW_BYPASS" in capsys.readouterr().err
+
+
+def test_enqueue_task_without_cwd_reports_error(env, capsys):
+    with open_store(env) as store:
+        store.create_task(kind="prompt", body="a", status="queued", source="cli")
+    code, _ = run(env, "enqueue", "1")
+    assert code == 1
+    assert "cwd" in capsys.readouterr().err
+
+
+def test_enqueue_not_queued_reports_error(env, tmp_path, capsys):
+    with open_store(env) as store:
+        store.create_task(
+            kind="prompt", body="a", status="running", source="hook", cwd=str(tmp_path)
+        )
+    code, _ = run(env, "enqueue", "1")
     assert code == 1
     assert "not queued" in capsys.readouterr().err
 

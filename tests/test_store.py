@@ -589,7 +589,7 @@ def test_wal_mode_and_schema_version_persist_on_disk(store):
         mode = raw.execute("PRAGMA journal_mode").fetchone()[0]
         version = raw.execute("PRAGMA user_version").fetchone()[0]
         assert mode.lower() == "wal"
-        assert version == 1
+        assert version == 2
     finally:
         raw.close()
 
@@ -619,6 +619,199 @@ def test_access_token_is_redacted_on_create_and_update(store):
     assert "abcDEF123_-xyz" not in updated["result"]
     assert "second_value" not in updated["result"]
     assert updated["result"].count("#token=<redacted>") == 2
+
+
+def test_next_queued_ignores_serial_lane_tasks(store):
+    store.create_task(kind="prompt", body="a", status="queued", source="cli", cwd="/proj")
+    serial_task = store.create_task(
+        kind="prompt", body="b", status="queued", source="cli", cwd="/proj"
+    )
+    store.enqueue_task(serial_task["id"], "default")
+
+    result = store.next_queued(None, "/proj")
+    assert result["id"] != serial_task["id"]
+
+
+def test_move_task_is_scoped_to_its_own_lane(store, tmp_path):
+    cwd = str(tmp_path)
+    inbox_a = store.create_task(kind="prompt", body="a", status="queued", source="cli", cwd=cwd)
+    inbox_b = store.create_task(kind="prompt", body="b", status="queued", source="cli", cwd=cwd)
+    queue_a = store.create_task(kind="prompt", body="c", status="queued", source="cli", cwd=cwd)
+    queue_b = store.create_task(kind="prompt", body="d", status="queued", source="cli", cwd=cwd)
+    store.enqueue_task(queue_a["id"], "default")
+    store.enqueue_task(queue_b["id"], "default")
+
+    inbox_positions_before = {
+        inbox_a["id"]: store.get_task(inbox_a["id"])["position"],
+        inbox_b["id"]: store.get_task(inbox_b["id"])["position"],
+    }
+
+    # Reordering a run-queue task must not touch Inbox order or vice versa.
+    store.move_task(queue_b["id"], queue_a["id"])
+    inbox_order = [t["id"] for t in store.list_tasks(status="queued") if t["lane"] is None]
+    queue_order = [t["id"] for t in store.list_tasks(status="queued") if t["lane"] == "serial"]
+    assert inbox_order == [inbox_a["id"], inbox_b["id"]]
+    assert queue_order == [queue_b["id"], queue_a["id"]]
+    # A cross-lane scan that happens to preserve each lane's relative order
+    # would still pass the two checks above; pin the actual position values
+    # too, since a lane-scoped move must leave the other lane's numbers alone.
+    assert store.get_task(inbox_a["id"])["position"] == inbox_positions_before[inbox_a["id"]]
+    assert store.get_task(inbox_b["id"])["position"] == inbox_positions_before[inbox_b["id"]]
+
+
+def test_get_lane_missing_returns_none(store):
+    assert store.get_lane("/nowhere") is None
+
+
+def test_set_lane_pause_and_resume(store):
+    paused = store.set_lane("/proj", paused=True, reason="task #1 failed")
+    assert paused == {"cwd": "/proj", "paused": 1, "reason": "task #1 failed"}
+    resumed = store.set_lane("/proj", paused=False)
+    assert resumed["paused"] == 0
+    assert resumed["reason"] is None
+
+
+def test_list_lanes_orders_by_cwd(store):
+    store.set_lane("/b", paused=True)
+    store.set_lane("/a", paused=True)
+    assert [lane["cwd"] for lane in store.list_lanes()] == ["/a", "/b"]
+
+
+def test_serial_lane_cwds_only_lists_queued_serial_tasks(store, tmp_path):
+    cwd = str(tmp_path)
+    task = store.create_task(kind="prompt", body="a", status="queued", source="cli", cwd=cwd)
+    assert store.serial_lane_cwds() == []
+    store.enqueue_task(task["id"], "default")
+    assert store.serial_lane_cwds() == [cwd]
+
+
+def test_claim_serial_head_claims_lowest_position(store, tmp_path):
+    cwd = str(tmp_path)
+    first = store.create_task(kind="prompt", body="a", status="queued", source="cli", cwd=cwd)
+    second = store.create_task(kind="prompt", body="b", status="queued", source="cli", cwd=cwd)
+    store.enqueue_task(first["id"], "default")
+    store.enqueue_task(second["id"], "default")
+
+    claimed = store.claim_serial_head(cwd, "sess-1")
+    assert claimed["id"] == first["id"]
+    assert claimed["status"] == "running"
+    assert claimed["session_id"] == "sess-1"
+    assert claimed["run_mode"] == "serial"
+
+
+def test_claim_serial_head_returns_none_when_paused(store, tmp_path):
+    cwd = str(tmp_path)
+    task = store.create_task(kind="prompt", body="a", status="queued", source="cli", cwd=cwd)
+    store.enqueue_task(task["id"], "default")
+    store.set_lane(cwd, paused=True, reason="x")
+
+    assert store.claim_serial_head(cwd, "sess-1") is None
+    assert store.get_task(task["id"])["status"] == "queued"
+
+
+def test_claim_serial_head_returns_none_when_already_running(store, tmp_path):
+    cwd = str(tmp_path)
+    first = store.create_task(kind="prompt", body="a", status="queued", source="cli", cwd=cwd)
+    second = store.create_task(kind="prompt", body="b", status="queued", source="cli", cwd=cwd)
+    store.enqueue_task(first["id"], "default")
+    store.enqueue_task(second["id"], "default")
+    store.claim_serial_head(cwd, "sess-1")
+
+    assert store.claim_serial_head(cwd, "sess-2") is None
+    assert store.get_task(second["id"])["status"] == "queued"
+
+
+def test_claim_serial_head_returns_none_with_no_queue(store, tmp_path):
+    assert store.claim_serial_head(str(tmp_path), "sess-1") is None
+
+
+def test_claim_serial_head_concurrent_kicks_claim_exactly_one(config, tmp_path):
+    """Several threads, each its own connection, kicking the same idle lane."""
+    import threading
+
+    cwd = str(tmp_path)
+    with Store.open(config) as setup_store:
+        task = setup_store.create_task(
+            kind="prompt", body="a", status="queued", source="cli", cwd=cwd
+        )
+        setup_store.enqueue_task(task["id"], "default")
+
+    results = []
+
+    def attempt(i):
+        with Store.open(config) as thread_store:
+            results.append(thread_store.claim_serial_head(cwd, f"sess-{i}"))
+
+    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    successes = [r for r in results if r is not None]
+    assert len(successes) == 1
+
+
+def test_enqueue_task_sets_lane_and_permission_mode(store, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="a", status="queued", source="cli", cwd=str(tmp_path)
+    )
+    enqueued = store.enqueue_task(task["id"], "acceptEdits")
+    assert enqueued["lane"] == "serial"
+    assert enqueued["permission_mode"] == "acceptEdits"
+
+
+def test_enqueue_task_before_id_orders_within_the_lane(store, tmp_path):
+    cwd = str(tmp_path)
+    a = store.create_task(kind="prompt", body="a", status="queued", source="cli", cwd=cwd)
+    b = store.create_task(kind="prompt", body="b", status="queued", source="cli", cwd=cwd)
+    store.enqueue_task(a["id"], "default")
+    store.enqueue_task(b["id"], "default", before_id=a["id"])
+    order = [t["id"] for t in store.list_tasks(status="queued") if t["lane"] == "serial"]
+    assert order == [b["id"], a["id"]]
+
+
+def test_enqueue_task_unknown_before_id_raises_key_error(store, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="a", status="queued", source="cli", cwd=str(tmp_path)
+    )
+    with pytest.raises(KeyError):
+        store.enqueue_task(task["id"], "default", before_id=999999)
+
+
+def test_enqueue_task_not_queued_returns_none(store, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="a", status="running", source="hook", cwd=str(tmp_path)
+    )
+    assert store.enqueue_task(task["id"], "default") is None
+
+
+def test_clear_task_lane_returns_to_inbox(store, tmp_path):
+    cwd = str(tmp_path)
+    task = store.create_task(kind="prompt", body="a", status="queued", source="cli", cwd=cwd)
+    store.enqueue_task(task["id"], "default")
+    cleared = store.clear_task_lane(task["id"])
+    assert cleared["lane"] is None
+
+
+def test_clear_task_lane_not_queued_returns_none(store, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="a", status="running", source="hook", cwd=str(tmp_path)
+    )
+    assert store.clear_task_lane(task["id"]) is None
+
+
+def test_latest_session_for_cwd(store):
+    store.upsert_session("s1", cwd="/proj", transcript_path="/t1", at="2020-01-01T00:00:00.000Z")
+    store.upsert_session("s2", cwd="/proj", transcript_path="/t2", at="2021-01-01T00:00:00.000Z")
+    store.upsert_session("s3", cwd="/other", transcript_path="/t3", at="2022-01-01T00:00:00.000Z")
+    store.upsert_session("s4", cwd="/proj", at="2023-01-01T00:00:00.000Z")
+    latest = store.latest_session_for_cwd("/proj")
+    assert latest["id"] == "s2"
+
+
+def test_latest_session_for_cwd_returns_none_without_match(store):
+    assert store.latest_session_for_cwd("/nowhere") is None
 
 
 def test_redaction_happens_before_truncation(tmp_path):

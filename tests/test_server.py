@@ -629,8 +629,6 @@ def test_run_task_concurrent_eight_requests_one_launch_seven_conflicts(
     store, running_server, auth_headers, tmp_path, monkeypatch
 ):
     """Real concurrency: 8 threads POST /run at one queued task with a fake popen."""
-    from tasky import worker
-
     task = store.create_task(
         kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
     )
@@ -643,9 +641,10 @@ def test_run_task_concurrent_eight_requests_one_launch_seven_conflicts(
             calls.append((args, kwargs))
         return object()
 
-    # run_task's `popen` default is bound at function-definition time, so the
-    # server's un-parameterized call needs the default itself replaced.
-    monkeypatch.setattr(worker.run_task, "__defaults__", ("default", fake_popen))
+    # The server launches every worker through its own `popen` attribute
+    # (never subprocess.Popen directly), so tests replace that instead of a
+    # real process ever spawning.
+    monkeypatch.setattr(running_server, "popen", fake_popen)
 
     statuses = []
     statuses_lock = threading.Lock()
@@ -944,6 +943,371 @@ def test_stalled_client_does_not_block_a_second_request(
         srv.shutdown()
         thread.join(timeout=5)
         srv.server_close()
+
+
+# -- /api/state lanes (design.md decision 5) -----------------------------------
+
+
+def test_state_includes_lanes(store, conn, auth_headers, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    store.enqueue_task(task["id"], "default")
+    store.set_lane(str(tmp_path), paused=True, reason="task #1 failed")
+
+    resp, parsed = _request(conn, "GET", "/api/state", headers=auth_headers)
+    assert resp.status == 200
+    assert {"cwd": str(tmp_path), "paused": 1, "reason": "task #1 failed"} in parsed["lanes"]
+
+
+def test_state_tasks_include_lane_fields(store, conn, auth_headers, tmp_path):
+    store.create_task(kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path))
+    resp, parsed = _request(conn, "GET", "/api/state", headers=auth_headers)
+    assert resp.status == 200
+    task = parsed["tasks"][0]
+    assert {"lane", "run_mode", "permission_mode", "fork_of"} <= set(task)
+
+
+# -- POST /api/tasks/<id>/run mode (design.md decision 5) -----------------------
+
+
+def test_run_task_passes_mode_to_worker(store, conn, auth_headers, tmp_path, monkeypatch):
+    task = store.create_task(
+        kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    calls = []
+
+    def fake_run_task(store_arg, config_arg, task_id, permission_mode="default", mode="now", **kw):
+        calls.append((task_id, permission_mode, mode))
+        return store_arg.update_task(task_id, status="running", session_id="s1")
+
+    monkeypatch.setattr(server_mod.worker, "run_task", fake_run_task)
+
+    resp, parsed = _request(
+        conn,
+        "POST",
+        f"/api/tasks/{task['id']}/run",
+        body={"mode": "fork"},
+        headers=auth_headers,
+    )
+    assert resp.status == 200
+    assert calls == [(task["id"], "default", "fork")]
+
+
+def test_run_task_invalid_mode_400(store, conn, auth_headers, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    resp, parsed = _request(
+        conn,
+        "POST",
+        f"/api/tasks/{task['id']}/run",
+        body={"mode": "later"},
+        headers=auth_headers,
+    )
+    assert resp.status == 400
+    assert store.get_task(task["id"])["status"] == "queued"
+
+
+# -- POST /api/tasks/<id>/enqueue ------------------------------------------------
+
+
+def test_enqueue_task_moves_to_lane_and_kicks(store, running_server, auth_headers, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    calls = []
+
+    def fake_popen(*args, **kwargs):
+        calls.append((args, kwargs))
+        return object()
+
+    running_server.popen = fake_popen
+    conn = http.client.HTTPConnection("127.0.0.1", running_server.server_port)
+    resp, parsed = _request(
+        conn,
+        "POST",
+        f"/api/tasks/{task['id']}/enqueue",
+        body={"permission_mode": "acceptEdits"},
+        headers=auth_headers,
+    )
+    conn.close()
+    assert resp.status == 200
+    assert parsed["lane"] == "serial"
+    assert parsed["status"] == "running"  # kicked immediately, an idle lane
+    assert len(calls) == 1
+
+
+def test_enqueue_task_before_id(store, conn, auth_headers, tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        server_mod.scheduler, "kick", lambda *a, **k: called.append(1) or []
+    )
+    task_a = store.create_task(
+        kind="prompt", body="a", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    task_b = store.create_task(
+        kind="prompt", body="b", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    _request(
+        conn,
+        "POST",
+        f"/api/tasks/{task_a['id']}/enqueue",
+        body={},
+        headers=auth_headers,
+    )
+    resp, parsed = _request(
+        conn,
+        "POST",
+        f"/api/tasks/{task_b['id']}/enqueue",
+        body={"before_id": task_a["id"]},
+        headers=auth_headers,
+    )
+    assert resp.status == 200
+    queued = [
+        t["id"] for t in store.list_tasks(status="queued") if t["lane"] == "serial"
+    ]
+    assert queued == [task_b["id"], task_a["id"]]
+
+
+def test_enqueue_task_invalid_permission_mode_400(store, conn, auth_headers, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    resp, parsed = _request(
+        conn,
+        "POST",
+        f"/api/tasks/{task['id']}/enqueue",
+        body={"permission_mode": "yolo"},
+        headers=auth_headers,
+    )
+    assert resp.status == 400
+    assert store.get_task(task["id"])["lane"] is None
+
+
+def test_enqueue_task_bypass_permissions_refused_without_allow_bypass(
+    store, conn, auth_headers, tmp_path
+):
+    task = store.create_task(
+        kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    resp, parsed = _request(
+        conn,
+        "POST",
+        f"/api/tasks/{task['id']}/enqueue",
+        body={"permission_mode": "bypassPermissions"},
+        headers=auth_headers,
+    )
+    assert resp.status == 400
+    assert store.get_task(task["id"])["lane"] is None
+
+
+def test_enqueue_task_requires_cwd(store, conn, auth_headers):
+    task = store.create_task(kind="prompt", body="x", status="queued", source="ui")
+    resp, parsed = _request(
+        conn, "POST", f"/api/tasks/{task['id']}/enqueue", body={}, headers=auth_headers
+    )
+    assert resp.status == 400
+
+
+def test_enqueue_task_not_found(conn, auth_headers):
+    resp, parsed = _request(
+        conn, "POST", "/api/tasks/999999/enqueue", body={}, headers=auth_headers
+    )
+    assert resp.status == 404
+
+
+def test_enqueue_task_not_queued_409(store, conn, auth_headers, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="x", status="running", source="ui", cwd=str(tmp_path)
+    )
+    resp, parsed = _request(
+        conn, "POST", f"/api/tasks/{task['id']}/enqueue", body={}, headers=auth_headers
+    )
+    assert resp.status == 409
+
+
+def test_enqueue_task_unknown_before_id_400(store, conn, auth_headers, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    resp, parsed = _request(
+        conn,
+        "POST",
+        f"/api/tasks/{task['id']}/enqueue",
+        body={"before_id": 999999},
+        headers=auth_headers,
+    )
+    assert resp.status == 400
+
+
+def test_enqueue_task_without_token_401(store, conn, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    resp, _ = _request(
+        conn,
+        "POST",
+        f"/api/tasks/{task['id']}/enqueue",
+        body={},
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status == 401
+    assert store.get_task(task["id"])["lane"] is None
+
+
+# -- PATCH /api/tasks/<id> lane: null ---------------------------------------------
+
+
+def test_patch_task_lane_null_returns_to_inbox(store, conn, auth_headers, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    store.enqueue_task(task["id"], "default")
+
+    resp, parsed = _request(
+        conn, "PATCH", f"/api/tasks/{task['id']}", body={"lane": None}, headers=auth_headers
+    )
+    assert resp.status == 200
+    assert parsed["lane"] is None
+
+
+def test_patch_task_lane_rejects_non_null_value(store, conn, auth_headers, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    resp, parsed = _request(
+        conn, "PATCH", f"/api/tasks/{task['id']}", body={"lane": "serial"}, headers=auth_headers
+    )
+    assert resp.status == 400
+
+
+def test_patch_task_lane_not_queued_409(store, conn, auth_headers, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="x", status="running", source="ui", cwd=str(tmp_path)
+    )
+    resp, parsed = _request(
+        conn, "PATCH", f"/api/tasks/{task['id']}", body={"lane": None}, headers=auth_headers
+    )
+    assert resp.status == 409
+
+
+# -- PATCH /api/lanes -------------------------------------------------------------
+
+
+def test_patch_lane_pauses(store, conn, auth_headers, tmp_path):
+    resp, parsed = _request(
+        conn,
+        "PATCH",
+        "/api/lanes",
+        body={"cwd": str(tmp_path), "paused": True},
+        headers=auth_headers,
+    )
+    assert resp.status == 200
+    assert parsed["paused"] == 1
+
+
+def test_patch_lane_resume_kicks(store, running_server, auth_headers, tmp_path):
+    task = store.create_task(
+        kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
+    )
+    store.enqueue_task(task["id"], "default")
+    store.set_lane(str(tmp_path), paused=True, reason="x")
+    calls = []
+    running_server.popen = lambda *a, **k: calls.append(1) or object()
+
+    conn = http.client.HTTPConnection("127.0.0.1", running_server.server_port)
+    resp, parsed = _request(
+        conn,
+        "PATCH",
+        "/api/lanes",
+        body={"cwd": str(tmp_path), "paused": False},
+        headers=auth_headers,
+    )
+    conn.close()
+    assert resp.status == 200
+    assert parsed["paused"] == 0
+    assert store.get_task(task["id"])["status"] == "running"
+    assert len(calls) == 1
+
+
+def test_patch_lane_requires_cwd(conn, auth_headers):
+    resp, parsed = _request(
+        conn, "PATCH", "/api/lanes", body={"paused": True}, headers=auth_headers
+    )
+    assert resp.status == 400
+
+
+def test_patch_lane_requires_paused_boolean(conn, auth_headers, tmp_path):
+    resp, parsed = _request(
+        conn,
+        "PATCH",
+        "/api/lanes",
+        body={"cwd": str(tmp_path)},
+        headers=auth_headers,
+    )
+    assert resp.status == 400
+
+
+def test_patch_lane_without_token_401(store, conn, tmp_path):
+    resp, _ = _request(
+        conn,
+        "PATCH",
+        "/api/lanes",
+        body={"cwd": str(tmp_path), "paused": True},
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status == 401
+    assert store.get_lane(str(tmp_path)) is None
+
+
+# -- periodic kick from the version poll -----------------------------------------
+
+
+def test_version_poll_kicks_idle_run_queues(running_server, conn, auth_headers, config, tmp_path):
+    from tasky.store import Store
+
+    with Store.open(config) as store:
+        task = store.create_task(
+            kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
+        )
+        store.enqueue_task(task["id"], "default")
+
+    calls = []
+    running_server.popen = lambda *a, **k: calls.append(1) or object()
+    running_server._titles_synced_at = float("-inf")
+
+    resp, _ = _request(conn, "GET", "/api/version", headers=auth_headers)
+    assert resp.status == 200
+
+    with Store.open(config) as store:
+        assert store.get_task(task["id"])["status"] == "running"
+    assert len(calls) == 1
+
+
+def test_version_poll_kick_throttled_like_titles(
+    running_server, conn, auth_headers, config, tmp_path
+):
+    from tasky.store import Store
+
+    with Store.open(config) as store:
+        task = store.create_task(
+            kind="prompt", body="x", status="queued", source="ui", cwd=str(tmp_path)
+        )
+        store.enqueue_task(task["id"], "default")
+
+    calls = []
+    running_server.popen = lambda *a, **k: calls.append(1) or object()
+    running_server._titles_synced_at = float("-inf")
+
+    _request(conn, "GET", "/api/version", headers=auth_headers)
+    assert len(calls) == 1
+
+    # A second poll within the throttle window must not kick again even
+    # though the first kick already started a task (no new work anyway, but
+    # this proves the interval guard applies to kick(), not just titles).
+    _request(conn, "GET", "/api/version", headers=auth_headers)
+    assert len(calls) == 1
 
 
 def test_version_poll_syncs_session_rename(running_server, conn, auth_headers, config, tmp_path):

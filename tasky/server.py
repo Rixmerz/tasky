@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 import traceback
@@ -16,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from tasky import worker
+from tasky import scheduler, worker
 from tasky.config import Config, load_token, token_proof
 from tasky.store import TASK_STATUSES, Store
 from tasky.titles import TitleWatcher
@@ -36,8 +37,9 @@ _STATIC_FILES = {
 }
 _TASK_ID_RE = re.compile(r"^/api/tasks/(\d{1,18})$")
 _TASK_RUN_RE = re.compile(r"^/api/tasks/(\d{1,18})/run$")
+_TASK_ENQUEUE_RE = re.compile(r"^/api/tasks/(\d{1,18})/enqueue$")
 _SESSION_ID_RE = re.compile(r"^/api/sessions/([^/]+)$")
-_TASK_PATCH_FIELDS = ("status", "title", "body", "before_id")
+_TASK_PATCH_FIELDS = ("status", "title", "body", "before_id", "lane")
 _SESSION_PATCH_FIELDS = ("auto_pull", "title")
 
 
@@ -206,10 +208,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._route_import()
         elif method == "GET" and path in _STATIC_FILES:
             self._route_static(path)
+        elif method == "PATCH" and path == "/api/lanes":
+            self._route_patch_lane(body)
         else:
             match = _TASK_RUN_RE.match(path)
             if method == "POST" and match:
                 self._route_run_task(int(match.group(1)), body)
+                return
+            match = _TASK_ENQUEUE_RE.match(path)
+            if method == "POST" and match:
+                self._route_enqueue_task(int(match.group(1)), body)
                 return
             match = _TASK_ID_RE.match(path)
             if match:
@@ -311,6 +319,17 @@ class _Handler(BaseHTTPRequestHandler):
                 self._error(404, "task not found")
                 return
 
+            if "lane" in body:
+                if body["lane"] is not None:
+                    self._error(400, "lane must be null")
+                    return
+                task = store.clear_task_lane(task_id)
+                if task is None:
+                    self._error(409, f"task {task_id} is not queued")
+                    return
+                self._send_json(200, task)
+                return
+
             if "before_id" in body:
                 before_id = body["before_id"]
                 if before_id is not None and not (
@@ -355,9 +374,13 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"deleted": True})
 
     def _route_run_task(self, task_id: int, body: dict) -> None:
-        mode = body.get("permission_mode", "default")
-        if not isinstance(mode, str):
+        permission_mode = body.get("permission_mode", "default")
+        if not isinstance(permission_mode, str):
             self._error(400, "permission_mode must be a string")
+            return
+        mode = body.get("mode", "now")
+        if not isinstance(mode, str) or mode not in ("now", "fork"):
+            self._error(400, f"invalid mode: {mode!r}")
             return
 
         config = self.server.config
@@ -369,13 +392,59 @@ class _Handler(BaseHTTPRequestHandler):
             # a check-then-act split here is exactly the race two concurrent
             # /run calls would win together (CWE-367).
             try:
-                task = worker.run_task(store, config, task_id, permission_mode=mode)
+                task = worker.run_task(
+                    store,
+                    config,
+                    task_id,
+                    permission_mode=permission_mode,
+                    mode=mode,
+                    popen=self.server.popen,
+                )
             except worker.TaskNotQueued as exc:
                 self._error(409, str(exc))
                 return
             except worker.WorkerError as exc:
                 self._error(400, str(exc))
                 return
+        self._send_json(200, task)
+
+    def _route_enqueue_task(self, task_id: int, body: dict) -> None:
+        permission_mode = body.get("permission_mode", "default")
+        if not isinstance(permission_mode, str):
+            self._error(400, "permission_mode must be a string")
+            return
+        if permission_mode not in worker.PERMISSION_MODES:
+            self._error(400, f"invalid permission mode: {permission_mode!r}")
+            return
+        config = self.server.config
+        if permission_mode == "bypassPermissions" and not config.allow_bypass:
+            self._error(400, "bypassPermissions requires TASKY_ALLOW_BYPASS=1")
+            return
+        before_id = body.get("before_id")
+        if before_id is not None and not (
+            isinstance(before_id, int) and not isinstance(before_id, bool)
+        ):
+            self._error(400, "before_id must be an int or null")
+            return
+
+        with Store.open(config) as store:
+            task = store.get_task(task_id)
+            if task is None:
+                self._error(404, "task not found")
+                return
+            if not task.get("cwd"):
+                self._error(400, "task has no cwd")
+                return
+            try:
+                enqueued = store.enqueue_task(task_id, permission_mode, before_id)
+            except KeyError:
+                self._error(400, "unknown before_id")
+                return
+            if enqueued is None:
+                self._error(409, f"task {task_id} is not queued")
+                return
+            scheduler.kick(store, config, enqueued["cwd"], popen=self.server.popen)
+            task = store.get_task(task_id)
         self._send_json(200, task)
 
     def _route_patch_session(self, session_id: str, body: dict) -> None:
@@ -406,6 +475,24 @@ class _Handler(BaseHTTPRequestHandler):
                 return
         self._send_json(200, session)
 
+    def _route_patch_lane(self, body: dict) -> None:
+        cwd = body.get("cwd")
+        if not isinstance(cwd, str) or not cwd:
+            self._error(400, "cwd is required")
+            return
+        paused = body.get("paused")
+        if not isinstance(paused, bool):
+            self._error(400, "paused must be a boolean")
+            return
+
+        config = self.server.config
+        with Store.open(config) as store:
+            store.set_lane(cwd, paused=paused, reason=None)
+            if not paused:
+                scheduler.kick(store, config, cwd, popen=self.server.popen)
+            lane = store.get_lane(cwd)
+        self._send_json(200, lane)
+
     def _route_import(self) -> None:
         from tasky import importer
 
@@ -434,14 +521,20 @@ class _Server(ThreadingHTTPServer):
     titles: TitleWatcher
     _titles_lock: threading.Lock
     _titles_synced_at: float
+    # Every worker/scheduler launch made from this server goes through this
+    # attribute instead of subprocess.Popen directly, so a test can replace
+    # it and never spawn a real `claude` process (see design.md decision 2).
+    popen: object
 
     def sync_titles(self, store: Store, *, interval: float = 3.0) -> None:
-        """Copy session names set with /rename into the ledger.
+        """Copy session names set with /rename into the ledger, and advance
+        every project's run queue.
 
-        Runs from the version poll at most every ``interval`` seconds; a
-        changed name updates the row, which bumps the revision so open
-        dashboards refresh. Only unfinished or still unnamed sessions are
-        followed, so an imported history is scanned once, not every poll.
+        Both run from the version poll at most every ``interval`` seconds
+        (design.md decision 2's "periodic sync"). A changed title or a
+        started task bumps the revision so open dashboards refresh. Only
+        unfinished or still unnamed sessions are followed for titles, so an
+        imported history is scanned once, not every poll.
         """
         now = time.monotonic()
         if not self._titles_lock.acquire(blocking=False):
@@ -456,6 +549,7 @@ class _Server(ThreadingHTTPServer):
                 title = self.titles.title(session["transcript_path"])
                 if title and title != session["title"]:
                     store.update_session(session["id"], title=title)
+            scheduler.kick(store, self.config, popen=self.popen)
         finally:
             self._titles_lock.release()
 
@@ -493,6 +587,7 @@ def make_server(
     server.web_dir = Path(web_dir) if web_dir is not None else Path(__file__).parent / "web"
     server._token_cache_key = None
     server._token_cache_value = None
+    server.popen = subprocess.Popen
     server.titles = TitleWatcher()
     server._titles_lock = threading.Lock()
     server._titles_synced_at = float("-inf")

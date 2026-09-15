@@ -10,12 +10,38 @@ stay `running` forever.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 from pathlib import Path
 
+from tasky import scheduler
 from tasky.config import Config
 from tasky.store import Store
+
+_PAUSING_STATUSES = ("failed", "interrupted")
+
+
+def _finish(config: Config, store: Store, task_id: int) -> None:
+    """Pause the lane on a failed/interrupted queue task, then kick it either way.
+
+    A task the Stop hook marked `done` leaves the lane running (design.md
+    decision 2). Kick failures must never crash the supervisor: a broken
+    directory pauses its own lane (see `scheduler.kick`), but any other
+    failure here (e.g. the store itself) is swallowed rather than taking the
+    worker's exit reporting down with it.
+    """
+    task = store.get_task(task_id)
+    if task is None or not task.get("cwd"):
+        return
+    if task.get("run_mode") == "serial" and task["status"] in _PAUSING_STATUSES:
+        store.set_lane(task["cwd"], paused=True, reason=f"task #{task_id} {task['status']}")
+    # A broken directory must not crash the supervisor; scheduler.kick already
+    # pauses the lane itself on a launch failure (WorkerError), so anything
+    # that reaches here is a store-level surprise not worth losing the
+    # worker's own exit reporting over.
+    with contextlib.suppress(Exception):  # noqa: BLE001, S110
+        scheduler.kick(store, config, task["cwd"])
 
 
 def supervise(
@@ -50,6 +76,7 @@ def supervise(
                     and task["session_id"] == session_id
                 ):
                     store.update_task(task_id, status="failed", result=str(exc))
+                _finish(config, store, task_id)
             return 127
     finally:
         prompt_path.unlink(missing_ok=True)
@@ -72,4 +99,5 @@ def supervise(
                     status="interrupted",
                     result=f"worker exited without reporting a result; see {log_path}",
                 )
+        _finish(config, store, task_id)
     return code

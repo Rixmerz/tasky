@@ -104,7 +104,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", help="run a queued task as a headless Claude Code session")
     p.add_argument("id", type=int)
     p.add_argument("--permission-mode", default="default")
+    p.add_argument("--mode", default="now", choices=("now", "fork"))
     p.set_defaults(handler=_cmd_run)
+
+    p = sub.add_parser("enqueue", help="add a queued task to its project's run queue")
+    p.add_argument("id", type=int)
+    p.add_argument("--permission-mode", default="default")
+    p.set_defaults(handler=_cmd_enqueue)
 
     p = sub.add_parser("status", help="print task counters")
     p.add_argument("--short", action="store_true", help="one line, for status lines")
@@ -225,11 +231,37 @@ def _cmd_run(args: argparse.Namespace, config: Config, out: TextIO) -> int:
 
     with Store.open(config) as store:
         try:
-            task = run_task(store, config, args.id, permission_mode=args.permission_mode)
+            task = run_task(
+                store, config, args.id, permission_mode=args.permission_mode, mode=args.mode
+            )
         except WorkerError as exc:
             print(f"tasky: {exc}", file=sys.stderr)
             return 1
     print(f"#{task['id']} running in session {task['session_id']}", file=out)
+    return 0
+
+
+def _cmd_enqueue(args: argparse.Namespace, config: Config, out: TextIO) -> int:
+    from tasky import scheduler
+    from tasky.worker import PERMISSION_MODES
+
+    if args.permission_mode not in PERMISSION_MODES:
+        raise ValueError(f"invalid permission mode: {args.permission_mode!r}")
+    if args.permission_mode == "bypassPermissions" and not config.allow_bypass:
+        raise ValueError("bypassPermissions requires TASKY_ALLOW_BYPASS=1")
+
+    with Store.open(config) as store:
+        task = store.get_task(args.id)
+        if task is None:
+            raise KeyError(args.id)
+        if not task.get("cwd"):
+            raise ValueError(f"task {args.id} has no cwd")
+        enqueued = store.enqueue_task(args.id, args.permission_mode, None)
+        if enqueued is None:
+            raise ValueError(f"task {args.id} is not queued")
+        scheduler.kick(store, config, enqueued["cwd"])
+        task = store.get_task(args.id)
+    print(f"#{task['id']} in {task['cwd']} run queue (status: {task['status']})", file=out)
     return 0
 
 

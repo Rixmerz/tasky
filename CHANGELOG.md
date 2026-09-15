@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-09-15
+
+### Added
+
+- The dashboard is a full-width board: Inbox, Up next, Running (queue runner and parallel), Needs
+  attention and Done. Each task is a single line; everything else opens in a side panel. Empty
+  columns shrink, each column scrolls on its own, rows cycle through five colour rails, and phones
+  show one column at a time.
+- Three actions per waiting row: Run now, After last and Parallel with context, as icon buttons
+  and again, with words, in the row's menu.
+- The create bar sends a task "to" an active session or a project; active ones come first and stale
+  folders sit under "Other". The project filter and permission mode live behind one button, and an
+  active filter shows as a clearable chip.
+- Per-project run queue: Tasky runs Up next one task at a time in order, and pauses a project's queue
+  when one of its tasks fails or is interrupted.
+- Parallel runs that clone an existing session with `--resume --fork-session`, so the task starts with
+  that conversation's context.
+- Drag and drop, with a keyboard alternative, to reorder the run queue and move cards between Inbox
+  and Up next.
+- `tasky enqueue` and `tasky run --mode fork`.
+
+### Changed
+
+- Auto-pull never takes tasks that are in a project's run queue.
+- The database schema moves to version 2; existing databases are migrated in place.
+
 ## [0.2.0] - 2026-09-15
 
 ### Added

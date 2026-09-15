@@ -22,7 +22,9 @@ anyone whose attention is the scarcest resource in the room.
   finishes a turn, it picks up the next queued task for its project.
 - **Survives compaction.** When a session is resumed or compacted, it is reminded of its
   unfinished tasks.
-- **Runs tasks in parallel.** Start any queued task as its own headless Claude Code session.
+- **Three ways to start a task.** Run it now as its own headless session, put it after the last
+  one in its project's run queue, or run it in parallel as a clone of a session that already has
+  the context.
 - **Remembers the past.** Import your existing Claude Code transcripts so the board is not empty
   on day one.
 - **Shows results as cards, not markdown.** Each result opens with its bottom line; every point,
@@ -65,9 +67,29 @@ or, from a terminal, `tasky ui --open`. Both print an access link like
 page refreshes itself within two seconds of any change and loads nothing from the network. If the
 token is rotated or the tab is closed, run `tasky ui` again for a fresh link.
 
-It groups tasks into **Now**, **Needs attention** (interrupted or failed), **Up next** (the queue, in
-order) and **Done**. From a card you can mark a task done, cancel it, reorder the queue, copy the
-command that resumes its session, or run it in parallel.
+The board uses the full width of the screen, one column per stage:
+
+| Column | What is there |
+| --- | --- |
+| **Inbox** | Tasks you created that are not scheduled yet |
+| **Up next** | Each project's run queue. Top to bottom is the order they will run in |
+| **Running** | **Queue runner** (the task started from Up next) above **Parallel** (everything else running) |
+| **Needs attention** | Interrupted or failed tasks, with Run again and Back to Inbox |
+| **Done** | Finished tasks, newest first |
+
+A task is one line: a status dot, its title and how long ago. Click the title for the full text, the
+result and the session it ran in. Inbox and Up next rows carry three small buttons, Run now, After
+last and Parallel with context; the "..." menu on every row repeats them with words and holds the rest
+(edit, move, back to Inbox, mark done, cancel, delete). A row whose result ends with a question shows
+a "Needs answer" mark. Empty columns shrink so the ones with work get the width.
+
+Create tasks from the bar at the top. Its "to" picker lists your active sessions first (sending a
+task to one ties it to that session), then each active project, and everything else under "Other".
+The sliders button on the right holds the project filter and the permission mode the row buttons use;
+an active filter shows as a chip you can click to clear. Drag rows to reorder Up next or to move them
+between Inbox and Up next; with the keyboard, focus a row's handle, press Space, move with the arrow
+keys and press Enter. Rows cycle through five colour rails so neighbours are easy to tell apart. On a
+phone, one column shows at a time.
 
 ### Queue a task
 
@@ -91,15 +113,38 @@ the next queued task: first the ones bound to the session, then the unbound ones
 Each pulled task is a normal model turn, so it spends tokens like any prompt. A session pulls at
 most 5 tasks in a row before waiting for you again (`TASKY_MAX_CHAIN`).
 
-### Run tasks in parallel
+### Start a task
 
-From the dashboard, or:
+Every card in Inbox and Up next has three buttons:
+
+| Button | What happens | Context |
+| --- | --- | --- |
+| **Run now** | Starts a headless session right away | None, a fresh session |
+| **After last** | Moves the task to the end of its project's run queue | None, a fresh session when its turn comes |
+| **Parallel** | Starts right away as a clone of the project's session | The whole conversation of that session |
+
+From a terminal:
 
 ```sh
-tasky run 12 --permission-mode acceptEdits
+tasky run 12 --permission-mode acceptEdits    # Run now
+tasky enqueue 12 --permission-mode acceptEdits # After last
+tasky run 12 --mode fork                       # Parallel with context
 ```
 
-This starts `claude -p` in the task's directory as a detached process with its own session id. The
+**The run queue.** Tasky runs one task at a time per project from Up next, in order, and starts the
+next one when the previous worker exits. If a task from the queue fails or is interrupted, that
+project's queue pauses so the next task does not build on a broken state; the Running column shows
+why, with a Resume button. Projects' queues run independently of each other.
+
+**Parallel with context.** Tasky clones the task's own session, or else the latest session you worked
+in for that project (preferred over headless worker sessions), with
+`claude --resume <session> --fork-session`. The clone gets a new session id and the original
+conversation is not changed. Two things to know:
+
+- The clone replays the whole original conversation as input, so it costs more than a fresh run.
+- The result lands on the Tasky card. The original session never sees it.
+
+Every run starts `claude -p` in the task's directory as a detached process with its own session id. The
 task text is passed on standard input, never as a command-line argument. Its hooks attach to the
 existing task, so the result lands on the same card. A small supervisor waits for the process and
 marks the task failed if it exits without reporting a result. Output goes to
@@ -169,7 +214,8 @@ tasky serve [--port N] [--open]     run the dashboard in the foreground
 tasky add TEXT [--cwd DIR] [--session ID]
 tasky list [--status S] [--cwd DIR] [--limit N] [--json]
 tasky done ID | tasky cancel ID
-tasky run ID [--permission-mode MODE]
+tasky run ID [--mode now|fork] [--permission-mode MODE]
+tasky enqueue ID [--permission-mode MODE]
 tasky import [--dry-run]
 tasky status [--short]
 ```
@@ -197,7 +243,8 @@ call. Every hook exits successfully and prints nothing when something goes wrong
 | Dashboard, CLI and status line | 0 |
 | Context reminder after resume or compaction | A few lines, only when tasks are unfinished |
 | Auto-pull | One normal turn per pulled task |
-| Parallel workers | One normal headless session per task |
+| Run now and the run queue | One normal headless session per task |
+| Parallel with context | One headless session per task, starting with the cloned conversation as input |
 
 ## Data and privacy
 
@@ -263,6 +310,7 @@ Hooks read these from the environment of the Claude Code process.
   as interrupted.
 - Claude Code sends no event when you press Esc, so an interrupted prompt is only marked when the
   session finishes its next turn or is resumed.
+- A run queue task left `running` by a killed worker blocks its project's queue until you cancel it.
 - When a background subagent reports back, its parent task's result becomes the final report
   rather than the first reply.
 

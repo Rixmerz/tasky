@@ -18,7 +18,7 @@ TASK_STATUSES = ("queued", "running", "done", "failed", "interrupted", "cancelle
 TERMINAL = ("done", "failed", "interrupted", "cancelled")
 TASK_KINDS = ("prompt", "delegation")
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _INIT_TIMEOUT_S = 10.0
 _SESSION_FIELDS = ("title", "auto_pull", "pull_chain", "state")
 _SESSION_STATES = ("active", "ended")
@@ -39,6 +39,10 @@ _TASK_UPDATE_FIELDS = (
     "position",
     "started_at",
     "finished_at",
+    "lane",
+    "run_mode",
+    "permission_mode",
+    "fork_of",
 )
 
 _SCHEMA = """
@@ -57,7 +61,11 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL,
   result TEXT, cwd TEXT, prompt_id TEXT, external_id TEXT UNIQUE, agent_id TEXT,
   source TEXT NOT NULL,
-  position REAL, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT
+  position REAL, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+  lane TEXT, run_mode TEXT, permission_mode TEXT, fork_of TEXT
+);
+CREATE TABLE IF NOT EXISTS lanes (
+  cwd TEXT PRIMARY KEY, paused INTEGER NOT NULL DEFAULT 0, reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -81,6 +89,15 @@ CREATE TRIGGER IF NOT EXISTS trg_sessions_rev_upd AFTER UPDATE ON sessions BEGIN
   UPDATE meta SET value = value + 1 WHERE key = 'rev';
 END;
 CREATE TRIGGER IF NOT EXISTS trg_sessions_rev_del AFTER DELETE ON sessions BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_lanes_rev_ins AFTER INSERT ON lanes BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_lanes_rev_upd AFTER UPDATE ON lanes BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_lanes_rev_del AFTER DELETE ON lanes BEGIN
   UPDATE meta SET value = value + 1 WHERE key = 'rev';
 END;
 """
@@ -151,6 +168,7 @@ class Store:
                     self._conn.execute(
                         "INSERT OR IGNORE INTO meta (key, value) VALUES ('rev', 0)"
                     )
+                    self._migrate_v1_to_v2()
                     self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                 self._conn.commit()
                 return
@@ -160,6 +178,18 @@ class Store:
                 if "locked" not in str(exc) or time.monotonic() >= deadline:
                     raise
                 time.sleep(0.05)
+
+    def _migrate_v1_to_v2(self) -> None:
+        """Add the version-2 columns to an existing ``tasks`` table.
+
+        A no-op on a fresh database (the ``CREATE TABLE`` above already
+        includes them) and safe to run more than once: each column is only
+        added if ``PRAGMA table_info`` does not already list it.
+        """
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(tasks)")}
+        for column in ("lane", "run_mode", "permission_mode", "fork_of"):
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT")  # noqa: S608
 
     @classmethod
     def open(cls, config: Config) -> Store:
@@ -565,32 +595,42 @@ class Store:
         return row is not None
 
     def next_queued(self, session_id: str | None, cwd: str | None) -> dict | None:
+        # A task in a project's run queue (lane='serial') belongs to the
+        # scheduler only; auto-pull must never take it.
         if session_id is not None:
             row = self._conn.execute(
-                "SELECT * FROM tasks WHERE status = 'queued' AND session_id = ? "
+                "SELECT * FROM tasks WHERE status = 'queued' AND lane IS NULL AND session_id = ? "
                 "ORDER BY position ASC LIMIT 1",
                 (session_id,),
             ).fetchone()
             if row is not None:
                 return self._task_row(row)
         row = self._conn.execute(
-            "SELECT * FROM tasks WHERE status = 'queued' AND session_id IS NULL AND cwd = ? "
-            "ORDER BY position ASC LIMIT 1",
+            "SELECT * FROM tasks WHERE status = 'queued' AND lane IS NULL "
+            "AND session_id IS NULL AND cwd = ? ORDER BY position ASC LIMIT 1",
             (cwd,),
         ).fetchone()
         return self._task_row(row) if row else None
 
+    @staticmethod
+    def _renumber(order: list[int]) -> list[tuple[float, int]]:
+        return [(float(position), tid) for position, tid in enumerate(order)]
+
     def move_task(self, task_id: int, before_id: int | None) -> dict:
         # Read the queued order and renumber it atomically: two concurrent moves
         # reading the same order would otherwise both compute conflicting positions.
+        # Ordering is scoped to the task's own lane (Inbox or a project's run
+        # queue): the two are independent columns on the board.
         needs_lock = not self._conn.in_transaction
         if needs_lock:
             self._conn.execute("BEGIN IMMEDIATE")
         try:
-            if self.get_task(task_id) is None:
+            task = self.get_task(task_id)
+            if task is None:
                 raise KeyError(task_id)
             rows = self._conn.execute(
-                "SELECT id FROM tasks WHERE status = 'queued' ORDER BY position ASC"
+                "SELECT id FROM tasks WHERE status = 'queued' AND lane IS ? ORDER BY position ASC",
+                (task["lane"],),
             ).fetchall()
             order = [r["id"] for r in rows if r["id"] != task_id]
             if before_id is None:
@@ -600,10 +640,8 @@ class Store:
                     raise KeyError(before_id)
                 order.insert(order.index(before_id), task_id)
 
-            for position, tid in enumerate(order):
-                self._conn.execute(
-                    "UPDATE tasks SET position = ? WHERE id = ?", (float(position), tid)
-                )
+            for position, tid in self._renumber(order):
+                self._conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (position, tid))
         except BaseException:
             if self._conn.in_transaction:
                 self._conn.rollback()
@@ -612,6 +650,154 @@ class Store:
         task = self.get_task(task_id)
         assert task is not None
         return task
+
+    # -- lanes ---------------------------------------------------------------
+
+    def get_lane(self, cwd: str) -> dict | None:
+        row = self._conn.execute("SELECT * FROM lanes WHERE cwd = ?", (cwd,)).fetchone()
+        return self._row(row) if row else None
+
+    def set_lane(self, cwd: str, *, paused: bool, reason: str | None = None) -> dict:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO lanes (cwd, paused, reason) VALUES (?, ?, ?)",
+            (cwd, int(paused), reason),
+        )
+        self._conn.commit()
+        lane = self.get_lane(cwd)
+        assert lane is not None
+        return lane
+
+    def list_lanes(self) -> list[dict]:
+        rows = self._conn.execute("SELECT * FROM lanes ORDER BY cwd").fetchall()
+        return [self._row(r) for r in rows]
+
+    def serial_lane_cwds(self) -> list[str]:
+        """Every directory with a queued task in its run queue."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT cwd FROM tasks WHERE status = 'queued' AND lane = 'serial' "
+            "AND cwd IS NOT NULL"
+        ).fetchall()
+        return [r["cwd"] for r in rows]
+
+    def claim_serial_head(self, cwd: str, session_id: str) -> dict | None:
+        """Claim the head of ``cwd``'s run queue, or ``None`` if it cannot start now.
+
+        Checks "not paused" and "no running task already started from this
+        queue" and claims the lowest-position queued task in one
+        ``BEGIN IMMEDIATE`` transaction, closing the race where two kicks
+        both see an idle queue and claim different tasks.
+        """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            lane_row = self._conn.execute(
+                "SELECT paused FROM lanes WHERE cwd = ?", (cwd,)
+            ).fetchone()
+            if lane_row is not None and lane_row["paused"]:
+                self._conn.rollback()
+                return None
+            running = self._conn.execute(
+                "SELECT 1 FROM tasks WHERE cwd = ? AND status = 'running' "
+                "AND run_mode = 'serial' LIMIT 1",
+                (cwd,),
+            ).fetchone()
+            if running is not None:
+                self._conn.rollback()
+                return None
+            head = self._conn.execute(
+                "SELECT id FROM tasks WHERE cwd = ? AND status = 'queued' AND lane = 'serial' "
+                "ORDER BY position ASC LIMIT 1",
+                (cwd,),
+            ).fetchone()
+            if head is None:
+                self._conn.rollback()
+                return None
+            # update_task() commits, which closes this transaction too.
+            return self.update_task(
+                head["id"], status="running", session_id=session_id, run_mode="serial"
+            )
+        except BaseException:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
+
+    def enqueue_task(
+        self, task_id: int, permission_mode: str, before_id: int | None = None
+    ) -> dict | None:
+        """Move a queued task into its project's run queue at a given place.
+
+        Returns ``None`` if the task is not currently ``queued`` (the caller
+        should answer 409). Raises ``KeyError`` if ``before_id`` is not a
+        queued task already in that run queue.
+        """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            task = self.get_task(task_id)
+            if task is None or task["status"] != "queued":
+                self._conn.rollback()
+                return None
+            rows = self._conn.execute(
+                "SELECT id FROM tasks WHERE status = 'queued' AND lane = 'serial' AND cwd = ? "
+                "ORDER BY position ASC",
+                (task["cwd"],),
+            ).fetchall()
+            order = [r["id"] for r in rows if r["id"] != task_id]
+            if before_id is None:
+                order.append(task_id)
+            else:
+                if before_id not in order:
+                    raise KeyError(before_id)
+                order.insert(order.index(before_id), task_id)
+
+            for position, tid in self._renumber(order):
+                self._conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (position, tid))
+            self._conn.execute(
+                "UPDATE tasks SET lane = 'serial', permission_mode = ? WHERE id = ?",
+                (permission_mode, task_id),
+            )
+        except BaseException:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
+        self._conn.commit()
+        return self.get_task(task_id)
+
+    def clear_task_lane(self, task_id: int) -> dict | None:
+        """Send a queued task from a run queue back to Inbox (``lane = NULL``).
+
+        Returns ``None`` if the task is not currently ``queued``.
+        """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            task = self.get_task(task_id)
+            if task is None or task["status"] != "queued":
+                self._conn.rollback()
+                return None
+            rows = self._conn.execute(
+                "SELECT id FROM tasks WHERE status = 'queued' AND lane IS NULL "
+                "ORDER BY position ASC"
+            ).fetchall()
+            order = [r["id"] for r in rows if r["id"] != task_id]
+            order.append(task_id)
+            for position, tid in self._renumber(order):
+                self._conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (position, tid))
+            self._conn.execute("UPDATE tasks SET lane = NULL WHERE id = ?", (task_id,))
+        except BaseException:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
+        self._conn.commit()
+        return self.get_task(task_id)
+
+    def latest_session_for_cwd(self, cwd: str) -> dict | None:
+        row = self._conn.execute(
+            # Only sessions with a transcript can be resumed. A session the user
+            # drove is preferred over a headless worker's: cloning a worker gives
+            # that one task's context, not the conversation the user built.
+            "SELECT * FROM sessions WHERE cwd = ? AND transcript_path IS NOT NULL "
+            "ORDER BY (source = 'worker') ASC, last_seen_at DESC LIMIT 1",
+            (cwd,),
+        ).fetchone()
+        return self._row(row) if row else None
 
     def state(self, done_limit: int = 500) -> dict:
         terminal_placeholders = ", ".join("?" for _ in TERMINAL)
@@ -628,4 +814,5 @@ class Store:
             "rev": self.rev(),
             "sessions": self.list_sessions(),
             "tasks": tasks,
+            "lanes": self.list_lanes(),
         }

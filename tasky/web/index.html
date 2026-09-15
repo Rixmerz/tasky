@@ -9,150 +9,246 @@
 <body>
 <div id="error-banner" class="error-banner" role="status" aria-live="polite" hidden>
   <p id="error-banner-text"></p>
-  <button type="button" id="error-banner-dismiss">Dismiss</button>
+  <button type="button" id="error-banner-dismiss" class="btn btn-sm">Dismiss</button>
 </div>
 <div id="announcer" class="visually-hidden" role="status" aria-live="polite"></div>
 
 <div id="access-state" class="access-state" hidden>
-  <h1>Open Tasky from Claude Code or your terminal</h1>
-  <p>This page needs the access link printed by <code>tasky ui</code> or <code>/tasky:ui</code>.</p>
-  <p>Run <code>tasky ui</code> or <code>/tasky:ui</code> again to get a fresh link.</p>
+  <div class="access-card">
+    <h1>This tab needs a fresh link</h1>
+    <p>Run <code>tasky ui</code> or <code>/tasky:ui</code> again to get one.</p>
+    <p class="access-command"><code id="access-command">tasky ui</code>
+      <button type="button" id="access-copy" class="btn btn-primary btn-sm">Copy command</button></p>
+  </div>
 </div>
 
 <header id="topbar" class="topbar">
-  <div class="topbar-row">
-    <h1>Tasky</h1>
-    <nav class="counters" aria-label="Task counts">
-      <a href="#now"><span class="glyph" aria-hidden="true">&#9654;</span> <span id="count-now">0</span> <span class="visually-hidden">now</span></a>
-      <a href="#attention"><span class="glyph" aria-hidden="true">&#9888;</span> <span id="count-attention">0</span> <span class="visually-hidden">needs attention</span></a>
-      <a href="#queue"><span class="glyph" aria-hidden="true">&#9208;</span> <span id="count-queue">0</span> <span class="visually-hidden">up next</span></a>
-      <a href="#done"><span class="glyph" aria-hidden="true">&#10003;</span> <span id="count-done">0</span> <span class="visually-hidden">done</span></a>
-    </nav>
-    <label for="project-filter" class="visually-hidden">Filter by project</label>
-    <select id="project-filter">
-      <option value="">All projects</option>
-    </select>
+  <h1 class="wordmark">Tasky</h1>
+
+  <form id="quick-add" class="quick-add">
+    <label for="quick-add-input" class="visually-hidden">New task</label>
+    <span class="quick-add-prefix" aria-hidden="true" id="quick-add-prefix">++</span>
+    <textarea id="quick-add-input" rows="1" placeholder="What should Claude do next?"></textarea>
+    <span id="quick-add-chips" class="quick-add-chips">
+      <span class="chip-label" aria-hidden="true">to</span>
+      <label for="quick-add-target" class="visually-hidden">Send to session or project</label>
+      <select id="quick-add-target" class="chip-select"></select>
+    </span>
+    <button type="submit" class="btn btn-primary btn-sm quick-add-submit">Add</button>
+  </form>
+
+  <div class="topbar-right">
+    <button type="button" id="filter-chip" class="badge filter-chip" hidden title="Showing one project. Click to show all.">
+      <span id="filter-chip-label"></span><span aria-hidden="true">&#215;</span><span class="visually-hidden">Clear project filter</span>
+    </button>
+    <span id="bypass-chip" class="badge badge-danger" hidden>No permission checks</span>
+    <button type="button" id="settings-toggle" class="btn btn-icon btn-ghost" aria-expanded="false" aria-controls="topbar-extra" aria-label="Filter and permission mode">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
+    </button>
+    <div id="topbar-extra" class="topbar-extra popover" hidden>
+      <label class="field">
+        <span class="field-label">Project</span>
+        <select id="project-filter" class="select">
+          <option value="">All projects</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Permission mode</span>
+        <select id="mode-select" class="select">
+          <option value="acceptEdits">acceptEdits</option>
+          <option value="default">default</option>
+          <option value="plan">plan</option>
+          <option value="bypassPermissions">bypassPermissions</option>
+        </select>
+        <span id="mode-hint" class="field-hint"></span>
+      </label>
+    </div>
   </div>
 
   <p id="reconnecting-status" class="reconnecting-status" role="status" aria-live="polite"></p>
-
-  <form id="quick-add" class="quick-add">
-    <label for="quick-add-input" class="visually-hidden">Queue a task</label>
-    <span class="quick-add-prefix" aria-hidden="true" id="quick-add-prefix">++</span>
-    <textarea id="quick-add-input" rows="1" placeholder="next task&hellip;"></textarea>
-    <button type="button" id="quick-add-more" class="quick-add-more" aria-expanded="false">
-      <span aria-hidden="true">&#9662;</span><span class="visually-hidden">More options</span>
-    </button>
-    <label for="quick-add-project" class="visually-hidden">Project</label>
-    <select id="quick-add-project"></select>
-    <label for="quick-add-session" class="visually-hidden">Session</label>
-    <select id="quick-add-session">
-      <option value="">No session</option>
-    </select>
-    <button type="submit">Queue</button>
-  </form>
 </header>
 
-<main id="main">
-  <section id="now" class="group group-now" aria-labelledby="now-heading">
-    <h2 id="now-heading">Now</h2>
-    <p id="now-empty" class="empty-state" hidden>Nothing running. Queue something below, or start a Claude Code session.</p>
-    <div id="now-list" class="card-list"></div>
+<nav id="tablist" class="tablist" role="tablist" aria-label="Board column">
+  <button type="button" role="tab" id="tab-inbox" aria-controls="col-inbox" data-column="inbox">
+    <span class="tab-label">Inbox</span><span class="tab-count" id="tab-count-inbox">0</span>
+  </button>
+  <button type="button" role="tab" id="tab-upnext" aria-controls="col-upnext" data-column="upnext">
+    <span class="tab-label">Next</span><span class="tab-count" id="tab-count-upnext">0</span>
+  </button>
+  <button type="button" role="tab" id="tab-running" aria-controls="col-running" data-column="running">
+    <span class="tab-label">Running</span><span class="tab-count" id="tab-count-running">0</span>
+  </button>
+  <button type="button" role="tab" id="tab-attention" aria-controls="col-attention" data-column="attention">
+    <span class="tab-label">Attention</span><span class="tab-count" id="tab-count-attention">0</span>
+  </button>
+  <button type="button" role="tab" id="tab-done" aria-controls="col-done" data-column="done">
+    <span class="tab-label">Done</span><span class="tab-count" id="tab-count-done">0</span>
+  </button>
+</nav>
+
+<main id="board" class="board">
+  <section id="col-inbox" class="column" data-lane="inbox" aria-labelledby="inbox-heading">
+    <h2 id="inbox-heading" tabindex="-1"><span>Inbox</span><span class="col-count" id="inbox-count">0</span></h2>
+    <div class="column-body">
+      <p id="inbox-empty" class="empty-state" hidden>Type after <code id="inbox-empty-prefix">++</code> above.</p>
+      <div id="inbox-list" class="card-list" data-lane="inbox"></div>
+    </div>
   </section>
 
-  <div class="mid-groups">
-    <section id="attention" class="group group-attention" aria-labelledby="attention-heading">
-      <h2 id="attention-heading">Needs attention</h2>
+  <section id="col-upnext" class="column column-upnext" data-lane="upnext" aria-labelledby="upnext-heading">
+    <h2 id="upnext-heading" tabindex="-1"><span>Up next</span><span class="col-count" id="upnext-count">0</span></h2>
+    <div class="column-body">
+      <p id="upnext-empty" class="empty-state" hidden>Runs in order, one at a time.</p>
+      <div id="upnext-list" class="card-list" data-lane="upnext"></div>
+    </div>
+  </section>
+
+  <section id="col-running" class="column column-running" aria-labelledby="running-heading">
+    <h2 id="running-heading" tabindex="-1"><span>Running</span><span class="col-count" id="running-count">0</span></h2>
+    <div class="column-body">
+      <div id="lane-banners" class="lane-banners"></div>
+      <h3 class="section-label" id="runner-label">Queue</h3>
+      <p id="runner-empty" class="empty-state" hidden>Queue idle.</p>
+      <div id="runner-list" class="card-list"></div>
+      <h3 class="section-label" id="parallel-label">Parallel</h3>
+      <p id="parallel-empty" class="empty-state" hidden>Nothing running.</p>
+      <div id="parallel-list" class="card-list"></div>
+    </div>
+  </section>
+
+  <section id="col-attention" class="column column-attention" aria-labelledby="attention-heading">
+    <h2 id="attention-heading" tabindex="-1"><span>Needs attention</span><span class="col-count" id="attention-count">0</span></h2>
+    <div class="column-body">
       <p id="attention-empty" class="empty-state" hidden>Nothing needs you.</p>
       <div id="attention-list" class="card-list"></div>
-    </section>
-
-    <section id="queue" class="group group-queue" aria-labelledby="queue-heading">
-      <h2 id="queue-heading">Up next</h2>
-      <p id="queue-empty" class="empty-state" hidden>Queue is empty. Type <code id="queue-empty-prefix">++</code> in any session, or use the box below.</p>
-      <div id="queue-list" class="card-list"></div>
-    </section>
-  </div>
-
-  <section id="done" class="group group-done" aria-labelledby="done-heading">
-    <details id="done-details">
-      <summary>
-        <h2 id="done-heading">Done (<span id="done-count">0</span>)</h2>
-      </summary>
-      <p id="done-empty" class="empty-state" hidden>Finished tasks and their results land here.</p>
-      <div id="done-list" class="card-list"></div>
-      <button type="button" id="done-show-more" hidden>Show more</button>
-      <button type="button" id="import-history" class="text-button">Import history</button>
-    </details>
+    </div>
   </section>
 
-  <p id="filter-empty" class="empty-state" hidden>
-    No tasks in <span id="filter-empty-project"></span>. <button type="button" id="filter-reset">Show all projects</button>
+  <section id="col-done" class="column column-done" aria-labelledby="done-heading">
+    <h2 id="done-heading" tabindex="-1"><span>Done</span><span class="col-count" id="done-count">0</span></h2>
+    <div class="column-body">
+      <p id="done-empty" class="empty-state" hidden>Finished work lands here.</p>
+      <div id="done-list" class="card-list"></div>
+      <div class="column-footer">
+        <button type="button" id="done-show-more" class="btn btn-ghost btn-sm" hidden>Show older</button>
+        <button type="button" id="import-history" class="btn btn-ghost btn-sm">Import history</button>
+      </div>
+    </div>
+  </section>
+
+  <p id="filter-empty" class="empty-state filter-empty" hidden>
+    No tasks in <span id="filter-empty-project"></span>. <button type="button" id="filter-reset" class="btn btn-ghost btn-sm">Show all projects</button>
   </p>
 </main>
 
+<div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+<aside id="drawer" class="drawer" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+  <div class="drawer-header">
+    <div class="drawer-heading">
+      <h2 id="drawer-title" class="drawer-title"></h2>
+      <p class="drawer-meta"></p>
+    </div>
+    <button type="button" id="drawer-close" class="btn btn-icon btn-ghost" aria-label="Close details">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+    </button>
+  </div>
+  <div class="drawer-scroll">
+    <section class="drawer-section drawer-task-section">
+      <div class="drawer-section-head">
+        <h3>Task</h3>
+        <button type="button" class="btn btn-ghost btn-sm drawer-edit-open" hidden>Edit</button>
+      </div>
+      <p class="drawer-body"></p>
+      <div class="drawer-edit" hidden>
+        <label class="visually-hidden">Edit task text
+          <textarea class="drawer-edit-textarea textarea" rows="4"></textarea>
+        </label>
+        <div class="drawer-edit-actions">
+          <button type="button" class="btn btn-primary btn-sm drawer-edit-save">Save</button>
+          <button type="button" class="btn btn-sm drawer-edit-cancel">Cancel</button>
+        </div>
+      </div>
+    </section>
+    <section class="drawer-section drawer-result-wrap" hidden>
+      <div class="drawer-section-head">
+        <h3>Result</h3>
+        <button type="button" class="btn btn-ghost btn-sm drawer-show-original">Show original</button>
+      </div>
+      <div class="drawer-result-digest"></div>
+      <pre class="drawer-result-text" hidden></pre>
+    </section>
+    <section class="drawer-section drawer-children-wrap" hidden>
+      <div class="drawer-section-head"><h3>Delegations</h3></div>
+      <div class="drawer-children"></div>
+    </section>
+    <section class="drawer-section drawer-session-line" hidden>
+      <div class="drawer-section-head"><h3>Session</h3></div>
+      <p class="drawer-session-row">
+        <span class="session-title"></span>
+        <span class="session-state badge"></span>
+      </p>
+      <label class="switch-row auto-pull-wrap">
+        <input type="checkbox" role="switch" class="auto-pull-toggle">
+        <span>Auto-pull the queue into this session</span>
+        <span class="field-hint">Spends tokens.</span>
+      </label>
+      <button type="button" class="btn btn-sm copy-resume" hidden>Copy resume command</button>
+    </section>
+  </div>
+</aside>
+
 <template id="tpl-card">
   <article class="card">
-    <div class="card-head">
-      <details class="disclosure">
-        <summary>
-          <span class="status-glyph" aria-hidden="true"></span>
-          <span class="title"></span>
-          <span class="status-word visually-hidden"></span>
-          <span class="queue-position" hidden></span>
-          <span class="meta"></span>
-          <span class="result-summary" hidden></span>
-          <span class="waiting-marker" hidden><span class="glyph" aria-hidden="true">&#9888;</span> Waiting for you</span>
-        </summary>
-        <div class="expanded">
-          <p class="body"></p>
-          <details class="result-details">
-            <summary>Result</summary>
-            <div class="result-digest"></div>
-            <button type="button" class="show-original">Show original</button>
-            <pre class="result-text" hidden></pre>
-          </details>
-          <div class="children"></div>
-          <div class="session-line">
-            <span class="session-title"></span>
-            <span class="session-state"></span>
-            <span class="auto-pull-wrap">
-              <label>
-                <input type="checkbox" role="switch" class="auto-pull-toggle">
-                Auto-pull queue (spends tokens)
-              </label>
-            </span>
-            <button type="button" class="copy-resume">Copy resume command</button>
-          </div>
-          <div class="run-panel" hidden>
-            <label>Permission mode
-              <select class="permission-mode">
-                <option value="default">Default</option>
-                <option value="acceptEdits">Accept edits</option>
-                <option value="plan">Plan</option>
-                <option value="bypassPermissions">Bypass permissions</option>
-              </select>
-            </label>
-            <p class="permission-hint"></p>
-            <p class="bypass-disabled-hint" hidden>Disabled. Start the dashboard with TASKY_ALLOW_BYPASS=1 to allow it.</p>
-            <div class="bypass-warning" hidden>
-              <span class="glyph" aria-hidden="true">&#9888;</span>
-              Claude will run every tool without asking. Only use this in a directory you can throw away.
-            </div>
-            <button type="button" class="run-submit">Run in background</button>
-          </div>
-          <div class="actions">
-            <button type="button" class="action-done">Mark done</button>
-            <button type="button" class="action-cancel">Cancel</button>
-            <button type="button" class="action-delete">Delete</button>
-          </div>
-        </div>
-      </details>
-      <div class="queue-controls" hidden>
-        <button type="button" class="move-up" aria-label="Move up">&#8593;</button>
-        <button type="button" class="move-down" aria-label="Move down">&#8595;</button>
-        <button type="button" class="run-toggle">Run&#160;&#9662;</button>
+    <button type="button" class="handle" hidden><span class="position"></span></button>
+    <span class="run-glyph" aria-hidden="true" hidden></span>
+    <div class="card-body">
+      <button type="button" class="title-btn">
+        <span class="status-glyph" aria-hidden="true"></span>
+        <span class="title"></span>
+      </button>
+      <span class="badge badge-answer" hidden>Needs answer</span>
+      <span class="tag tag-project" hidden></span>
+      <span class="time"></span>
+      <div class="actions" hidden role="group" aria-label="Start this task">
+        <button type="button" class="btn btn-icon btn-ghost act-run">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M7 4.5v15l12-7.5z"/></svg>
+          <span class="visually-hidden">Run now</span>
+        </button>
+        <button type="button" class="btn btn-icon btn-ghost act-after">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10"/><path d="M4 12h10"/><path d="M4 18h6"/><path d="M17 15l3 3 3-3"/><path d="M20 6v12"/></svg>
+          <span class="visually-hidden">After last</span>
+        </button>
+        <button type="button" class="btn btn-icon btn-ghost act-parallel">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M8 4v16"/><path d="M16 4v16"/></svg>
+          <span class="visually-hidden">Parallel with context</span>
+        </button>
       </div>
+      <div class="action-pair" hidden role="group">
+        <button type="button" class="btn btn-icon btn-ghost pair-a">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/></svg>
+          <span class="visually-hidden pair-a-label"></span>
+        </button>
+      </div>
+      <span class="card-menu">
+        <button type="button" class="btn btn-icon btn-ghost overflow-btn" aria-haspopup="menu" aria-expanded="false">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+          <span class="visually-hidden">More actions</span>
+        </button>
+        <div class="overflow-menu popover" role="menu" hidden>
+          <button type="button" role="menuitem" class="menu-details">Details</button>
+          <button type="button" role="menuitem" class="menu-run" hidden>Run now</button>
+          <button type="button" role="menuitem" class="menu-after" hidden>After last</button>
+          <button type="button" role="menuitem" class="menu-parallel" hidden>Parallel with context</button>
+          <button type="button" role="menuitem" class="menu-edit" hidden>Edit text</button>
+          <button type="button" role="menuitem" class="menu-move-up" hidden>Move up</button>
+          <button type="button" role="menuitem" class="menu-move-down" hidden>Move down</button>
+          <button type="button" role="menuitem" class="menu-back-inbox" hidden>Back to Inbox</button>
+          <button type="button" role="menuitem" class="menu-mark-done" hidden>Mark done</button>
+          <button type="button" role="menuitem" class="menu-cancel" hidden>Cancel</button>
+          <button type="button" role="menuitem" class="menu-delete" hidden>Delete</button>
+        </div>
+      </span>
+      <span class="action-hint visually-hidden"></span>
     </div>
   </article>
 </template>
