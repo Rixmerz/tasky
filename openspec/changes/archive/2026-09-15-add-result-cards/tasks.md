@@ -22,4 +22,4 @@
 - [x] 4.2 Headless Claude Code run with `outputStyle` set to `tasky:Focus Cards` produces a result the digest renders as cards
 - [x] 4.3 Dashboard measured in a real browser with real and synthetic results
 - [x] 4.4 Version 0.2.0 in `plugin.json`, `pyproject.toml`, `tasky/__init__.py`; README and CHANGELOG updated
-- [ ] 4.5 Committed, pushed, installed plugin updated
+- [x] 4.5 Committed, pushed, installed plugin updated
