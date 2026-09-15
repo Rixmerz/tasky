@@ -28,4 +28,4 @@
 
 ## 5. Delivery
 
-- [x] 5.1 GitHub repository `tasky` created and the initial commit made (the push runs from the user's terminal when the agent sandbox blocks it)
+- [x] 5.1 GitHub repository `tasky` created, initial commit pushed
