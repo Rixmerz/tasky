@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tasky</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="error-banner" class="error-banner" role="status" aria-live="polite" hidden>
+  <p id="error-banner-text"></p>
+  <button type="button" id="error-banner-dismiss">Dismiss</button>
+</div>
+<div id="announcer" class="visually-hidden" role="status" aria-live="polite"></div>
+
+<div id="access-state" class="access-state" hidden>
+  <h1>Open Tasky from Claude Code or your terminal</h1>
+  <p>This page needs the access link printed by <code>tasky ui</code> or <code>/tasky:ui</code>.</p>
+  <p>Run <code>tasky ui</code> or <code>/tasky:ui</code> again to get a fresh link.</p>
+</div>
+
+<header id="topbar" class="topbar">
+  <div class="topbar-row">
+    <h1>Tasky</h1>
+    <nav class="counters" aria-label="Task counts">
+      <a href="#now"><span class="glyph" aria-hidden="true">&#9654;</span> <span id="count-now">0</span> <span class="visually-hidden">now</span></a>
+      <a href="#attention"><span class="glyph" aria-hidden="true">&#9888;</span> <span id="count-attention">0</span> <span class="visually-hidden">needs attention</span></a>
+      <a href="#queue"><span class="glyph" aria-hidden="true">&#9208;</span> <span id="count-queue">0</span> <span class="visually-hidden">up next</span></a>
+      <a href="#done"><span class="glyph" aria-hidden="true">&#10003;</span> <span id="count-done">0</span> <span class="visually-hidden">done</span></a>
+    </nav>
+    <label for="project-filter" class="visually-hidden">Filter by project</label>
+    <select id="project-filter">
+      <option value="">All projects</option>
+    </select>
+  </div>
+
+  <p id="reconnecting-status" class="reconnecting-status" role="status" aria-live="polite"></p>
+
+  <form id="quick-add" class="quick-add">
+    <label for="quick-add-input" class="visually-hidden">Queue a task</label>
+    <span class="quick-add-prefix" aria-hidden="true" id="quick-add-prefix">++</span>
+    <textarea id="quick-add-input" rows="1" placeholder="next task&hellip;"></textarea>
+    <button type="button" id="quick-add-more" class="quick-add-more" aria-expanded="false">
+      <span aria-hidden="true">&#9662;</span><span class="visually-hidden">More options</span>
+    </button>
+    <label for="quick-add-project" class="visually-hidden">Project</label>
+    <select id="quick-add-project"></select>
+    <label for="quick-add-session" class="visually-hidden">Session</label>
+    <select id="quick-add-session">
+      <option value="">No session</option>
+    </select>
+    <button type="submit">Queue</button>
+  </form>
+</header>
+
+<main id="main">
+  <section id="now" class="group group-now" aria-labelledby="now-heading">
+    <h2 id="now-heading">Now</h2>
+    <p id="now-empty" class="empty-state" hidden>Nothing running. Queue something below, or start a Claude Code session.</p>
+    <div id="now-list" class="card-list"></div>
+  </section>
+
+  <div class="mid-groups">
+    <section id="attention" class="group group-attention" aria-labelledby="attention-heading">
+      <h2 id="attention-heading">Needs attention</h2>
+      <p id="attention-empty" class="empty-state" hidden>Nothing needs you.</p>
+      <div id="attention-list" class="card-list"></div>
+    </section>
+
+    <section id="queue" class="group group-queue" aria-labelledby="queue-heading">
+      <h2 id="queue-heading">Up next</h2>
+      <p id="queue-empty" class="empty-state" hidden>Queue is empty. Type <code id="queue-empty-prefix">++</code> in any session, or use the box below.</p>
+      <div id="queue-list" class="card-list"></div>
+    </section>
+  </div>
+
+  <section id="done" class="group group-done" aria-labelledby="done-heading">
+    <details id="done-details">
+      <summary>
+        <h2 id="done-heading">Done (<span id="done-count">0</span>)</h2>
+      </summary>
+      <p id="done-empty" class="empty-state" hidden>Finished tasks and their results land here.</p>
+      <div id="done-list" class="card-list"></div>
+      <button type="button" id="done-show-more" hidden>Show more</button>
+      <button type="button" id="import-history" class="text-button">Import history</button>
+    </details>
+  </section>
+
+  <p id="filter-empty" class="empty-state" hidden>
+    No tasks in <span id="filter-empty-project"></span>. <button type="button" id="filter-reset">Show all projects</button>
+  </p>
+</main>
+
+<template id="tpl-card">
+  <article class="card">
+    <div class="card-head">
+      <details class="disclosure">
+        <summary>
+          <span class="status-glyph" aria-hidden="true"></span>
+          <span class="title"></span>
+          <span class="status-word visually-hidden"></span>
+          <span class="queue-position" hidden></span>
+          <span class="meta"></span>
+        </summary>
+        <div class="expanded">
+          <p class="body"></p>
+          <details class="result-details">
+            <summary>Result</summary>
+            <pre class="result-text"></pre>
+          </details>
+          <div class="children"></div>
+          <div class="session-line">
+            <span class="session-title"></span>
+            <span class="session-state"></span>
+            <span class="auto-pull-wrap">
+              <label>
+                <input type="checkbox" role="switch" class="auto-pull-toggle">
+                Auto-pull queue (spends tokens)
+              </label>
+            </span>
+            <button type="button" class="copy-resume">Copy resume command</button>
+          </div>
+          <div class="run-panel" hidden>
+            <label>Permission mode
+              <select class="permission-mode">
+                <option value="default">Default</option>
+                <option value="acceptEdits">Accept edits</option>
+                <option value="plan">Plan</option>
+                <option value="bypassPermissions">Bypass permissions</option>
+              </select>
+            </label>
+            <p class="permission-hint"></p>
+            <p class="bypass-disabled-hint" hidden>Disabled. Start the dashboard with TASKY_ALLOW_BYPASS=1 to allow it.</p>
+            <div class="bypass-warning" hidden>
+              <span class="glyph" aria-hidden="true">&#9888;</span>
+              Claude will run every tool without asking. Only use this in a directory you can throw away.
+            </div>
+            <button type="button" class="run-submit">Run in background</button>
+          </div>
+          <div class="actions">
+            <button type="button" class="action-done">Mark done</button>
+            <button type="button" class="action-cancel">Cancel</button>
+            <button type="button" class="action-delete">Delete</button>
+          </div>
+        </div>
+      </details>
+      <div class="queue-controls" hidden>
+        <button type="button" class="move-up" aria-label="Move up">&#8593;</button>
+        <button type="button" class="move-down" aria-label="Move down">&#8595;</button>
+        <button type="button" class="run-toggle">Run&#160;&#9662;</button>
+      </div>
+    </div>
+  </article>
+</template>
+
+<template id="tpl-child">
+  <div class="child">
+    <span class="status-glyph" aria-hidden="true"></span>
+    <span class="status-word visually-hidden"></span>
+    <span class="child-title"></span>
+  </div>
+</template>
+
+<input type="text" id="clipboard-fallback" class="visually-hidden" readonly tabindex="-1" aria-hidden="true">
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

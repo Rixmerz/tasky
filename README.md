@@ -1,0 +1,248 @@
+# Tasky
+
+A visual task ledger for [Claude Code](https://claude.com/claude-code). Tasky records every
+prompt you give a session, every subagent it delegates to, and every result, then shows them on a
+local dashboard: what is running now, what is waiting, what needs your attention and what finished.
+
+It is fed entirely by Claude Code hooks, so recording costs **zero model tokens**. There is no MCP
+server for the model to remember to call, and nothing is lost when a conversation is compacted.
+
+Built for people who hand an agent more work than they can keep in their head, and especially for
+anyone whose attention is the scarcest resource in the room.
+
+## What it does
+
+- **Captures automatically.** Real prompts become tasks; `Agent` calls become child tasks; the
+  final assistant message becomes the result. Background subagents are matched to their parent and
+  closed when they report back. A prompt you interrupt with Esc moves to "needs attention" when
+  the session finishes its next turn or is resumed.
+- **Queues from the chat for free.** Start a prompt with `++` and it is stored as a queued task
+  and blocked before it reaches the model: zero turns, zero cost.
+- **Drains the queue when you want it to.** Turn on auto-pull for a session and, each time it
+  finishes a turn, it picks up the next queued task for its project.
+- **Survives compaction.** When a session is resumed or compacted, it is reminded of its
+  unfinished tasks.
+- **Runs tasks in parallel.** Start any queued task as its own headless Claude Code session.
+- **Remembers the past.** Import your existing Claude Code transcripts so the board is not empty
+  on day one.
+
+## Install
+
+Requirements: Claude Code, Python 3.10 or newer on `PATH` as `python3`. No other dependencies.
+
+Inside Claude Code:
+
+```text
+/plugin marketplace add Rixmerz/tasky
+/plugin install tasky@tasky
+```
+
+Restart Claude Code so the hooks load. From then on every session is recorded.
+
+To use the command line outside Claude Code, link the shim somewhere on your `PATH`:
+
+```sh
+ln -s "$(ls -d ~/.claude/plugins/cache/tasky/tasky/*/ | tail -1)bin/tasky" ~/.local/bin/tasky
+```
+
+Or run it from a clone: `./bin/tasky --help`.
+
+## Use
+
+### Open the dashboard
+
+```text
+/tasky:ui
+```
+
+or, from a terminal, `tasky ui --open`. Both print an access link like
+`http://127.0.0.1:7733/#token=…`. Open that link; the tab keeps the token until you close it, and the
+page refreshes itself within two seconds of any change and loads nothing from the network. If the
+token is rotated or the tab is closed, run `tasky ui` again for a fresh link.
+
+It groups tasks into **Now**, **Needs attention** (interrupted or failed), **Up next** (the queue, in
+order) and **Done**. From a card you can mark a task done, cancel it, reorder the queue, copy the
+command that resumes its session, or run it in parallel.
+
+### Queue a task
+
+| Where | How | Model tokens |
+| --- | --- | --- |
+| Any session | `++ write the migration for invoices` | 0 |
+| Dashboard | The quick-add line at the top | 0 |
+| Terminal | `tasky add "write the migration for invoices" --cwd path/to/project` | 0 |
+
+A task queued from a session is bound to that session. A task queued from the dashboard or the
+terminal belongs to its project directory and can be picked up by any session working there.
+
+Telling Claude directly ("after this, also do X") works too, and is recorded, but Claude decides
+when to do it. Queued tasks wait for you or for auto-pull.
+
+### Let a session work through its queue
+
+Toggle **auto-pull** on a session in the dashboard. When that session ends a turn, Tasky hands it
+the next queued task: first the ones bound to the session, then the unbound ones for its project.
+
+Each pulled task is a normal model turn, so it spends tokens like any prompt. A session pulls at
+most 5 tasks in a row before waiting for you again (`TASKY_MAX_CHAIN`).
+
+### Run tasks in parallel
+
+From the dashboard, or:
+
+```sh
+tasky run 12 --permission-mode acceptEdits
+```
+
+This starts `claude -p` in the task's directory as a detached process with its own session id. The
+task text is passed on standard input, never as a command-line argument. Its hooks attach to the
+existing task, so the result lands on the same card. A small supervisor waits for the process and
+marks the task failed if it exits without reporting a result. Output goes to
+`~/.local/share/tasky/logs/task-<id>.log`.
+
+A task can only be started once: a double click or two runs racing for it start one process.
+
+A headless session cannot ask you for permission. Pick the mode deliberately:
+
+| Mode | Effect in a headless run |
+| --- | --- |
+| `default` | Tools that need approval are refused |
+| `acceptEdits` | File edits are allowed; other gated tools are refused |
+| `plan` | Read-only planning |
+| `bypassPermissions` | Everything is allowed without asking. Disabled unless `TASKY_ALLOW_BYPASS=1` is set where the dashboard or CLI runs. Use only in a sandbox or a throwaway checkout |
+
+### Import history
+
+```sh
+tasky import --dry-run
+tasky import
+```
+
+Reads `~/.claude/projects/*/*.jsonl`. It is idempotent, tolerates damaged lines, skips subagent
+transcripts, and skips any session that hooks or workers have already recorded. Imported sessions
+are shown as ended.
+
+### Put the counters in your status line
+
+`tasky status --short` prints `▶2 ⏸3 ⚠1` (running, queued, needs attention) and reads only the local
+database. Add it to your own status line command if you want the numbers always visible.
+
+### Command reference
+
+```text
+tasky ui [--port N] [--open]        start the dashboard in the background if needed, print the URL
+tasky serve [--port N] [--open]     run the dashboard in the foreground
+tasky add TEXT [--cwd DIR] [--session ID]
+tasky list [--status S] [--cwd DIR] [--limit N] [--json]
+tasky done ID | tasky cancel ID
+tasky run ID [--permission-mode MODE]
+tasky import [--dry-run]
+tasky status [--short]
+```
+
+## How it works
+
+| Hook | What Tasky does | Output |
+| --- | --- | --- |
+| `SessionStart` | Registers the session. On resume, marks tasks left running by the old process as interrupted. On resume or compaction, lists unfinished tasks | Context, only when there is something unfinished |
+| `UserPromptSubmit` | Records the prompt, handles `++`, closes subagents on task notifications | Blocks `++` prompts only |
+| `PreToolUse` / `PostToolUse` (`Agent`) | Records delegations | None |
+| `SubagentStop` | Stores the subagent's final message | None |
+| `Stop` | Stores the turn's final message, marks earlier interrupted prompts, pulls the next task when auto-pull is on | Continues the session only with auto-pull |
+| `StopFailure` / `SessionEnd` | Marks failed or interrupted work | None |
+
+Tool hooks are matched to exactly `Agent` or `Task`, so Tasky does not start for every `Bash` or `Read`
+call. Every hook exits successfully and prints nothing when something goes wrong; errors go to `~/.local/share/tasky/hook-errors.log`. A broken Tasky never breaks a session.
+
+### What costs tokens
+
+| Action | Tokens |
+| --- | --- |
+| Recording prompts, delegations and results | 0 |
+| Queueing with `++`, the dashboard or the CLI | 0 |
+| Dashboard, CLI and status line | 0 |
+| Context reminder after resume or compaction | A few lines, only when tasks are unfinished |
+| Auto-pull | One normal turn per pulled task |
+| Parallel workers | One normal headless session per task |
+
+## Data and privacy
+
+Everything stays on your machine, in one SQLite database readable only by your user:
+
+```text
+$TASKY_HOME/tasky.db   (default: $XDG_DATA_HOME/tasky or ~/.local/share/tasky)
+```
+
+Tasky stores prompt text, subagent prompts and final assistant messages (results are capped at
+8000 characters). It never modifies your Claude Code settings or transcripts. Delete the directory
+to erase everything.
+
+## Security
+
+The dashboard binds to `127.0.0.1` only. Because it can start Claude Code processes, it also:
+
+- requires a random access token on every API call. The token lives in `$TASKY_HOME/token`
+  (mode 0600) and is re-read on every request, so deleting the file revokes every open tab;
+- proves it holds the token before anyone sends it: `tasky ui` and the page first ask the server for
+  an HMAC of a random nonce and the port, and only send the token when the answer checks out. A
+  program squatting on the port never receives it;
+- rejects requests whose `Host` header is not `127.0.0.1` or `localhost` at its port, which blocks
+  DNS rebinding;
+- accepts changes only as JSON with the token header, which a cross-site page cannot send without
+  a CORS preflight that Tasky never approves;
+- serves a strict Content Security Policy with no inline scripts and no third-party resources;
+- refuses `bypassPermissions` workers unless `TASKY_ALLOW_BYPASS=1` is set;
+- keeps its database, token, prompts and logs readable only by your user.
+
+What it does not protect against:
+
+- **Programs running as your user.** They can read the token and use Tasky, just as they could run
+  `claude` themselves. That includes a Claude Code session you allowed to run shell commands: it could
+  start a worker in another directory, and with `TASKY_ALLOW_BYPASS=1` set, with more permissions than
+  its own. Leave the variable unset unless you need it.
+- **The access link in your transcript.** `/tasky:ui` prints the link into the conversation, so the
+  token is stored in that session's transcript (also private to your user). Delete
+  `$TASKY_HOME/token` to rotate it; the importer redacts it from imported results.
+
+## Configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TASKY_HOME` | `$XDG_DATA_HOME/tasky` or `~/.local/share/tasky` | Database, logs and error log |
+| `TASKY_PORT` | `7733` | Dashboard port |
+| `TASKY_QUEUE_PREFIX` | `++` | Prompt prefix that queues instead of sending |
+| `TASKY_MAX_CHAIN` | `5` | Tasks auto-pull may take in a row |
+| `TASKY_MAX_RESULT` | `8000` | Characters of each result kept |
+| `TASKY_CONTEXT_ITEMS` | `10` | Tasks listed in the resume or compaction reminder |
+| `TASKY_CLAUDE_BIN` | `claude` | Binary used for parallel workers |
+| `TASKY_ALLOW_BYPASS` | unset | Set to `1` to allow `bypassPermissions` workers |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Where transcripts are imported from |
+
+Hooks read these from the environment of the Claude Code process.
+
+## Limitations
+
+- Hook payloads are not all documented. Tasky was verified against Claude Code 2.1.272 and falls
+  back gracefully when a field is missing, but a future change may reduce what it can match.
+- A prompt you type while the agent is busy is recorded when Claude Code submits it, not when you
+  type it. If Claude Code folds it into the running turn, the earlier prompt of that turn can show
+  as interrupted.
+- Claude Code sends no event when you press Esc, so an interrupted prompt is only marked when the
+  session finishes its next turn or is resumed.
+- When a background subagent reports back, its parent task's result becomes the final report
+  rather than the first reply.
+
+## Development
+
+```sh
+pytest -q
+ruff check .
+claude --plugin-dir . -p "hello"          # try the plugin without installing it
+TASKY_HOME=$(mktemp -d) ./bin/tasky serve  # dashboard against an empty database
+```
+
+The behaviour contract lives in `openspec/changes/add-tasky-v1/`.
+
+## License
+
+[MIT](LICENSE)

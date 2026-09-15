@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "tasky",
+  "description": "Single-plugin marketplace for Tasky.",
+  "owner": { "name": "Tasky contributors" },
+  "plugins": [
+    {
+      "name": "tasky",
+      "description": "Visual task ledger for Claude Code sessions, fed by hooks at zero token cost.",
+      "source": "./"
+    }
+  ]
+}

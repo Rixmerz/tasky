@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""Claude Code hook entry point for Tasky.
+
+Kept separate from the CLI so a hook never pays for argument parsing, and so
+an import error still exits 0: a broken Tasky must never break a session.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+try:
+    from tasky.hooks import main
+except Exception:  # noqa: BLE001 - any import failure must stay silent
+    sys.exit(0)
+
+sys.exit(main(sys.stdin, sys.stdout))
