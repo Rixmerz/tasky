@@ -241,7 +241,7 @@ claude --plugin-dir . -p "hello"          # try the plugin without installing it
 TASKY_HOME=$(mktemp -d) ./bin/tasky serve  # dashboard against an empty database
 ```
 
-The behaviour contract lives in `openspec/changes/add-tasky-v1/`.
+The behaviour contract lives in `openspec/specs/`; the design and history of v0.1.0 are in `openspec/changes/archive/2026-09-15-add-tasky-v1/`.
 
 ## License
 
