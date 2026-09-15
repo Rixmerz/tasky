@@ -347,6 +347,14 @@ def test_static_js_and_css(conn):
     assert body_css == b"body{}"
 
 
+def test_static_digest_module(running_server, conn):
+    (running_server.web_dir / "digest.js").write_text("export const x = 1;")
+    resp, body = _request_raw(conn, "GET", "/digest.js")
+    assert resp.status == 200
+    assert resp.getheader("Content-Type") == "text/javascript; charset=utf-8"
+    assert body == b"export const x = 1;"
+
+
 def test_static_missing_file_404(conn):
     # web_dir has all three files; ask for a path that's not registered
     resp, parsed = _request(conn, "GET", "/missing.png")
@@ -936,3 +944,25 @@ def test_stalled_client_does_not_block_a_second_request(
         srv.shutdown()
         thread.join(timeout=5)
         srv.server_close()
+
+
+def test_version_poll_syncs_session_rename(running_server, conn, auth_headers, config, tmp_path):
+    from tasky.store import Store
+
+    transcript = tmp_path / "renamed.jsonl"
+    transcript.write_text(json.dumps({"type": "custom-title", "customTitle": "tasky main"}) + "\n")
+    with Store.open(config) as store:
+        store.upsert_session("sess-renamed", cwd=str(tmp_path), transcript_path=str(transcript))
+        rev_before = store.rev()
+
+    resp, body = _request(conn, "GET", "/api/version", headers=auth_headers)
+    assert resp.status == 200
+    assert body["rev"] > rev_before
+
+    resp, state = _request(conn, "GET", "/api/state", headers=auth_headers)
+    session = next(s for s in state["sessions"] if s["id"] == "sess-renamed")
+    assert session["title"] == "tasky main"
+
+    running_server._titles_synced_at = float("-inf")
+    resp, again = _request(conn, "GET", "/api/version", headers=auth_headers)
+    assert again["rev"] == body["rev"]  # unchanged name does not bump the revision

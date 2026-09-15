@@ -461,6 +461,17 @@ main {
   font-size: var(--t-sm);
 }
 
+.result-details .show-original {
+  display: block;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: var(--t-xs);
+  text-decoration: underline;
+  cursor: pointer;
+  padding: var(--s-1) 0;
+}
+
 .result-text {
   font-family: var(--font-mono);
   font-size: var(--t-sm);
@@ -471,6 +482,109 @@ main {
   padding: var(--s-3);
   border-radius: var(--r-1);
   max-width: 68ch;
+}
+
+/* ---------- result summary (collapsed) ---------- */
+
+.result-summary {
+  display: block;
+  flex-basis: 100%;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--t-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.waiting-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  flex-basis: 100%;
+  color: var(--attn);
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+
+.waiting-marker .glyph {
+  width: 2ch;
+  display: inline-block;
+  text-align: center;
+}
+
+/* ---------- result digest (expanded) ---------- */
+
+.result-digest {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  max-width: 68ch;
+}
+
+.digest-headline {
+  margin: 0;
+  font-weight: 600;
+}
+
+.digest-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  padding: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.digest-card-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+details.digest-card > .digest-card-title {
+  cursor: pointer;
+}
+
+.digest-card[data-tone="question"] {
+  border-color: var(--attn);
+  background: color-mix(in srgb, var(--attn) 10%, var(--surface));
+}
+
+.digest-table-scroll,
+.digest-code-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.digest-table-scroll table {
+  border-collapse: collapse;
+  font-size: var(--t-sm);
+  min-width: max-content;
+}
+
+.digest-table-scroll th,
+.digest-table-scroll td {
+  border: 1px solid var(--line);
+  padding: var(--s-1) var(--s-2);
+  text-align: start;
+}
+
+.digest-code-scroll pre {
+  margin: 0;
+  width: max-content;
+  min-width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--t-sm);
+  white-space: pre;
+  padding: var(--s-2);
+  background: color-mix(in srgb, var(--ink) 4%, var(--surface));
+  border-radius: var(--r-1);
+}
+
+.digest-card code,
+.digest-headline code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
 }
 
 .children {

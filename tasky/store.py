@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sqlite3
 import time
 from collections.abc import Iterable
@@ -96,6 +97,20 @@ def _split_script(script: str) -> list[str]:
             statements.append(candidate)
             current = []
     return statements
+
+
+_TOKEN_RE = re.compile(r"#token=[A-Za-z0-9_-]+")
+
+
+def _clean_result(value: str | None, limit: int) -> str | None:
+    """Redact dashboard access links, then cap the length.
+
+    Every writer (hooks, workers, importer, API) stores results through here, so an agent
+    that prints the `tasky ui` link never leaves the token in the ledger.
+    """
+    if value is not None and "#token=" in value:
+        value = _TOKEN_RE.sub("#token=<redacted>", value)
+    return _truncate(value, limit)
 
 
 def _truncate(value: str | None, limit: int) -> str | None:
@@ -298,7 +313,7 @@ class Store:
             finished_at = now
         if title is None:
             title = make_title(body)
-        result = _truncate(result, self.max_result)
+        result = _clean_result(result, self.max_result)
 
         # Queued tasks need position read-then-inserted atomically: two callers
         # racing on _next_position() would otherwise both land on the same slot.
@@ -380,7 +395,7 @@ class Store:
 
         fields = dict(fields)
         if "result" in fields:
-            fields["result"] = _truncate(fields["result"], self.max_result)
+            fields["result"] = _clean_result(fields["result"], self.max_result)
 
         new_status = fields.get("status")
         moving_to_queued = new_status == "queued" and new_status != current["status"]

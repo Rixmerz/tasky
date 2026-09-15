@@ -607,3 +607,26 @@ def test_store_context_manager_closes(config):
         opened.create_task(kind="prompt", body="a", status="queued", source="cli")
     with pytest.raises(sqlite3.ProgrammingError):
         opened.rev()
+
+
+def test_access_token_is_redacted_on_create_and_update(store):
+    link = "open http://127.0.0.1:7733/#token=abcDEF123_-xyz now"
+
+    created = store.create_task(kind="prompt", body="b", status="done", source="hook", result=link)
+    updated = store.update_task(created["id"], result=link + " and #token=second_value")
+
+    assert created["result"] == "open http://127.0.0.1:7733/#token=<redacted> now"
+    assert "abcDEF123_-xyz" not in updated["result"]
+    assert "second_value" not in updated["result"]
+    assert updated["result"].count("#token=<redacted>") == 2
+
+
+def test_redaction_happens_before_truncation(tmp_path):
+    from tasky.store import Store
+
+    with Store(tmp_path / "t.db", max_result=40) as small:
+        secret = "x" * 20 + "#token=" + "s" * 40
+        task = small.create_task(
+            kind="prompt", body="b", status="done", source="hook", result=secret
+        )
+    assert "sss" not in task["result"]

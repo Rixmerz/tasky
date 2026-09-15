@@ -7,6 +7,8 @@ import hmac
 import json
 import os
 import re
+import threading
+import time
 import traceback
 import webbrowser
 from http import HTTPStatus
@@ -17,6 +19,7 @@ from urllib.parse import unquote, urlsplit
 from tasky import worker
 from tasky.config import Config, load_token, token_proof
 from tasky.store import TASK_STATUSES, Store
+from tasky.titles import TitleWatcher
 
 _NONCE_RE = re.compile(r"[0-9a-f]{16,128}")
 _CONTENT_LENGTH_RE = re.compile(r"^\d{1,7}$")
@@ -29,6 +32,7 @@ _STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/app.css": ("app.css", "text/css; charset=utf-8"),
+    "/digest.js": ("digest.js", "text/javascript; charset=utf-8"),
 }
 _TASK_ID_RE = re.compile(r"^/api/tasks/(\d{1,18})$")
 _TASK_RUN_RE = re.compile(r"^/api/tasks/(\d{1,18})/run$")
@@ -248,6 +252,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         with Store.open(self.server.config) as store:
+            self.server.sync_titles(store)
             payload: dict = {"rev": store.rev()}
         if nonce_ok and token is not None:
             payload["proof"] = token_proof(token, nonce, port)
@@ -426,6 +431,34 @@ class _Server(ThreadingHTTPServer):
     _token_cache_key: tuple | None
     _token_cache_value: str | None
 
+    titles: TitleWatcher
+    _titles_lock: threading.Lock
+    _titles_synced_at: float
+
+    def sync_titles(self, store: Store, *, interval: float = 3.0) -> None:
+        """Copy session names set with /rename into the ledger.
+
+        Runs from the version poll at most every ``interval`` seconds; a
+        changed name updates the row, which bumps the revision so open
+        dashboards refresh. Only unfinished or still unnamed sessions are
+        followed, so an imported history is scanned once, not every poll.
+        """
+        now = time.monotonic()
+        if not self._titles_lock.acquire(blocking=False):
+            return
+        try:
+            if now - self._titles_synced_at < interval:
+                return
+            self._titles_synced_at = now
+            for session in store.list_sessions():
+                if session["state"] == "ended" and session["title"]:
+                    continue
+                title = self.titles.title(session["transcript_path"])
+                if title and title != session["title"]:
+                    store.update_session(session["id"], title=title)
+        finally:
+            self._titles_lock.release()
+
     def current_token(self) -> str | None:
         """Return the token to check requests against, re-reading the token
         file (cheaply) so a rotation -- the file deleted or replaced -- takes
@@ -460,6 +493,9 @@ def make_server(
     server.web_dir = Path(web_dir) if web_dir is not None else Path(__file__).parent / "web"
     server._token_cache_key = None
     server._token_cache_value = None
+    server.titles = TitleWatcher()
+    server._titles_lock = threading.Lock()
+    server._titles_synced_at = float("-inf")
     if token is not None:
         # Tests pin a token and never touch the file; treat it as the only
         # source of truth so it can't be undercut by a stray file on disk.

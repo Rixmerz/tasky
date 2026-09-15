@@ -25,6 +25,11 @@ anyone whose attention is the scarcest resource in the room.
 - **Runs tasks in parallel.** Start any queued task as its own headless Claude Code session.
 - **Remembers the past.** Import your existing Claude Code transcripts so the board is not empty
   on day one.
+- **Shows results as cards, not markdown.** Each result opens with its bottom line; every point,
+  step, table and code block gets its own card, and a reply that ends with a question is marked
+  "waiting for you" right on the collapsed card.
+- **Ships an ADHD-friendly output style.** Pick `tasky:Focus Cards` and replies come back answer
+  first, one idea per block, in the shape the dashboard turns into cards.
 
 ## Install
 
@@ -122,10 +127,39 @@ Reads `~/.claude/projects/*/*.jsonl`. It is idempotent, tolerates damaged lines,
 transcripts, and skips any session that hooks or workers have already recorded. Imported sessions
 are shown as ended.
 
+### Readable results and the Focus Cards style
+
+Results are rendered as a digest: the first sentence becomes the headline, each paragraph that opens
+with a bold lead-in becomes a card, numbered `**1 →**` steps keep their numbers, and a final question
+is highlighted as waiting for you. Replies in any style work; "Show original" reveals the raw text.
+
+Tasky also ships an output style that produces exactly that shape: answer first, one idea per block,
+bold lead-ins that carry the meaning, warnings next to what they affect, and a blocking question last.
+Tasky never switches your style for you. To use it, run `/output-style` in Claude Code and choose
+`tasky:Focus Cards`, or set it in your settings:
+
+```json
+{ "outputStyle": "tasky:Focus Cards" }
+```
+
+The reply shape is inspired by [attention-span](https://github.com/alexgreensh/attention-span). The
+Focus Cards text is original and MIT-licensed; if you already use an attention-span style, keep it:
+its replies render as cards too.
+
 ### Put the counters in your status line
 
 `tasky status --short` prints `▶2 ⏸3 ⚠1` (running, queued, needs attention) and reads only the local
 database. Add it to your own status line command if you want the numbers always visible.
+
+### Updating
+
+```sh
+claude plugin marketplace update tasky
+claude plugin update tasky@tasky
+```
+
+Then restart Claude Code or run `/reload-plugins`, and recreate the `~/.local/bin/tasky` link if you
+made one, because it points into the versioned plugin directory.
 
 ### Command reference
 
@@ -174,7 +208,7 @@ $TASKY_HOME/tasky.db   (default: $XDG_DATA_HOME/tasky or ~/.local/share/tasky)
 ```
 
 Tasky stores prompt text, subagent prompts and final assistant messages (results are capped at
-8000 characters). It never modifies your Claude Code settings or transcripts. Delete the directory
+8000 characters, and dashboard access links in them are redacted). It never modifies your Claude Code settings or transcripts. Delete the directory
 to erase everything.
 
 ## Security
@@ -202,7 +236,7 @@ What it does not protect against:
   its own. Leave the variable unset unless you need it.
 - **The access link in your transcript.** `/tasky:ui` prints the link into the conversation, so the
   token is stored in that session's transcript (also private to your user). Delete
-  `$TASKY_HOME/token` to rotate it; the importer redacts it from imported results.
+  `$TASKY_HOME/token` to rotate it; Tasky redacts it from every result it stores.
 
 ## Configuration
 

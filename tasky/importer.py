@@ -11,7 +11,6 @@ from __future__ import annotations
 import contextlib
 import itertools
 import json
-import re
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,10 +19,10 @@ from typing import Any
 from tasky.config import Config
 from tasky.prompts import classify, parse_notifications
 from tasky.store import Store
+from tasky.titles import title_from_entry
 
 _AGENT_TOOLS = ("Agent", "Task")
 _FAILED_NOTIFICATION_STATUSES = ("failed", "killed")
-_TOKEN_RE = re.compile(r"#token=[A-Za-z0-9_-]+")
 
 # A damaged file must not abort the rest of the import (decision 1): every stage that
 # touches the file, the store, or values pulled out of untrusted JSON is guarded with this.
@@ -34,13 +33,6 @@ _Counters = dict[str, int]
 
 def _as_str(value: Any) -> str | None:
     return value if isinstance(value, str) else None
-
-
-def _redact_token(text: str | None) -> str | None:
-    """Never import the dashboard access link as a stored result (decision 5)."""
-    if text is None or "#token=" not in text:
-        return text
-    return _TOKEN_RE.sub("#token=<redacted>", text)
 
 
 def import_transcripts(store: Store, config: Config, *, dry_run: bool = False) -> dict:
@@ -123,6 +115,14 @@ def _import_file(
             session_written = True
         if session_is_new:
             counters["sessions"] += 1
+
+        custom_title = generated_title = None
+        for entry in entries:
+            custom, generated = title_from_entry(entry)
+            custom_title = custom or custom_title
+            generated_title = generated or generated_title
+        if not dry_run and (custom_title or generated_title):
+            store.update_session(session_id, title=custom_title or generated_title)
 
         for line_number, entry in zip(line_numbers, entries, strict=True):
             etype = entry.get("type")
@@ -390,7 +390,7 @@ def _finalize_span(
         return
     if span["last_text"] is not None:
         status = "done"
-        result = _redact_token(span["last_text"])
+        result = span["last_text"]
         finished_at = span["last_text_ts"]
     else:
         status = "interrupted" if is_last else "done"

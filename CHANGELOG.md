@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-09-15
+
+### Added
+
+- Results render as readable cards: headline first, one card per point or step, tables and code in
+  their own blocks, and a "waiting for you" card when a reply ends with a question. Collapsed cards
+  show the result's first sentence and the waiting marker.
+- `tasky:Focus Cards`, an ADHD-friendly output style bundled with the plugin and selectable from
+  `/output-style`. Original text under MIT; reply shape inspired by attention-span.
+
+### Fixed
+
+- Sessions are labeled with the name set by `/rename` (or Claude Code's generated name) instead of
+  their id, for live and imported sessions.
+
+### Changed
+
+- Dashboard access links are redacted from every stored result, not only from imported ones.
+
 ## [0.1.0] - 2026-09-15
 
 ### Added

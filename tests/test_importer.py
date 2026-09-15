@@ -907,3 +907,21 @@ def test_sidechain_assistant_entries_are_skipped(store, config):
     tasks = store.list_tasks(session_id=session_id, kind="prompt")
     assert tasks[0]["status"] == "done"
     assert tasks[0]["result"] == "real result"
+
+
+def test_import_takes_the_session_rename(store, config):
+    session_id = "session-renamed"
+    _write_transcript(
+        config,
+        session_id,
+        [
+            user_entry("u1", "2026-01-01T00:00:00.000Z", "do task a", session_id),
+            {"type": "ai-title", "aiTitle": "Generated", "sessionId": session_id},
+            {"type": "custom-title", "customTitle": "tasky main", "sessionId": session_id},
+            assistant_text("a1", "2026-01-01T00:00:05.000Z", "result a", session_id),
+        ],
+    )
+
+    import_transcripts(store, config)
+
+    assert store.get_session(session_id)["title"] == "tasky main"

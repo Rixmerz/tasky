@@ -1,5 +1,7 @@
 // Tasky dashboard client. No build step, no dependencies.
 
+import { parseDigest, summarize, renderDigest } from "./digest.js";
+
 const POLL_MS = 2000;
 const DONE_PAGE_SIZE = 100;
 const TOKEN_STORAGE_KEY = "tasky.token";
@@ -44,6 +46,9 @@ class NotVerifiedError extends Error {}
 let state = { rev: -1, sessions: [], tasks: [], config: { queue_prefix: "++", max_chain: 5, port: 7733, allow_bypass: false } };
 let tasksById = new Map();
 let sessionsById = new Map();
+// Keyed by task id; rebuilt only when task.result changes, so the 2-second
+// refresh never re-parses or re-renders a digest the user has open.
+let resultDigestById = new Map();
 let projectFilter = "";
 let doneShown = DONE_PAGE_SIZE;
 let pollTimer = null;
@@ -347,6 +352,9 @@ function applyState(next) {
   state = next;
   tasksById = nextTasksById;
   sessionsById = new Map(next.sessions.map((s) => [s.id, s]));
+  for (const id of resultDigestById.keys()) {
+    if (!nextTasksById.has(id)) resultDigestById.delete(id);
+  }
   el.quickAddPrefix.textContent = next.config.queue_prefix;
   el.queueEmptyPrefix.textContent = next.config.queue_prefix;
   renderAll();
@@ -442,6 +450,18 @@ function taskTimeLabel(task) {
   return relativeTime(task.created_at);
 }
 
+/** Parses+renders a task's result once per distinct result string, so refreshes reuse the same DOM node. */
+function getResultDigest(task) {
+  if (!task.result) return null;
+  const cached = resultDigestById.get(task.id);
+  if (cached && cached.result === task.result) return cached;
+  const digest = parseDigest(task.result);
+  const { summary, waiting } = summarize(task.result);
+  const entry = { result: task.result, summary, waiting, node: renderDigest(digest, document) };
+  resultDigestById.set(task.id, entry);
+  return entry;
+}
+
 function childCountLabel(taskId) {
   const kids = childrenOf(taskId);
   if (kids.length === 0) return "";
@@ -499,6 +519,8 @@ function updateCard(node, task) {
   const word = summary.querySelector(".status-word");
   const title = summary.querySelector(".title");
   const meta = summary.querySelector(".meta");
+  const resultSummary = summary.querySelector(".result-summary");
+  const waitingMarker = summary.querySelector(".waiting-marker");
 
   glyph.textContent = STATUS_GLYPH[task.status] || "";
   word.textContent = STATUS_WORD[task.status] || task.status;
@@ -527,14 +549,36 @@ function updateCard(node, task) {
     bodyEl.hidden = true;
   }
 
+  const digestEntry = getResultDigest(task);
+
+  resultSummary.textContent = digestEntry ? digestEntry.summary : "";
+  resultSummary.hidden = !digestEntry;
+  waitingMarker.hidden = !digestEntry || !digestEntry.waiting;
+
   const resultDetails = expanded.querySelector(".result-details");
+  const resultDigest = expanded.querySelector(".result-digest");
   const resultText = expanded.querySelector(".result-text");
-  if (task.result) {
-    resultText.textContent = task.result;
+  const showOriginal = expanded.querySelector(".show-original");
+  if (digestEntry) {
     resultDetails.hidden = false;
+    // Reuse the cached node as-is: touching the container would collapse an
+    // open "extra" card even when the digest itself did not change.
+    if (resultDigest.firstChild !== digestEntry.node) {
+      resultDigest.textContent = "";
+      resultDigest.appendChild(digestEntry.node);
+    }
+    resultText.textContent = task.result;
+    showOriginal.onclick = () => {
+      const revealing = resultText.hidden;
+      resultText.hidden = !revealing;
+      showOriginal.textContent = revealing ? "Hide original" : "Show original";
+    };
   } else {
-    resultText.textContent = "";
     resultDetails.hidden = true;
+    if (resultDigest.firstChild) resultDigest.textContent = "";
+    resultText.textContent = "";
+    resultText.hidden = true;
+    showOriginal.textContent = "Show original";
   }
 
   renderChildren(expanded.querySelector(".children"), childrenOf(task.id));
