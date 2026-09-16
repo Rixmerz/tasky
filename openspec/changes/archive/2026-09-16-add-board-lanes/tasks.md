@@ -26,4 +26,4 @@
 - [x] 4.2 End-to-end with real `claude -p`: two tasks through the run queue in order, one fork run recalls its source's context
 - [x] 4.3 Board measured in a real browser at 400, 1024, 1440, 1920 and 2560 pixels, including a drag
 - [x] 4.4 Version 0.3.0, README and CHANGELOG
-- [ ] 4.5 Committed, pushed, installed plugin updated
+- [x] 4.5 Committed, pushed, installed plugin updated
