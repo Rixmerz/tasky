@@ -41,6 +41,9 @@ class Config:
     claude_bin: str
     allow_bypass: bool
     token_path: Path
+    insights_model: str = "haiku"
+    insights_max_batches: int = 8
+    dead_end_items: int = 5
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Config:
@@ -72,6 +75,9 @@ class Config:
             claude_bin=_str_env(env, "TASKY_CLAUDE_BIN", "claude"),
             allow_bypass=env.get("TASKY_ALLOW_BYPASS", "").strip().lower() in ("1", "true", "yes"),
             token_path=home / "token",
+            insights_model=_str_env(env, "TASKY_INSIGHTS_MODEL", "haiku"),
+            insights_max_batches=max(1, _int_env(env, "TASKY_INSIGHTS_MAX_BATCHES", 8)),
+            dead_end_items=max(0, _int_env(env, "TASKY_DEAD_END_ITEMS", 5)),
         )
 
 

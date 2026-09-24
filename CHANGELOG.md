@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-09-24
+
+### Added
+
+- Project history: a History panel with dead ends (fixes believed correct that were not), problems
+  and solutions, and dated milestones, each citing the tasks it came from. Built by
+  **Sync with Haiku** or `tasky history`, which reads only the tasks finished since the previous
+  sync plus the project's git log, and is the only Tasky feature that spends tokens.
+- Sessions that start in a project with dead ends get the newest five in their context
+  (`TASKY_DEAD_END_ITEMS`).
+- `GET /api/insights`, `POST /api/insights/sync` and `GET /api/tasks/<id>`.
+- `TASKY_HOOKS_OFF=1` makes every Tasky hook a no-op; the history sync sets it on its own model call.
+
+### Changed
+
+- The database schema moves to version 3; existing databases gain the new tables in place.
+
 ## [0.4.1] - 2026-09-24
 
 ### Fixed

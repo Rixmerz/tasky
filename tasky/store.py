@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import sqlite3
 import time
 from collections.abc import Iterable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,11 +19,13 @@ from tasky.prompts import make_title
 TASK_STATUSES = ("queued", "running", "done", "failed", "interrupted", "cancelled")
 TERMINAL = ("done", "failed", "interrupted", "cancelled")
 TASK_KINDS = ("prompt", "delegation")
+INSIGHT_KINDS = ("milestone", "problem", "dead_end")
+_INSIGHT_UPDATE_FIELDS = ("title", "detail", "happened_on", "state", "solution", "task_ids")
 
 SEARCH_LIMIT = 50
 SEARCH_MAX_WORDS = 8
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _INIT_TIMEOUT_S = 10.0
 _SESSION_FIELDS = ("title", "auto_pull", "pull_chain", "state")
 _SESSION_STATES = ("active", "ended")
@@ -71,6 +75,18 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS lanes (
   cwd TEXT PRIMARY KEY, paused INTEGER NOT NULL DEFAULT 0, reason TEXT
 );
+CREATE TABLE IF NOT EXISTS insights (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cwd TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
+  happened_on TEXT, state TEXT, solution TEXT, task_ids TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS insight_syncs (
+  cwd TEXT PRIMARY KEY, last_task_id INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'idle', started_at TEXT, finished_at TEXT, error TEXT,
+  last_cost_usd REAL NOT NULL DEFAULT 0, total_cost_usd REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_insights_cwd ON insights(cwd);
 CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_prompt_id ON tasks(prompt_id);
@@ -81,6 +97,24 @@ CREATE TRIGGER IF NOT EXISTS trg_tasks_rev_ins AFTER INSERT ON tasks BEGIN
   UPDATE meta SET value = value + 1 WHERE key = 'rev';
 END;
 CREATE TRIGGER IF NOT EXISTS trg_tasks_rev_upd AFTER UPDATE ON tasks BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_insights_rev_ins AFTER INSERT ON insights BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_insights_rev_upd AFTER UPDATE ON insights BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_insights_rev_del AFTER DELETE ON insights BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_insight_syncs_rev_ins AFTER INSERT ON insight_syncs BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_insight_syncs_rev_upd AFTER UPDATE ON insight_syncs BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_insight_syncs_rev_del AFTER DELETE ON insight_syncs BEGIN
   UPDATE meta SET value = value + 1 WHERE key = 'rev';
 END;
 CREATE TRIGGER IF NOT EXISTS trg_tasks_rev_del AFTER DELETE ON tasks BEGIN
@@ -132,6 +166,13 @@ def _clean_result(value: str | None, limit: int) -> str | None:
     if value is not None and "#token=" in value:
         value = _TOKEN_RE.sub("#token=<redacted>", value)
     return _truncate(value, limit)
+
+
+def _parse_iso(value: str) -> float | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def _truncate(value: str | None, limit: int) -> str | None:
@@ -849,6 +890,150 @@ class Store:
             (cwd,),
         ).fetchone()
         return self._row(row) if row else None
+
+    # -- project history (insights) -----------------------------------------
+
+    def _insight_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        insight = self._row(row)
+        try:
+            ids = json.loads(insight["task_ids"] or "[]")
+        except ValueError:
+            ids = []
+        insight["task_ids"] = [i for i in ids if isinstance(i, int) and not isinstance(i, bool)]
+        return insight
+
+    def list_insights(self, cwd: str) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM insights WHERE cwd = ? ORDER BY COALESCE(happened_on, '') ASC, id ASC",
+            (cwd,),
+        ).fetchall()
+        return [self._insight_row(r) for r in rows]
+
+    def get_insight(self, insight_id: int) -> dict | None:
+        row = self._conn.execute("SELECT * FROM insights WHERE id = ?", (insight_id,)).fetchone()
+        return self._insight_row(row) if row else None
+
+    def dead_ends(self, cwd: str, limit: int) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM insights WHERE cwd = ? AND kind = 'dead_end' "
+            "ORDER BY COALESCE(happened_on, '') DESC, id DESC LIMIT ?",
+            (cwd, limit),
+        ).fetchall()
+        return [self._insight_row(r) for r in rows]
+
+    def add_insight(
+        self,
+        *,
+        cwd: str,
+        kind: str,
+        title: str,
+        detail: str = "",
+        happened_on: str | None = None,
+        state: str | None = None,
+        solution: str | None = None,
+        task_ids: Iterable[int] = (),
+    ) -> dict:
+        if kind not in INSIGHT_KINDS:
+            raise ValueError(f"invalid insight kind: {kind!r}")
+        now = now_iso()
+        cursor = self._conn.execute(
+            "INSERT INTO insights (cwd, kind, title, detail, happened_on, state, solution, "
+            "task_ids, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                cwd, kind, title, detail, happened_on, state, solution,
+                json.dumps(sorted(set(task_ids))), now, now,
+            ),
+        )
+        self._conn.commit()
+        insight = self.get_insight(int(cursor.lastrowid))
+        assert insight is not None
+        return insight
+
+    def update_insight(self, insight_id: int, **fields: Any) -> dict | None:
+        allowed = {k: v for k, v in fields.items() if k in _INSIGHT_UPDATE_FIELDS}
+        if "task_ids" in allowed:
+            allowed["task_ids"] = json.dumps(sorted(set(allowed["task_ids"])))
+        if not allowed:
+            return self.get_insight(insight_id)
+        allowed["updated_at"] = now_iso()
+        assignments = ", ".join(f"{k} = ?" for k in allowed)
+        # keys come from the fixed _INSIGHT_UPDATE_FIELDS set; every value is bound
+        self._conn.execute(
+            f"UPDATE insights SET {assignments} WHERE id = ?",  # noqa: S608
+            (*allowed.values(), insight_id),
+        )
+        self._conn.commit()
+        return self.get_insight(insight_id)
+
+    def insight_sync(self, cwd: str) -> dict | None:
+        row = self._conn.execute("SELECT * FROM insight_syncs WHERE cwd = ?", (cwd,)).fetchone()
+        return self._row(row) if row else None
+
+    def begin_insight_sync(self, cwd: str, *, stale_after_s: float) -> bool:
+        """Mark a project's history sync running; False if one already is.
+
+        A sync whose process died leaves ``running`` behind, so a claim older
+        than ``stale_after_s`` is taken over rather than blocking forever.
+        """
+        now = now_iso()
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT state, started_at FROM insight_syncs WHERE cwd = ?", (cwd,)
+            ).fetchone()
+            if row is not None and row["state"] == "running" and row["started_at"]:
+                started = _parse_iso(row["started_at"])
+                if started is not None and time.time() - started < stale_after_s:
+                    self._conn.rollback()
+                    return False
+            self._conn.execute(
+                "INSERT INTO insight_syncs (cwd, state, started_at, error) "
+                "VALUES (?, 'running', ?, NULL) ON CONFLICT(cwd) DO UPDATE SET "
+                "state = 'running', started_at = excluded.started_at, error = NULL",
+                (cwd, now),
+            )
+            self._conn.commit()
+            return True
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def advance_insight_cursor(self, cwd: str, last_task_id: int) -> None:
+        self._conn.execute(
+            "UPDATE insight_syncs SET last_task_id = MAX(last_task_id, ?) WHERE cwd = ?",
+            (last_task_id, cwd),
+        )
+        self._conn.commit()
+
+    def finish_insight_sync(self, cwd: str, *, cost_usd: float, error: str | None) -> None:
+        self._conn.execute(
+            "UPDATE insight_syncs SET state = 'idle', finished_at = ?, error = ?, "
+            "last_cost_usd = ?, total_cost_usd = total_cost_usd + ? WHERE cwd = ?",
+            (now_iso(), error, cost_usd, cost_usd, cwd),
+        )
+        self._conn.commit()
+
+    def tasks_for_insights(self, cwd: str, after_id: int, limit: int) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM tasks WHERE cwd = ? AND kind = 'prompt' AND id > ? "
+            "AND status IN ('done', 'failed', 'interrupted') ORDER BY id ASC LIMIT ?",
+            (cwd, after_id, limit),
+        ).fetchall()
+        return [self._task_row(r) for r in rows]
+
+    def pending_insight_tasks(self, cwd: str) -> int:
+        sync = self.insight_sync(cwd)
+        after = sync["last_task_id"] if sync else 0
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM tasks WHERE cwd = ? AND kind = 'prompt' AND id > ? "
+            "AND status IN ('done', 'failed', 'interrupted')",
+            (cwd, after),
+        ).fetchone()
+        return int(row["n"])
+
+    def has_project(self, cwd: str) -> bool:
+        row = self._conn.execute("SELECT 1 FROM tasks WHERE cwd = ? LIMIT 1", (cwd,)).fetchone()
+        return row is not None
 
     def state(self, done_limit: int = 500) -> dict:
         terminal_placeholders = ", ".join("?" for _ in TERMINAL)

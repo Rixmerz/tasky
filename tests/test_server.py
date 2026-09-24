@@ -1370,3 +1370,46 @@ def test_search_rejects_overlong_query(conn, auth_headers):
     resp, parsed = _request(conn, "GET", "/api/search?q=" + "a" * 201, headers=auth_headers)
     assert resp.status == 400
     assert "error" in parsed
+
+
+# -- project history -----------------------------------------------------------
+
+
+def test_insights_route_returns_records_and_sync_state(store, conn, auth_headers):
+    task = store.create_task(kind="prompt", body="a", status="done", source="hook", cwd="/p")
+    store.add_insight(cwd="/p", kind="milestone", title="Shipped", task_ids=[task["id"]])
+    resp, parsed = _request(conn, "GET", "/api/insights?cwd=%2Fp", headers=auth_headers)
+    assert resp.status == 200
+    assert [i["title"] for i in parsed["insights"]] == ["Shipped"]
+    assert parsed["sync"] is None
+    assert parsed["pending"] == 1
+
+
+def test_insights_sync_starts_a_background_process(store, running_server, conn, auth_headers):
+    store.create_task(kind="prompt", body="a", status="done", source="hook", cwd="/p")
+    launched = []
+    running_server.popen = lambda cmd, **kw: launched.append(cmd)
+    resp, parsed = _request(conn, "POST", "/api/insights/sync", {"cwd": "/p"}, auth_headers)
+    assert resp.status == 202
+    assert launched and launched[0][-3:] == ["history", "--cwd", "/p"]
+
+
+def test_insights_sync_rejects_unknown_projects_and_a_second_run(
+    store, running_server, conn, auth_headers
+):
+    running_server.popen = lambda cmd, **kw: None
+    resp, _ = _request(conn, "POST", "/api/insights/sync", {"cwd": "/nope"}, auth_headers)
+    assert resp.status == 404
+    store.create_task(kind="prompt", body="a", status="done", source="hook", cwd="/p")
+    store.begin_insight_sync("/p", stale_after_s=60)
+    resp, _ = _request(conn, "POST", "/api/insights/sync", {"cwd": "/p"}, auth_headers)
+    assert resp.status == 409
+
+
+def test_get_task_route(store, conn, auth_headers):
+    task = store.create_task(kind="prompt", body="hello", status="done", source="hook")
+    resp, parsed = _request(conn, "GET", f"/api/tasks/{task['id']}", headers=auth_headers)
+    assert resp.status == 200
+    assert parsed["body"] == "hello"
+    resp, _ = _request(conn, "GET", "/api/tasks/999999", headers=auth_headers)
+    assert resp.status == 404

@@ -196,6 +196,28 @@ The reply shape is inspired by [attention-span](https://github.com/alexgreensh/a
 Focus Cards text is original and MIT-licensed; if you already use an attention-span style, keep it:
 its replies render as cards too.
 
+### Project history (the one feature that spends tokens)
+
+The History button in the top bar shows, per project, what a small model distilled from the tasks
+Tasky recorded there:
+
+- **Dead ends**: fixes that were believed correct and turned out wrong, why, and what worked
+  instead, so nobody applies them again.
+- **Problems and solutions**: what broke, its cause, what fixed it, open or solved.
+- **Milestones**: dated steps that changed where the project stands, independent of versions.
+
+Every record links to the tasks it came from; click one to read what was actually said. Nothing is
+generated until you press **Sync with Haiku** (or run `tasky history --cwd DIR`). A sync reads only
+the tasks finished since the previous one, in batches, with the records already kept and the
+project's git log for the same days, and runs `claude -p --model haiku` with no tools, no MCP
+servers, no saved session and Tasky's own hooks off, so it is not recorded as a task. The status
+line shows the cost of the last sync as Claude Code reports it. Syncing the 13 tasks of one
+afternoon cost about $0.06.
+
+Reading the history is free. Dead ends also reach the agent: when a session starts in a project
+that has them, the newest five are added to its context (a few lines; `TASKY_DEAD_END_ITEMS=0`
+turns this off).
+
 ### Put the counters in your status line
 
 `tasky status --short` prints `▶2 ⏸3 ⚠1` (running, queued, needs attention) and reads only the local
@@ -222,6 +244,7 @@ tasky done ID | tasky cancel ID
 tasky run ID [--mode now|fork] [--permission-mode MODE]
 tasky enqueue ID [--permission-mode MODE]
 tasky import [--dry-run]
+tasky history [--cwd DIR]           sync a project's history with Haiku (spends tokens)
 tasky status [--short]
 ```
 
@@ -247,6 +270,8 @@ call. Every hook exits successfully and prints nothing when something goes wrong
 | Queueing with `++`, the dashboard or the CLI | 0 |
 | Dashboard, search, CLI and status line | 0 |
 | Context reminder after resume or compaction | A few lines, only when tasks are unfinished |
+| Dead ends reminder at session start | A few lines, only in projects that have dead ends |
+| Sync with Haiku (project history) | One small Haiku call per batch of up to 40 tasks, only when you press it |
 | Auto-pull | One normal turn per pulled task |
 | Run now and the run queue | One normal headless session per task |
 | Parallel with context | One headless session per task, starting with the cloned conversation as input |
@@ -302,6 +327,9 @@ What it does not protect against:
 | `TASKY_CONTEXT_ITEMS` | `10` | Tasks listed in the resume or compaction reminder |
 | `TASKY_CLAUDE_BIN` | `claude` | Binary used for parallel workers |
 | `TASKY_ALLOW_BYPASS` | unset | Set to `1` to allow `bypassPermissions` workers |
+| `TASKY_INSIGHTS_MODEL` | `haiku` | Model the history sync uses |
+| `TASKY_INSIGHTS_MAX_BATCHES` | `8` | Batches one sync reads before stopping; press again for more |
+| `TASKY_DEAD_END_ITEMS` | `5` | Dead ends added at session start; `0` turns it off |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Where transcripts are imported from |
 
 Hooks read these from the environment of the Claude Code process.
@@ -320,6 +348,9 @@ Hooks read these from the environment of the Claude Code process.
   rather than the first reply.
 - Search only sees the stored part of a reply (the first `TASKY_MAX_RESULT` characters, 8000 by
   default), and ignores letter case for ASCII only: "Ó" and "ó" are different letters to it.
+- History is only as good as what Tasky recorded: the prompt and the first `TASKY_MAX_RESULT`
+  characters of each reply, not the tools a session ran. The model can misread a task; every record
+  cites its tasks so it can be checked.
 
 ## Development
 

@@ -39,31 +39,56 @@ def _session_start(
         session_id, cwd=event.get("cwd"), transcript_path=event.get("transcript_path")
     )
     source = event.get("source")
-    if source not in ("resume", "compact"):
+    blocks = []
+    if source in ("resume", "compact"):
+        if source == "resume":
+            # The previous process is gone: its running tasks (delegations included)
+            # will never receive another Stop or PostToolUse, so they would
+            # otherwise stay running forever.
+            store.interrupt_session(session_id)
+        tasks = store.list_tasks(
+            status=("running", "interrupted", "queued"),
+            session_id=session_id,
+            limit=config.context_items,
+        )
+        if tasks:
+            lines = [
+                f"Tasky: {len(tasks)} unfinished task(s) recorded for this session. This is "
+                "context only: queued tasks are handed to you when it is their turn, do not "
+                "start them unasked."
+            ]
+            lines += [f"#{t['id']} [{t['status']}] {t['title']}" for t in tasks]
+            blocks.append("\n".join(lines))
+    cwd = event.get("cwd")
+    if cwd and config.dead_end_items > 0:
+        dead = store.dead_ends(cwd, config.dead_end_items)
+        if dead:
+            blocks.append(_dead_end_context(dead))
+    if not blocks:
         return None
-    if source == "resume":
-        # The previous process is gone: its running tasks (delegations included)
-        # will never receive another Stop or PostToolUse, so they would
-        # otherwise stay running forever.
-        store.interrupt_session(session_id)
-    tasks = store.list_tasks(
-        status=("running", "interrupted", "queued"),
-        session_id=session_id,
-        limit=config.context_items,
-    )
-    if not tasks:
-        return None
-    lines = [
-        f"Tasky: {len(tasks)} unfinished task(s) recorded for this session. This is context "
-        "only: queued tasks are handed to you when it is their turn, do not start them unasked."
-    ]
-    lines += [f"#{t['id']} [{t['status']}] {t['title']}" for t in tasks]
     return {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": "\n".join(lines),
+            "additionalContext": "\n\n".join(blocks),
         }
     }
+
+
+def _dead_end_context(dead: list[dict]) -> str:
+    lines = [
+        "Tasky project history: fixes that were believed correct here and turned out wrong. "
+        "Before applying a fix that looks like one of these, say so and check it first."
+    ]
+    for d in dead:
+        line = f"- {d['title']}"
+        if d["happened_on"]:
+            line += f" ({d['happened_on']})"
+        if d["detail"]:
+            line += f": {d['detail'][:240]}"
+        if d["solution"]:
+            line += f" What worked instead: {d['solution'][:240]}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _handle_notifications(text: str, prompt_id: str | None, store: Store) -> None:
@@ -415,6 +440,10 @@ def _log_error(config: Config) -> None:
 def main(stdin: TextIO, stdout: TextIO, env: Mapping[str, str] | None = None) -> int:
     os.umask(0o077)
     env = os.environ if env is None else env
+    # Tasky's own model calls (history sync) set this so they are not recorded
+    # as tasks of the project they describe.
+    if env.get("TASKY_HOOKS_OFF") == "1":
+        return 0
     try:
         config = Config.from_env(env)
     except Exception:  # noqa: BLE001 - no home to log to; a hook must never crash a session

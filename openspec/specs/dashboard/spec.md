@@ -223,3 +223,24 @@ SHALL require the dashboard token like every other API route.
 - **WHEN** the user presses Esc in a non-empty search box
 - **THEN** the box clears and the board returns
 
+### Requirement: Project history
+The dashboard SHALL show, per project, dead ends (fixes believed correct that turned out wrong),
+problems with their cause, solution and state, and dated milestones, each citing the tasks it was
+derived from. The history SHALL be built only when the user asks for a sync, which SHALL read only
+tasks finished since the previous sync, SHALL run a small model with no tools and with Tasky's hooks
+disabled, SHALL discard records that cite tasks the model was not shown, and SHALL show the cost of
+the last sync. Reading the history SHALL spend no tokens. A session that starts in a project with
+dead ends SHALL receive the most recent ones as context, up to a configurable count that can be zero.
+
+#### Scenario: A reverted fix becomes a dead end
+- **WHEN** one task records a fix, a later task says it did not work and names the real cause, and the user presses Sync with Haiku
+- **THEN** the History panel lists a dead end citing both tasks, with why it was wrong and what worked instead
+
+#### Scenario: Sync reads only new work
+- **WHEN** a project was synced and two tasks finished afterwards
+- **THEN** the next sync sends the model those two tasks and none of the earlier ones
+
+#### Scenario: The agent is warned
+- **WHEN** a session starts in a project whose history has a dead end
+- **THEN** its context includes that dead end and what worked instead
+

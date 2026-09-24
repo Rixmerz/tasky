@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -205,6 +206,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._route_state()
         elif method == "GET" and path == "/api/search":
             self._route_search()
+        elif method == "GET" and path == "/api/insights":
+            self._route_insights()
+        elif method == "POST" and path == "/api/insights/sync":
+            self._route_insights_sync(body)
         elif method == "POST" and path == "/api/tasks":
             self._route_create_task(body)
         elif method == "POST" and path == "/api/import":
@@ -225,7 +230,9 @@ class _Handler(BaseHTTPRequestHandler):
             match = _TASK_ID_RE.match(path)
             if match:
                 task_id = int(match.group(1))
-                if method == "PATCH":
+                if method == "GET":
+                    self._route_get_task(task_id)
+                elif method == "PATCH":
                     self._route_patch_task(task_id, body)
                 elif method == "DELETE":
                     self._route_delete_task(task_id)
@@ -294,6 +301,60 @@ class _Handler(BaseHTTPRequestHandler):
             200,
             {"query": query, "tasks": tasks[:SEARCH_LIMIT], "more": len(tasks) > SEARCH_LIMIT},
         )
+
+    def _route_get_task(self, task_id: int) -> None:
+        with Store.open(self.server.config) as store:
+            task = store.get_task(task_id)
+        if task is None:
+            self._error(404, "task not found")
+            return
+        self._send_json(200, task)
+
+    def _route_insights(self) -> None:
+        cwd = parse_qs(urlsplit(self.path).query).get("cwd", [""])[0]
+        if not cwd:
+            self._error(400, "cwd is required")
+            return
+        with Store.open(self.server.config) as store:
+            payload = {
+                "cwd": cwd,
+                "insights": store.list_insights(cwd),
+                "sync": store.insight_sync(cwd),
+                "pending": store.pending_insight_tasks(cwd),
+            }
+        self._send_json(200, payload)
+
+    def _route_insights_sync(self, body: dict) -> None:
+        cwd = body.get("cwd")
+        if not isinstance(cwd, str) or not cwd:
+            self._error(400, "cwd is required")
+            return
+        config = self.server.config
+        with Store.open(config) as store:
+            # Only folders Tasky has recorded work in: the sync runs git there.
+            if not store.has_project(cwd):
+                self._error(404, "no tasks recorded for this project")
+                return
+            current = store.insight_sync(cwd)
+        if current is not None and current["state"] == "running":
+            self._error(409, "a sync of this project is already running")
+            return
+        config.log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(
+            config.log_dir / "history.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
+        )
+        try:
+            self.server.popen(
+                [sys.executable, str(worker._TASKY_BIN), "history", "--cwd", cwd],
+                cwd=str(config.home),
+                stdin=subprocess.DEVNULL,
+                stdout=fd,
+                stderr=fd,
+                start_new_session=True,
+            )
+        finally:
+            os.close(fd)
+        self._send_json(202, {"started": True})
 
     def _route_create_task(self, body: dict) -> None:
         task_body = body.get("body")

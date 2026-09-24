@@ -160,6 +160,18 @@ const el = {
   searchList: document.getElementById("search-list"),
   searchClear: document.getElementById("search-clear"),
   tablist: document.getElementById("tablist"),
+  historyToggle: document.getElementById("history-toggle"),
+  history: document.getElementById("history"),
+  historyHeading: document.getElementById("history-heading"),
+  historyProject: document.getElementById("history-project"),
+  historyClose: document.getElementById("history-close"),
+  historySync: document.getElementById("history-sync"),
+  historySyncStatus: document.getElementById("history-sync-status"),
+  historyEmpty: document.getElementById("history-empty"),
+  historyBody: document.getElementById("history-body"),
+  historyDead: document.getElementById("history-dead"),
+  historyProblems: document.getElementById("history-problems"),
+  historyMilestones: document.getElementById("history-milestones"),
 };
 
 // ---------- access token ----------
@@ -428,6 +440,7 @@ function applyState(next) {
   el.quickAddPrefix.textContent = next.config.queue_prefix;
   el.inboxEmptyPrefix.textContent = next.config.queue_prefix;
   renderAll();
+  if (historyOpen) loadHistory();
 }
 
 function startPolling() {
@@ -1082,6 +1095,19 @@ function isDrawerOpen() {
 /** A task from the board, or a search hit older than the slice /api/state ships. */
 function findTask(taskId) {
   return tasksById.get(taskId) || searchHitsById.get(taskId);
+}
+
+async function openTaskById(taskId) {
+  if (!findTask(taskId)) {
+    try {
+      const task = await apiGet(`/api/tasks/${taskId}`);
+      searchHitsById.set(task.id, task);
+    } catch (err) {
+      showError(`Task #${taskId} is no longer in the ledger`);
+      return;
+    }
+  }
+  openDrawer(taskId);
 }
 
 function openDrawer(taskId, opts = {}) {
@@ -1960,6 +1986,238 @@ document.addEventListener("keydown", (evt) => {
   }
 });
 
+// ---------- project history ----------
+//
+// Milestones, problems and dead ends a small model distilled from a project's
+// tasks. Reading them is free; only "Sync with Haiku" spends tokens.
+
+let historyOpen = false;
+let historyCwd = "";
+let historyData = null;
+let historySeq = 0;
+let historyStarting = false;
+
+function historyProjects() {
+  const { active, other } = projectActivity();
+  return [...active, ...other];
+}
+
+function renderHistoryProjectOptions() {
+  const projects = historyProjects();
+  if (!historyCwd || !projects.some((p) => p.cwd === historyCwd)) {
+    historyCwd = projectFilter || (projects[0] && projects[0].cwd) || "";
+  }
+  el.historyProject.textContent = "";
+  for (const p of projects) {
+    const opt = document.createElement("option");
+    opt.value = p.cwd;
+    opt.textContent = p.label;
+    el.historyProject.appendChild(opt);
+  }
+  el.historyProject.value = historyCwd;
+}
+
+function openHistory() {
+  if (el.searchInput.value) clearSearch();
+  historyOpen = true;
+  el.historyToggle.setAttribute("aria-pressed", "true");
+  el.history.hidden = false;
+  el.board.hidden = true;
+  el.tablist.hidden = true;
+  renderHistoryProjectOptions();
+  historyData = null;
+  renderHistory();
+  loadHistory();
+  el.historyHeading.focus();
+}
+
+function closeHistory(focusToggle = true) {
+  historyOpen = false;
+  el.historyToggle.setAttribute("aria-pressed", "false");
+  el.history.hidden = true;
+  el.board.hidden = false;
+  el.tablist.hidden = false;
+  if (focusToggle) el.historyToggle.focus();
+}
+
+async function loadHistory() {
+  if (!historyCwd) return;
+  const seq = ++historySeq;
+  const cwd = historyCwd;
+  try {
+    const data = await apiGet(`/api/insights?${new URLSearchParams({ cwd })}`);
+    // A reply for a project switched away from, or older than a newer load, is dropped.
+    if (seq !== historySeq || cwd !== historyCwd) return;
+    historyData = data;
+    if (data.sync && data.sync.state === "running") historyStarting = false;
+    renderHistory();
+  } catch (err) {
+    handleApiError(err);
+  }
+}
+
+function syncStatusText(data) {
+  const sync = data && data.sync;
+  const pending = data ? data.pending : 0;
+  const toRead = `${pending} ${pending === 1 ? "task" : "tasks"} to read`;
+  if (historyStarting || (sync && sync.state === "running")) return "Syncing… Haiku is reading this project's tasks.";
+  if (!sync) return `Never synced · ${toRead} · spends tokens`;
+  const parts = [`Synced ${relativeTime(sync.finished_at) || "just now"}`];
+  if (sync.last_cost_usd) parts.push(`$${sync.last_cost_usd.toFixed(4)}`);
+  parts.push(pending ? toRead : "up to date");
+  if (sync.error) parts.push(`stopped: ${sync.error}`);
+  return parts.join(" · ");
+}
+
+function renderHistory() {
+  const data = historyData;
+  const running = historyStarting || (data && data.sync && data.sync.state === "running");
+  el.historySync.disabled = !historyCwd || running || (data && data.pending === 0);
+  el.historySync.textContent = running ? "Syncing…" : "Sync with Haiku";
+  el.historySyncStatus.textContent = historyCwd ? syncStatusText(data) : "";
+  el.historySyncStatus.classList.toggle("is-error", Boolean(data && data.sync && data.sync.error));
+
+  const insights = (data && data.insights) || [];
+  const dead = insights.filter((i) => i.kind === "dead_end").reverse();
+  const problems = insights
+    .filter((i) => i.kind === "problem")
+    .sort((a, b) => (a.state === b.state ? 0 : a.state === "open" ? -1 : 1));
+  const milestones = insights.filter((i) => i.kind === "milestone");
+
+  el.historyEmpty.hidden = insights.length !== 0 || !data;
+  if (!historyCwd) {
+    el.historyEmpty.hidden = false;
+    el.historyEmpty.textContent = "No projects recorded yet.";
+  } else if (data && insights.length === 0) {
+    el.historyEmpty.textContent = data.pending
+      ? `No history yet. Sync reads this project's ${data.pending} recorded tasks with Haiku and keeps milestones, problems and dead ends.`
+      : "No history yet, and no finished tasks to read.";
+  }
+  el.historyBody.hidden = insights.length === 0;
+
+  fillHistoryList(el.historyDead, dead);
+  fillHistoryList(el.historyProblems, problems);
+  fillHistoryList(el.historyMilestones, milestones);
+  el.historyDead.closest(".history-section").hidden = dead.length === 0;
+  el.historyProblems.closest(".history-section").hidden = problems.length === 0;
+  el.historyMilestones.closest(".history-section").hidden = milestones.length === 0;
+}
+
+function fillHistoryList(list, items) {
+  list.textContent = "";
+  for (const item of items) list.appendChild(createHistoryItem(item));
+}
+
+function createHistoryItem(item) {
+  const li = document.createElement("li");
+  li.className = "history-item";
+  li.dataset.kind = item.kind;
+  if (item.state) li.dataset.state = item.state;
+
+  const head = document.createElement("div");
+  head.className = "history-item-head";
+  if (item.happened_on) {
+    const when = document.createElement("time");
+    when.className = "history-date";
+    when.dateTime = item.happened_on;
+    when.textContent = item.happened_on;
+    head.appendChild(when);
+  }
+  const title = document.createElement("span");
+  title.className = "history-title";
+  title.textContent = item.title;
+  head.appendChild(title);
+  if (item.kind === "problem") {
+    const badge = document.createElement("span");
+    badge.className = `badge history-state history-state-${item.state || "open"}`;
+    badge.textContent = item.state === "solved" ? "Solved" : "Open";
+    head.appendChild(badge);
+  }
+  li.appendChild(head);
+
+  const labels = {
+    problem: ["Cause", "Solution"],
+    dead_end: ["Why it was wrong", "What worked instead"],
+    milestone: ["", ""],
+  }[item.kind] || ["", ""];
+  appendHistoryLine(li, labels[0], item.detail);
+  appendHistoryLine(li, labels[1], item.solution);
+
+  if (item.task_ids.length) {
+    const refs = document.createElement("div");
+    refs.className = "history-refs";
+    const label = document.createElement("span");
+    label.className = "history-refs-label";
+    label.textContent = "From";
+    refs.appendChild(label);
+    for (const id of item.task_ids) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-ghost btn-sm history-ref";
+      btn.textContent = `#${id}`;
+      btn.setAttribute("aria-label", `Open task ${id}`);
+      btn.addEventListener("click", () => openTaskById(id));
+      refs.appendChild(btn);
+    }
+    li.appendChild(refs);
+  }
+  return li;
+}
+
+function appendHistoryLine(parent, label, text) {
+  if (!text) return;
+  const p = document.createElement("p");
+  p.className = "history-line";
+  if (label) {
+    const strong = document.createElement("span");
+    strong.className = "history-line-label";
+    strong.textContent = `${label}: `;
+    p.appendChild(strong);
+  }
+  p.appendChild(document.createTextNode(text));
+  parent.appendChild(p);
+}
+
+async function startHistorySync() {
+  if (!historyCwd) return;
+  historyStarting = true;
+  renderHistory();
+  try {
+    await apiMutate("POST", "/api/insights/sync", { cwd: historyCwd });
+    announce("History sync started");
+  } catch (err) {
+    historyStarting = false;
+    renderHistory();
+    handleApiError(err);
+    return;
+  }
+  // The sync process claims the project a moment after it starts; until the
+  // ledger says so, keep showing it as starting rather than idle.
+  setTimeout(() => {
+    historyStarting = false;
+    loadHistory();
+  }, 4000);
+}
+
+el.historyToggle.addEventListener("click", () => {
+  if (historyOpen) closeHistory();
+  else openHistory();
+});
+el.historyClose.addEventListener("click", () => closeHistory());
+el.historyProject.addEventListener("change", () => {
+  historyCwd = el.historyProject.value;
+  historyData = null;
+  renderHistory();
+  loadHistory();
+});
+el.historySync.addEventListener("click", startHistorySync);
+el.history.addEventListener("keydown", (evt) => {
+  if (evt.key === "Escape" && !isDrawerOpen()) {
+    evt.preventDefault();
+    closeHistory();
+  }
+});
+
 // ---------- search ----------
 //
 // Searches the whole ledger on the server, not just the tasks the board holds,
@@ -1978,6 +2236,7 @@ function searchWords(query) {
 }
 
 function setSearchMode(on) {
+  if (on && historyOpen) closeHistory(false);
   el.searchResults.hidden = !on;
   el.board.hidden = on;
   el.tablist.hidden = on;

@@ -48,6 +48,10 @@
       <span id="filter-chip-label"></span><span aria-hidden="true">&#215;</span><span class="visually-hidden">Clear project filter</span>
     </button>
     <span id="bypass-chip" class="badge badge-danger" hidden>No permission checks</span>
+    <button type="button" id="history-toggle" class="btn btn-ghost btn-sm history-toggle" aria-pressed="false" title="Project history: milestones, problems and dead ends">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+      <span class="history-toggle-label">History</span>
+    </button>
     <button type="button" id="settings-toggle" class="btn btn-icon btn-ghost" aria-expanded="false" aria-controls="topbar-extra" aria-label="Filter and permission mode">
       <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
     </button>
@@ -98,6 +102,34 @@
     <button type="button" id="search-clear" class="btn btn-ghost btn-sm">Back to board</button>
   </div>
   <ol id="search-list" class="search-list"></ol>
+</section>
+
+<section id="history" class="history" aria-labelledby="history-heading" hidden>
+  <div class="history-head">
+    <h2 id="history-heading" class="history-heading" tabindex="-1">History of</h2>
+    <label for="history-project" class="visually-hidden">Project</label>
+    <select id="history-project" class="select history-project"></select>
+    <button type="button" id="history-close" class="btn btn-ghost btn-sm">Back to board</button>
+  </div>
+  <div class="history-sync">
+    <button type="button" id="history-sync" class="btn btn-primary btn-sm">Sync with Haiku</button>
+    <p id="history-sync-status" class="history-sync-status" role="status" aria-live="polite"></p>
+  </div>
+  <p id="history-empty" class="empty-state" hidden></p>
+  <div id="history-body" class="history-body">
+    <section class="history-section" aria-labelledby="history-dead-heading">
+      <h3 id="history-dead-heading">Dead ends <span class="history-hint">fixes that looked right and were not</span></h3>
+      <ol id="history-dead" class="history-list"></ol>
+    </section>
+    <section class="history-section" aria-labelledby="history-problems-heading">
+      <h3 id="history-problems-heading">Problems and solutions</h3>
+      <ol id="history-problems" class="history-list"></ol>
+    </section>
+    <section class="history-section" aria-labelledby="history-milestones-heading">
+      <h3 id="history-milestones-heading">Milestones</h3>
+      <ol id="history-milestones" class="history-list history-timeline"></ol>
+    </section>
+  </div>
 </section>
 
 <main id="board" class="board">

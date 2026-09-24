@@ -116,6 +116,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--short", action="store_true", help="one line, for status lines")
     p.set_defaults(handler=_cmd_status)
 
+    p = sub.add_parser(
+        "history", help="sync a project's milestones, problems and dead ends (spends tokens)"
+    )
+    p.add_argument("--cwd", default=None, help="project folder (default: current directory)")
+    p.set_defaults(handler=_cmd_history)
+
     p = sub.add_parser("hook", help="handle a Claude Code hook event from stdin")
     p.set_defaults(handler=_cmd_hook)
 
@@ -280,6 +286,27 @@ def _cmd_status(args: argparse.Namespace, config: Config, out: TextIO) -> int:
             f"needs attention {attention}",
             file=out,
         )
+    return 0
+
+
+def _cmd_history(args: argparse.Namespace, config: Config, out: TextIO) -> int:
+    from tasky import insights
+
+    cwd = os.path.abspath(args.cwd or os.getcwd())
+    try:
+        summary = insights.sync(config, cwd)
+    except insights.SyncError as exc:
+        print(f"tasky: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"{summary['tasks']} task(s) read in {summary['batches']} batch(es): "
+        f"{summary['added']} record(s) added, {summary['updated']} updated, "
+        f"${summary['cost_usd']:.4f}, {summary['pending']} task(s) still to sync",
+        file=out,
+    )
+    if summary["error"]:
+        print(f"tasky: sync stopped: {summary['error']}", file=sys.stderr)
+        return 1
     return 0
 
 
