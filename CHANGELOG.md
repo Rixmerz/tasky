@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] - 2026-09-24
+
+### Added
+
+- MCP tools `search_cards` (the Compact dashboard's cards by words, status or scope; every word,
+  then any word) and `get_card` (one card in full, with criteria marked stated or inferred).
+
+### Changed
+
+- Cards are written in the language of the developer's prompts: detected from function words
+  with no model (Spanish, English, Portuguese, French, German, Italian), named to Haiku, and
+  checked on every card returned. A card in another language goes back once for translation of
+  its wording only; `tasky compact` reports how many were translated.
+
 ## [0.13.0] - 2026-09-24
 
 ### Added

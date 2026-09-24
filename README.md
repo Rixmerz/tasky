@@ -282,7 +282,10 @@ Reading the history is free. It also reaches the agent in two ways:
   the moment it knows, with no sync and no extra model call; those attempts are tagged "agent".
   `search_conversations` searches every stored message (with the turns around each hit) and
   `last_session` says what the latest sessions in the repository did, with their latest recap.
-  `get_architecture` names the repository's areas (see below).
+  `get_architecture` names the repository's areas (see below). `search_cards` finds the cards
+  of the Compact dashboard by words (every word, then any word), status or scope, and
+  `get_card` returns one in full: objective, description, criteria (stated or inferred), tasks,
+  commits, problems, milestones and files.
 
 `search_history` climbs a fixed ladder of free steps and stops at the first one with results, so
 it never turns into a hunt: every word as written, plus the problems and milestones of any area
@@ -320,6 +323,15 @@ and a task goes in one card only. A criterion is marked **stated** only when its
 word for word in one of the card's prompts; every other one is marked **inferido**. Files come
 from the edits Tasky recorded, never from the model, and there are no line numbers: they change
 with every later commit. A card that is wrong can be removed. The CLI is `tasky compact`.
+
+Cards are written in the language of your prompts. Tasky tells it from their function words
+("el", "los", "cuando" against "the", "which", "when"; also Portuguese, French, German and
+Italian), with no model, names it to Haiku in the prompt, and checks every card that comes back:
+one written in another language goes back to Haiku once, only its wording (title, objective,
+description, criteria), for translation. Which tasks it holds is not asked again, and a stated
+criterion's quote keeps your own words. When the prompts are too short to tell, Haiku is asked to
+follow them and nothing is checked. `tasky compact` reports the language and how many cards were
+translated.
 
 ### Architecture: areas and specs
 

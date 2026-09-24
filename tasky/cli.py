@@ -393,6 +393,12 @@ def _cmd_compact(args: argparse.Namespace, config: Config, out: TextIO) -> int:
         f"${summary['cost_usd']:.4f}, {summary['pending']} task(s) still to compact",
         file=out,
     )
+    if summary["language"]:
+        line = f"written in {summary['language']}"
+        if summary["translated"] or summary["untranslated"]:
+            line += (f"; {summary['translated']} card(s) translated, "
+                     f"{summary['untranslated']} left in another language")
+        print(line, file=out)
     if summary["error"]:
         print(f"tasky: compaction stopped: {summary['error']}", file=sys.stderr)
         return 1

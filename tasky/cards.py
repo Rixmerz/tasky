@@ -7,7 +7,10 @@ sync already did the judging (what failed, what was decided) and the cards just 
 word it. Like the sync, nothing it returns is trusted: tasks, commits, problems and milestones
 must be ones it was shown, and a criterion counts as stated by the developer only when its quote
 appears verbatim in one of the card's prompts; every other criterion is marked inferred. The
-files of a card come from the edits its tasks recorded, never from the model.
+files of a card come from the edits its tasks recorded, never from the model. The language
+the cards are written in is the one the developer's prompts are in, detected without a model,
+named to Haiku outright and checked on every card it returns; a card that comes back in another
+language is sent back for translation alone.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from collections import Counter
 from typing import Any
 
 from tasky import areas as area_rules
-from tasky import history
+from tasky import history, language
 from tasky.config import Config
 from tasky.store import Store
 
@@ -70,8 +73,40 @@ listed in <problems> and <milestones>. commits: short hashes from <git_log>, onl
 clearly belongs to this work.
 - For an existing card, return only what changes: its existing_id, the new task_ids, and any \
 field whose value should now be different (for example its status).
-- Write in the language the developer writes in. Never invent ids.
+- Write title, objective, description and every criterion's text in the language named in \
+<language>: the developer's. The replies, code and git log you are shown may be in English; \
+that does not change the language of the cards. A quote stays exactly as the developer wrote \
+it. Never invent ids.
 """
+
+TRANSLATE_PROMPT = """\
+You translate issue-tracker cards. Rewrite every field you are given in the language the \
+request names, keeping its meaning. Leave names, file paths, identifiers, commands, code and \
+product names exactly as they are. Return each card with the same index, the same fields and \
+its criteria in the same order.
+"""
+
+TRANSLATE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "cards": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer"},
+                    "title": {"type": "string"},
+                    "objective": {"type": "string"},
+                    "description": {"type": "string"},
+                    "criteria": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["index"],
+            },
+        }
+    },
+    "required": ["cards"],
+}
+_WORDED = ("title", "objective", "description")
 
 _CRITERION_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -139,6 +174,80 @@ def _asked(task: dict) -> str:
     return "\n".join([task.get("body") or "", *extra])
 
 
+def developer_language(tasks: list[dict]) -> str | None:
+    """The language code the developer's prompts are in, None when they do not say."""
+    return language.detect("\n".join(_asked(t) for t in tasks))
+
+
+def _card_text(item: dict) -> str:
+    criteria = item.get("criteria") if isinstance(item.get("criteria"), list) else []
+    texts = [item.get(k) for k in _WORDED]
+    texts += [c.get("text") for c in criteria if isinstance(c, dict)]
+    return "\n".join(t for t in texts if isinstance(t, str))
+
+
+def off_language(output: dict, code: str | None) -> list[int]:
+    """Indexes of the returned cards written in a language other than the developer's."""
+    if code is None:
+        return []
+    items = output.get("cards") if isinstance(output.get("cards"), list) else []
+    return [
+        i for i, item in enumerate(items)
+        if isinstance(item, dict) and language.detect(_card_text(item)) not in (None, code)
+    ]
+
+
+def translate(
+    config: Config, output: dict, indexes: list[int], code: str, *, run: history.Runner
+) -> tuple[int, float]:
+    """Rewrite those cards' wording in the developer's language, in place.
+
+    Only the wording goes back to the model: which tasks a card holds was already decided and is
+    not asked again. A quote is the developer's own words and never leaves. Returns how many cards
+    came back in the right language, and the cost.
+    """
+    items = output["cards"]
+    asked = []
+    for i in indexes:
+        item = items[i]
+        entry: dict[str, Any] = {"index": i}
+        entry.update({k: item[k] for k in _WORDED if isinstance(item.get(k), str)})
+        criteria = [c for c in item.get("criteria") or [] if isinstance(c, dict)]
+        if criteria:
+            entry["criteria"] = [str(c.get("text") or "") for c in criteria]
+        asked.append(entry)
+    prompt = (
+        f"Translate into {language.name(code)}.\n\n<cards>\n"
+        + "\n".join(json.dumps(e, ensure_ascii=False) for e in asked)
+        + f"\n</cards>\n\nEvery field in {language.name(code)}."
+    )
+    result, cost = history.call_model(
+        config, MODEL, prompt, run=run, system_prompt=TRANSLATE_PROMPT, schema=TRANSLATE_SCHEMA,
+    )
+    fixed = 0
+    wanted = set(indexes)
+    for back in result.get("cards") or []:
+        if not isinstance(back, dict) or back.get("index") not in wanted:
+            continue
+        item = items[back["index"]]
+        candidate = dict(item)
+        for key in _WORDED:
+            if isinstance(item.get(key), str) and _text(back.get(key), 10_000):
+                candidate[key] = back[key]
+        texts = back.get("criteria")
+        criteria = [c for c in item.get("criteria") or [] if isinstance(c, dict)]
+        if isinstance(texts, list) and len(texts) == len(criteria):
+            candidate["criteria"] = [
+                {**c, "text": t} if isinstance(t, str) and t.strip() else c
+                for c, t in zip(criteria, texts, strict=True)
+            ]
+        if language.detect(_card_text(candidate)) in (None, code):
+            items[back["index"]] = candidate
+            fixed += 1
+        wanted.discard(back["index"])
+    return fixed, cost
+
+
 def _batch(tasks: list[dict]) -> list[dict]:
     kept: list[dict] = []
     used = 0
@@ -171,8 +280,10 @@ def build_prompt(
     milestones: list[dict],
     areas: list[dict],
     git: str,
+    code: str | None = None,
 ) -> str:
-    lines: list[str] = []
+    written_in = language.name(code) or "the language the developer writes the tasks in"
+    lines: list[str] = [f"<language>{written_in}</language>", ""]
     if areas:
         lines += ["<areas>", ", ".join(a["name"] for a in areas), "</areas>", ""]
     lines.append("<cards>")
@@ -207,6 +318,7 @@ def build_prompt(
     lines.append("</tasks>")
     if git:
         lines += ["", "<git_log>", git, "</git_log>"]
+    lines += ["", f"Write every card in {written_in}."]
     return "\n".join(lines)
 
 
@@ -337,7 +449,8 @@ def compact(
         if not store.begin_card_run(repo, stale_after_s=STALE_RUN_S):
             raise CardsError("cards of this repository are already being made")
     summary: dict[str, Any] = {"batches": 0, "tasks": 0, "added": 0, "updated": 0,
-                               "left_out": 0, "cost_usd": 0.0, "model": MODEL}
+                               "left_out": 0, "cost_usd": 0.0, "model": MODEL,
+                               "language": None, "translated": 0, "untranslated": 0}
     error: str | None = None
     try:
         for _ in range(MAX_BATCHES):
@@ -356,8 +469,10 @@ def compact(
                 milestones = milestones[-KNOWN_MILESTONES:]
                 areas = store.areas(repo)
             git = history.git_log(cwds[0], tasks)
+            code = developer_language(tasks)
+            summary["language"] = language.name(code) or summary["language"]
             prompt = build_prompt(tasks, files, task_areas, cards, problems, milestones, areas,
-                                  git)
+                                  git, code)
             try:
                 output, cost = history.call_model(
                     config, MODEL, prompt, run=run, system_prompt=SYSTEM_PROMPT,
@@ -366,6 +481,15 @@ def compact(
             except history.SyncError as exc:
                 raise CardsError(str(exc)) from exc
             summary["cost_usd"] += cost
+            wrong = off_language(output, code)
+            if wrong and code is not None:
+                try:
+                    fixed, cost = translate(config, output, wrong, code, run=run)
+                except history.SyncError:
+                    fixed, cost = 0, 0.0  # the cards are kept as written; the count says so
+                summary["cost_usd"] += cost
+                summary["translated"] += fixed
+                summary["untranslated"] += len(wrong) - fixed
             shown = _Shown(tasks, cards, problems, milestones, areas, git)
             with Store.open(config) as store:
                 result = apply_output(store, repo, output, shown)
@@ -387,9 +511,18 @@ def compact(
     return summary
 
 
+def view_one(store: Store, card_id: int) -> list[dict]:
+    """One card, filled in like view() fills them; empty when it does not exist."""
+    card = store.get_card(card_id)
+    return [] if card is None else _fill(store, [card], card["repo"])
+
+
 def view(store: Store, repo: str | None) -> list[dict]:
     """Cards with what the ledger knows about them: files, tasks, problems, milestones."""
-    cards = store.cards(repo)
+    return _fill(store, store.cards(repo), repo)
+
+
+def _fill(store: Store, cards: list[dict], repo: str | None) -> list[dict]:
     if not cards:
         return []
     task_ids = {i for c in cards for i in c["task_ids"]}

@@ -216,3 +216,127 @@ def test_api_compact_and_remove(config, store, shop, tmp_path):
         srv.shutdown()
         thread.join(timeout=5)
         srv.server_close()
+
+
+# -- the developer's language ---------------------------------------------------------
+
+from tasky import language, mcp  # noqa: E402
+
+ES_1 = "agregar cupones al checkout; un cupón no se puede aplicar dos veces y el total está mal"
+ES_2 = "arreglar el redondeo de los cupones cuando el carrito tiene más de un producto"
+EN_CARD = {
+    "title": "Add coupons to checkout", "kind": "story", "status": "done",
+    "objective": "Let the shopper apply a coupon once at checkout.",
+    "description": "The cart now has a coupon field and the total is rounded to cents.",
+}
+ES_CARD = {
+    "title": "Cupones en el checkout",
+    "objective": "Que el comprador pueda aplicar un cupón una sola vez.",
+    "description": "El carrito tiene un campo para el cupón y el total se redondea.",
+}
+
+
+def test_language_is_told_by_function_words_not_code():
+    assert language.detect(f"{ES_1}. {ES_2}") == "es"
+    assert language.detect(EN_CARD["objective"] + " " + EN_CARD["description"]) == "en"
+    assert language.detect("src/checkout/coupon.ts npm run build") is None  # nothing to tell by
+    assert language.detect("el total") is None  # too few words to be sure
+
+
+def test_cards_are_written_in_the_developers_language_or_translated(config, store, shop):
+    t1 = _task(store, shop, ES_1, "p1")
+    t2 = _task(store, shop, ES_2, "p2")
+    _synced(store, shop)
+    fake = FakeHaiku(
+        {"cards": [{**EN_CARD, "task_ids": [t1["id"], t2["id"]], "criteria": [
+            {"text": "A coupon cannot be applied twice",
+             "quote": "un cupón no se puede aplicar dos veces"}]}]},
+        {"cards": [{"index": 0, **ES_CARD,
+                    "criteria": ["Un cupón no se puede aplicar dos veces"]}]},
+    )
+    summary = cards.compact(config, REPO, run=fake)
+    assert summary["language"] == "Spanish"
+    assert (summary["translated"], summary["untranslated"]) == (1, 0)
+    assert summary["cost_usd"] == pytest.approx(0.06)  # the cards and the translation
+    first, second = (c["input"] for c in fake.calls)
+    assert first.startswith("<language>Spanish</language>")
+    assert first.rstrip().endswith("Write every card in Spanish.")
+    assert "Translate into Spanish." in second and ES_1 not in second  # only the wording goes
+    [card] = store.cards(REPO)
+    assert card["title"] == "Cupones en el checkout" and card["objective"] == ES_CARD["objective"]
+    assert card["task_ids"] == [t1["id"], t2["id"]]
+    assert card["criteria"] == [{"text": "Un cupón no se puede aplicar dos veces",
+                                 "source": "stated",
+                                 "quote": "un cupón no se puede aplicar dos veces"}]
+
+
+def test_a_translation_that_does_not_take_keeps_the_card_and_says_so(config, store, shop):
+    t1 = _task(store, shop, f"{ES_1}. {ES_2}", "p1")
+    _synced(store, shop)
+    fake = FakeHaiku({"cards": [{**EN_CARD, "task_ids": [t1["id"]]}]},
+                     {"cards": [{"index": 0, **EN_CARD}]})  # "translated" into English again
+    summary = cards.compact(config, REPO, run=fake)
+    assert (summary["translated"], summary["untranslated"]) == (0, 1)
+    assert store.cards(REPO)[0]["title"] == EN_CARD["title"]
+
+
+def test_no_translation_when_the_language_cannot_be_told(config, store, shop):
+    t1 = _task(store, shop, "fix ci", "p1")
+    _synced(store, shop)
+    fake = FakeHaiku({"cards": [{**EN_CARD, "task_ids": [t1["id"]]}]})
+    summary = cards.compact(config, REPO, run=fake)
+    assert summary["language"] is None and len(fake.calls) == 1
+    assert "<language>the language the developer writes the tasks in</language>" in \
+        fake.calls[0]["input"]
+
+
+# -- MCP ------------------------------------------------------------------------------
+
+
+def _mcp(config, monkeypatch, root, name, **arguments):
+    monkeypatch.setattr(mcp.os, "getcwd", lambda: str(root))
+    out = io.StringIO()
+    request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+               "params": {"name": name, "arguments": arguments}}
+    mcp.serve(config, io.StringIO(json.dumps(request) + "\n"), out)
+    result = json.loads(out.getvalue())["result"]
+    return result["isError"], result["content"][0]["text"]
+
+
+def test_mcp_searches_and_opens_cards(config, store, shop, monkeypatch):
+    assert "No cards yet" in _mcp(config, monkeypatch, shop, "search_cards")[1]
+    t1 = _task(store, shop, "add coupons; a coupon must not apply twice", "p1",
+               ["src/checkout/coupon.ts"])
+    problem = store.add_problem(cwd=str(shop), title="Rounding", symptom="", first_seen=None,
+                                last_seen=None, task_ids=[t1["id"]])
+    card = store.add_card(
+        REPO, title="Cupones en el checkout", kind="story", status="in_progress",
+        objective="Que el comprador use cupones.", area="checkout", task_ids=[t1["id"]],
+        problem_ids=[problem], commits=["abc1234"], first_on="2026-09-01", last_on="2026-09-03",
+        criteria=[{"text": "Un cupón se aplica una vez", "source": "stated",
+                   "quote": "a coupon must not apply twice"},
+                  {"text": "El total se redondea", "source": "inferred"}],
+    )
+    store.add_card(REPO, title="CI verde", kind="chore", status="done", task_ids=[])
+    store.add_card("github.com/o/other", title="Cupones ajenos", task_ids=[])
+
+    error, text = _mcp(config, monkeypatch, shop, "search_cards", query="cupon redondea")
+    assert not error and text.startswith(f"card #{card} [in_progress] story: Cupones en el")
+    assert "checkout, 2026-09-01 → 2026-09-03, 1 task(s)" in text and "ajenos" not in text
+    error, text = _mcp(config, monkeypatch, shop, "search_cards", query="cupon verde")
+    assert text.startswith("No card has every word") and "CI verde" in text
+    assert "Cupones ajenos" in _mcp(config, monkeypatch, shop, "search_cards", query="cupones",
+                                    scope="all")[1]
+    text = _mcp(config, monkeypatch, shop, "search_cards", status="done")[1]
+    assert "CI verde" in text and "Cupones en" not in text
+    assert "1 in_progress" in _mcp(config, monkeypatch, shop, "search_cards", query="zzz")[1]
+    assert _mcp(config, monkeypatch, shop, "search_cards", status="open")[0]
+
+    error, text = _mcp(config, monkeypatch, shop, "get_card", id=card)
+    assert not error
+    assert '- Un cupón se aplica una vez (stated: "a coupon must not apply twice")' in text
+    assert "- El total se redondea (inferred)" in text
+    assert f"#{t1['id']} 2026-09-01 [done]" in text and "commits: abc1234" in text
+    assert f"problem #{problem} [open] Rounding" in text
+    assert "files: src/checkout/coupon.ts" in text
+    assert _mcp(config, monkeypatch, shop, "get_card", id=9999) == (True, "no such card")

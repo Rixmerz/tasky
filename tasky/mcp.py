@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import os
+import unicodedata
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, TextIO
 
-from tasky import __version__, repos
+from tasky import __version__, cards, repos
 from tasky.config import Config
 from tasky.store import Store
 
@@ -29,7 +31,9 @@ INSTRUCTIONS = (
     "Tasky keeps, per repository, problems with the ordered chain of fixes tried and why each "
     "failed, plus milestones. Before fixing a bug, search_history for it: a fix that already "
     "failed must not be applied again. After a fix is confirmed to work or not, record_attempt. "
-    "get_architecture names the repository's areas, their folders, specs and open problems."
+    "get_architecture names the repository's areas, their folders, specs and open problems. "
+    "search_cards finds the work items (issue-tracker cards with acceptance criteria) the tasks "
+    "were grouped into."
 )
 
 TOOLS: list[dict[str, Any]] = [
@@ -98,6 +102,30 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "area": {"type": "string", "description": "an area name or alias for detail"}
             },
+        },
+    },
+    {
+        "name": "search_cards",
+        "description": "Issue-tracker cards the repository's tasks were grouped into (Compact "
+        "dashboard): title, kind, status, area, objective. Words match title, objective, "
+        "description, area and criteria; no query lists the latest.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "status": {"type": "string", "enum": list(cards.STATUSES)},
+                "scope": _SCOPE,
+            },
+        },
+    },
+    {
+        "name": "get_card",
+        "description": "One card in full: objective, description, acceptance criteria (stated "
+        "by the developer or inferred), tasks, commits, problems, milestones and files edited.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "required": ["id"],
         },
     },
     {
@@ -249,6 +277,16 @@ def call_tool(store: Store, name: str, args: dict) -> str:
         return _record_attempt(store, args)
     if name == "get_architecture":
         return _architecture(store, str(args.get("area") or "").strip())
+    if name == "search_cards":
+        if args.get("status") not in (None, "", *cards.STATUSES):
+            raise ToolError(f"status must be one of {', '.join(cards.STATUSES)}")
+        return _search_cards(store, str(args.get("query") or "").strip(),
+                             args.get("status"), _scope_repo(store, args))
+    if name == "get_card":
+        card = next((c for c in cards.view_one(store, _int(args, "id"))), None)
+        if card is None:
+            raise ToolError("no such card")
+        return _format_card(card)
     if name == "search_conversations":
         query = str(args.get("query") or "").strip()
         if not query:
@@ -271,6 +309,81 @@ def call_tool(store: Store, name: str, args: dict) -> str:
 
 
 HISTORY_HITS = 20
+CARD_HITS = 20
+
+
+def _fold(text: str) -> str:
+    """Lower case without accents, so "sesion" finds "sesión"."""
+    decomposed = unicodedata.normalize("NFKD", text or "")
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
+
+
+def _card_line(card: dict) -> str:
+    when = " → ".join(dict.fromkeys(d for d in (card["first_on"], card["last_on"]) if d))
+    facts = [card["area"] or "", when, f"{len(card['task_ids'])} task(s)"]
+    line = f"card #{card['id']} [{card['status']}] {card['kind']}: {card['title']}"
+    line += f" ({', '.join(f for f in facts if f)})"
+    return line + (f"\n  objective: {card['objective']}" if card.get("objective") else "")
+
+
+def _search_cards(store: Store, query: str, status: object, repo: str | None) -> str:
+    """Every word, then any word, over the cards' own text; no query lists the latest."""
+    found = [c for c in store.cards(repo) if status in (None, "", c["status"])]
+    if not found:
+        return "No cards yet: they are made from the History tab (Compact dashboard)."
+    header = ""
+    if query:
+        words = _fold(query).split()
+        texts = {
+            c["id"]: _fold(" ".join([
+                c["title"], c["objective"] or "", c["description"] or "", c["area"] or "",
+                *(k.get("text") or "" for k in c["criteria"] if isinstance(k, dict)),
+            ]))
+            for c in found
+        }
+        every = [c for c in found if all(w in texts[c["id"]] for w in words)]
+        if not every:
+            every = [c for c in found if any(w in texts[c["id"]] for w in words)]
+            header = "No card has every word; these have some of them." if every else ""
+        if not every:
+            counts = Counter(c["status"] for c in found)
+            return "No matching cards. Cards here: " + ", ".join(
+                f"{n} {s}" for s, n in counts.most_common()
+            )
+        found = every
+    lines = [_card_line(c) for c in found[:CARD_HITS]]
+    if len(found) > CARD_HITS:
+        lines.append(f"(+{len(found) - CARD_HITS} more)")
+    return "\n".join([header, *lines] if header else lines)
+
+
+def _format_card(card: dict) -> str:
+    lines = [_card_line(card).split("\n")[0] + f" [repo {card['repo']}]"]
+    if card.get("objective"):
+        lines.append(f"objective: {card['objective']}")
+    if card.get("description"):
+        lines.append(f"description: {card['description']}")
+    if card["criteria"]:
+        lines.append("acceptance criteria:")
+        for c in card["criteria"]:
+            if c.get("source") == "stated":
+                lines.append(f'  - {c["text"]} (stated: "{c.get("quote", "")}")')
+            else:
+                lines.append(f"  - {c['text']} (inferred)")
+    if card["tasks"]:
+        lines.append("tasks: " + "; ".join(
+            f"#{t['id']} {t['date']} [{t['status']}] {t['title']}" for t in card["tasks"]
+        ))
+    if card["commits"]:
+        lines.append("commits: " + ", ".join(card["commits"]))
+    for p in card["problems"]:
+        lines.append(f"problem #{p['id']} [{p['state']}] {p['title']}")
+    for m in card["milestones"]:
+        lines.append(f"milestone {m['happened_on'] or '?'} {m['title']}")
+    if card["files"]:
+        more = card["files_total"] - len(card["files"])
+        lines.append("files: " + ", ".join(card["files"]) + (f" (+{more} more)" if more else ""))
+    return "\n".join(lines)
 
 
 def _search_history(store: Store, query: str, repo: str | None) -> str:
