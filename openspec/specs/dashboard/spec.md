@@ -284,3 +284,23 @@ the newest task of its session. Cards SHALL show the start of the reply, duratio
 output tokens and follow-ups; Done SHALL be grouped by day and session; the latest recap of each
 open session SHALL be shown above the columns and recaps SHALL appear among the tasks where they
 happened; open sessions running hooks older than the dashboard SHALL be flagged.
+
+### Requirement: Compact dashboard as cards
+The History panel SHALL offer, for one repository, to group its finished tasks into cards, only
+when that repository's history sync is up to date and not running and some finished task is in
+no card yet. The system SHALL run it in the background with Haiku, in batches of up to 60 tasks
+past a per-repository cursor, showing the model the cards kept so far, the tasks with the files
+they edited, the areas, the problems and milestones of those tasks and the open problems, and the
+git log of the same days. A card SHALL keep only tasks, problems, milestones, existing cards and
+commits the model was shown, each task in one card; a criterion SHALL be "stated" only when its
+quote appears in a prompt of the card's tasks, otherwise "inferred". The files of a card SHALL be
+the files its tasks edited, from the recorded edits. The Cards tab SHALL show the cards as a board
+by status, and a card SHALL be removable.
+
+#### Scenario: History behind
+- **WHEN** the repository has 3 finished tasks the history sync has not read
+- **THEN** the button is disabled saying the history must be synced first, and the API answers 409
+
+#### Scenario: Invented quote
+- **WHEN** the model gives a criterion with a quote no prompt of the card contains
+- **THEN** the criterion is kept and marked inferred

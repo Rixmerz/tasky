@@ -358,7 +358,7 @@ def test_v6_database_migrates_without_rereading_transcripts(tmp_path, config):
         store._conn.execute("ALTER TABLE repos DROP COLUMN root")
         store._conn.commit()
     with Store.open(config) as store:
-        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 10
         assert store.transcript_offset("/t.jsonl") == (10, 10)
         row = store.repo_row("/p")
         assert row["root"] is None and row["checked_at"] == ""  # resolved again, with its root

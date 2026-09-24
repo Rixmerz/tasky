@@ -213,6 +213,11 @@ const el = {
   historyModel: document.getElementById("history-model"),
   historySync: document.getElementById("history-sync"),
   historySyncStatus: document.getElementById("history-sync-status"),
+  historySyncControls: document.getElementById("history-sync-controls"),
+  historyCardsMake: document.getElementById("history-cards-make"),
+  historyCardsHint: document.getElementById("history-cards-hint"),
+  historyCardsStatus: document.getElementById("history-cards-status"),
+  historyCards: document.getElementById("history-cards"),
   historyEmpty: document.getElementById("history-empty"),
   historyBody: document.getElementById("history-body"),
   historyTabs: document.getElementById("history-tabs"),
@@ -2872,7 +2877,7 @@ document.addEventListener("keydown", (evt) => {
 // the chain of attempts that led to (or away from) a fix. Reading it is free;
 // only Sync spends tokens, with the model picked next to the button.
 
-const HISTORY_VIEWS = ["timeline", "problems", "deadends", "map"];
+const HISTORY_VIEWS = ["cards", "timeline", "problems", "deadends", "map"];
 const HISTORY_TAB_KEY = "tasky.historyTab";
 const HISTORY_MODEL_KEY = "tasky.historyModel";
 const HISTORY_DEFAULT_MODELS = ["sonnet", "opus"];
@@ -2886,6 +2891,13 @@ const HISTORY_OUTCOME = {
 };
 const HISTORY_FLASH_MS = 1500;
 const HISTORY_START_GRACE_MS = 4000;
+const CARD_KIND_LABEL = { story: "Story", bug: "Bug", chore: "Chore", spike: "Spike" };
+const CARD_COLUMNS = [
+  ["in_progress", "In progress"],
+  ["blocked", "Blocked"],
+  ["done", "Done"],
+  ["dropped", "Dropped"],
+];
 
 let historyOpen = false;
 let historyScope = ""; // a repo key, "all", or "" until the repo list is known
@@ -2900,6 +2912,12 @@ let historyFilterText = "";
 let historyRenderedKey = "";
 let historyScopeOptionsKey = "";
 let historyModelOptionsKey = "";
+let cardsStarting = ""; // repo key a card run was just asked for, until the server reports it running
+let cardsStartTimer = null;
+let cardsWasRunning = false;
+let cardsNotice = null; // {repo, text} when the last Compact dashboard click could not start a run
+const cardsExpanded = new Set();
+let cardConfirming = null; // the card id whose Remove waits for "Yes, remove"
 
 function readLocal(key) {
   try {
@@ -2962,6 +2980,7 @@ function scopeHistoryData(data, scope) {
     scope,
     milestones: (data.milestones || []).filter((m) => m.repo === scope),
     problems: (data.problems || []).filter((p) => p.repo === scope),
+    cards: (data.cards || []).filter((c) => c.repo === scope),
   };
 }
 
@@ -2976,6 +2995,8 @@ function openHistory() {
   if (!historyScopeChosen) historyScope = historyRepos.length ? defaultHistoryScope(historyRepos) : "";
   historyData = null;
   historyRenderedKey = "";
+  cardConfirming = null;
+  cardsWasRunning = false;
   renderHistory();
   loadHistory();
   el.historyHeading.focus();
@@ -3023,11 +3044,21 @@ async function loadHistory() {
   }
   data.milestones = Array.isArray(data.milestones) ? data.milestones : [];
   data.problems = Array.isArray(data.problems) ? data.problems : [];
+  data.cards = Array.isArray(data.cards) ? data.cards : [];
   historyData = data;
   const repo = currentHistoryRepo();
   if (historyStarting && repo && repo.repo === historyStarting && repo.sync && repo.sync.state === "running") {
     clearHistoryStarting();
   }
+  const cardsState = repo && repo.cards;
+  if (cardsStarting && repo && repo.repo === cardsStarting && cardsState && cardsState.running) clearCardsStarting();
+  const cardsRunning = cardsIsRunning(repo);
+  if (cardsWasRunning && !cardsRunning && cardsState && cardsState.run) {
+    if (cardsState.run.error) announce(`Cards stopped: ${cardsState.run.error}`);
+    else announce(`Dashboard ready: ${plural(data.cards.length, "card")}`);
+  }
+  cardsWasRunning = cardsRunning;
+  if (cardsRunning) cardsNotice = null;
   renderHistory();
 }
 
@@ -3065,6 +3096,96 @@ async function startHistorySync() {
     historyStartTimer = null;
     loadHistory();
   }, HISTORY_START_GRACE_MS);
+}
+
+// ----- compact dashboard (cards) -----
+
+function clearCardsStarting() {
+  cardsStarting = "";
+  clearTimeout(cardsStartTimer);
+  cardsStartTimer = null;
+}
+
+function cardsIsRunning(repo) {
+  return Boolean(repo) && (cardsStarting === repo.repo || Boolean(repo.cards && repo.cards.running));
+}
+
+/** Whether Compact dashboard can run for the shown scope, and the hint that says why (not). */
+function cardsReadiness(repo) {
+  if (!repo) return { ready: false, hint: "pick a repository" };
+  const c = repo.cards || {};
+  const synced = c.pending || 0;
+  if (cardsIsRunning(repo)) return { ready: false, hint: "making cards…" };
+  if (historyIsRunning(repo) || c.history_running) return { ready: false, hint: "wait for the sync" };
+  if (c.history_pending) return { ready: false, hint: `sync first: ${plural(c.history_pending, "task")} not synced` };
+  if (!synced) return { ready: false, hint: "every task is in a card" };
+  return { ready: true, hint: `${modelLabel((historyData && historyData.cards_model) || "haiku")} groups the ${plural(synced, "synced task")} into cards · a few cents` };
+}
+
+async function startCards() {
+  const repo = currentHistoryRepo();
+  if (!repo || !cardsReadiness(repo).ready) return;
+  cardsNotice = null;
+  cardsStarting = repo.repo;
+  renderHistorySync();
+  try {
+    await apiMutate("POST", "/api/cards/compact", { repo: repo.repo });
+    announce("Making cards");
+  } catch (err) {
+    clearCardsStarting();
+    const text = archErrorText(err);
+    if (text) cardsNotice = { repo: repo.repo, text };
+    renderHistorySync();
+    loadHistory();
+    return;
+  }
+  cardsWasRunning = true;
+  // Same as a sync: the run claims the repo a moment after it starts.
+  clearTimeout(cardsStartTimer);
+  cardsStartTimer = setTimeout(() => {
+    cardsStarting = "";
+    cardsStartTimer = null;
+    loadHistory();
+  }, HISTORY_START_GRACE_MS);
+}
+
+function renderCardsAction(repo) {
+  const { ready, hint } = cardsReadiness(repo);
+  const running = cardsIsRunning(repo);
+  el.historyCardsMake.disabled = !ready;
+  el.historyCardsMake.textContent = running ? "Making cards…" : "Compact dashboard";
+  el.historyCardsHint.textContent = hint;
+
+  const status = el.historyCardsStatus;
+  status.textContent = "";
+  status.title = "";
+  if (!repo) return;
+  const run = repo.cards && repo.cards.run;
+  if (run && run.total_cost_usd) status.title = `Spent on cards of this repo so far: $${Number(run.total_cost_usd).toFixed(4)}`;
+  if (running) {
+    status.textContent = `Making cards with ${modelLabel((historyData && historyData.cards_model) || "haiku")}…`;
+    return;
+  }
+  if (cardsNotice && cardsNotice.repo === repo.repo) {
+    const err = document.createElement("span");
+    err.className = "history-cards-error";
+    err.textContent = cardsNotice.text;
+    status.appendChild(err);
+    return;
+  }
+  if (!run || !(run.finished_at || run.error)) return;
+  const count = historyData ? historyData.cards.filter((c) => c.repo === repo.repo).length : 0;
+  const when = archWhen(run.finished_at || run.started_at);
+  const parts = [plural(count, "card")];
+  if (run.last_cost_usd) parts.push(`$${Number(run.last_cost_usd).toFixed(4)}`);
+  if (run.error) {
+    const err = document.createElement("span");
+    err.className = "history-cards-error";
+    err.textContent = `Cards stopped${when ? ` ${when}` : ""}: ${run.error}`;
+    status.append(err, document.createTextNode(` · ${parts.join(" · ")}`));
+    return;
+  }
+  status.textContent = [when ? `Cards made ${when}` : "Cards made", ...parts].join(" · ");
 }
 
 // ----- header, sync row, tabs -----
@@ -3176,8 +3297,12 @@ async function copyCompact(command, button, label) {
 
 function renderHistorySync() {
   const repo = currentHistoryRepo();
-  el.historySyncRow.hidden = !repo;
+  // "All repos" keeps the row for the Compact dashboard button and its hint.
+  el.historySyncRow.hidden = !repo && !(historyScope === "all" && historyRepos.length);
+  el.historySyncControls.hidden = !repo;
+  el.historySyncStatus.hidden = !repo;
   renderHistoryCompact(repo);
+  renderCardsAction(repo);
   if (!repo) return;
   renderHistoryModelOptions();
   const running = historyIsRunning(repo);
@@ -3243,7 +3368,7 @@ function renderHistory() {
   let emptyText = "";
   if (!historyRepos.length) {
     emptyText = "No repos recorded yet.";
-  } else if (data.milestones.length + data.problems.length === 0) {
+  } else if (data.milestones.length + data.problems.length + data.cards.length === 0) {
     const repo = currentHistoryRepo();
     if (!repo) emptyText = "No history for any repo yet. Pick a repo to sync it.";
     else if (repo.pending) emptyText = `No history for this repo yet. Sync reads its ${plural(repo.pending, "recorded task")} with the chosen model.`;
@@ -3258,7 +3383,7 @@ function renderHistory() {
   }
   // Polls re-deliver the same history often; rebuilding it would drop focus
   // and scroll position for nothing.
-  const key = JSON.stringify([data.scope, data.milestones, data.problems, historyFilterText]);
+  const key = JSON.stringify([data.scope, data.milestones, data.problems, data.cards, historyFilterText]);
   if (key !== historyRenderedKey) {
     historyRenderedKey = key;
     renderHistoryViews();
@@ -3278,6 +3403,12 @@ function milestoneMatches(m) {
 
 function attemptMatches(a) {
   return !historyFilterText || historyHaystack(a.description, a.why, a.evidence).includes(historyFilterText);
+}
+
+function cardMatches(c) {
+  if (!historyFilterText) return true;
+  const criteria = (c.criteria || []).map((k) => k.text);
+  return historyHaystack(c.title, c.objective, c.description, c.area, ...criteria, ...(c.files || [])).includes(historyFilterText);
 }
 
 function problemMatches(p) {
@@ -3316,13 +3447,16 @@ function renderHistoryViews() {
   const milestones = data.milestones.filter(milestoneMatches);
   const problems = sortProblems(data.problems.filter(problemMatches));
   const deadEnds = collectDeadEnds(problems);
+  const cards = data.cards.filter(cardMatches);
   const filtered = Boolean(historyFilterText);
 
+  renderCards(cards, showRepo, filtered);
   renderTimeline(milestones, showRepo, filtered);
   renderProblems(problems, showRepo, filtered);
   renderDeadEnds(deadEnds, showRepo, filtered);
   renderMap(milestones, problems, showRepo, filtered);
 
+  setHistoryCount("cards", cards.length);
   setHistoryCount("timeline", milestones.length);
   setHistoryCount("problems", problems.length);
   setHistoryCount("deadends", deadEnds.length);
@@ -3437,6 +3571,325 @@ function goToHistoryItem(view, id) {
   void target.offsetWidth; // restart the animation when flashed twice in a row
   target.classList.add("is-flash");
   setTimeout(() => target.classList.remove("is-flash"), HISTORY_FLASH_MS);
+}
+
+// ----- cards -----
+
+function cardDates(first, last) {
+  if (!first || !last || first === last) return first || last || "";
+  return `${first} → ${last}`;
+}
+
+function cardColumn(c) {
+  return CARD_COLUMNS.some(([status]) => status === c.status) ? c.status : "in_progress";
+}
+
+function renderCards(cards, showRepo, filtered) {
+  const board = el.historyCards;
+  const active = document.activeElement;
+  const focusKey = board.contains(active) ? active.dataset.focus || "" : "";
+  board.textContent = "";
+  let empty = "";
+  if (!cards.length) {
+    if (filtered) empty = noMatchText("cards");
+    else if (showRepo) empty = "No cards yet. Pick a repository, sync its history, then Compact dashboard groups its tasks into cards.";
+    else empty = "No cards yet. Compact dashboard groups this repo's synced tasks into cards: objective, acceptance criteria, tasks, commits and files. Sync the history first.";
+  }
+  setTabEmpty("cards", empty);
+  board.hidden = !cards.length;
+  for (const [status, label] of CARD_COLUMNS) {
+    const inColumn = cards.filter((c) => cardColumn(c) === status);
+    if (!inColumn.length) continue;
+    const col = document.createElement("section");
+    col.className = "cards-col";
+    col.dataset.status = status;
+    col.setAttribute("aria-labelledby", `cards-col-${status}`);
+    const head = document.createElement("h3");
+    head.className = "cards-col-head";
+    head.id = `cards-col-${status}`;
+    const count = document.createElement("span");
+    count.className = "tab-count";
+    count.textContent = String(inColumn.length);
+    head.append(document.createTextNode(`${label} `), count);
+    const list = document.createElement("ul");
+    list.className = "cards-col-list";
+    for (const c of inColumn) list.appendChild(buildCardItem(c, showRepo));
+    col.append(head, list);
+    board.appendChild(col);
+  }
+  if (focusKey) restoreCardFocus(focusKey);
+}
+
+function restoreCardFocus(key) {
+  const node = el.historyCards.querySelector(`[data-focus="${CSS.escape(key)}"]`);
+  if (node) node.focus();
+}
+
+function buildCardItem(c, showRepo) {
+  const kind = CARD_KIND_LABEL[c.kind] ? c.kind : "story";
+  const li = document.createElement("li");
+  li.className = "card-tile";
+  li.id = `card-${c.id}`;
+  li.dataset.kind = kind;
+  const open = cardsExpanded.has(c.id);
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "card-toggle";
+  toggle.dataset.focus = `card-${c.id}`;
+  toggle.setAttribute("aria-expanded", String(open));
+  toggle.setAttribute("aria-controls", `card-detail-${c.id}`);
+
+  const top = document.createElement("span");
+  top.className = "card-top";
+  top.appendChild(historyChip(CARD_KIND_LABEL[kind], `card-kind card-kind-${kind}`));
+  const dates = cardDates(c.first_on, c.last_on);
+  if (dates) {
+    const when = document.createElement("span");
+    when.className = "history-date card-date";
+    when.textContent = dates;
+    top.appendChild(when);
+  }
+  const title = document.createElement("span");
+  title.className = "card-title";
+  title.textContent = c.title;
+  toggle.append(top, title);
+
+  if (c.area || showRepo) {
+    const chips = document.createElement("span");
+    chips.className = "card-chips";
+    if (c.area) chips.appendChild(historyChip(c.area, "history-topic"));
+    if (showRepo) chips.appendChild(historyChip(historyRepoLabel(c.repo), "history-repo"));
+    toggle.appendChild(chips);
+  }
+  const files = c.files_total || (c.files || []).length;
+  const counts = document.createElement("span");
+  counts.className = "card-counts";
+  counts.textContent = [
+    plural((c.task_ids || c.tasks || []).length, "task"),
+    plural((c.commits || []).length, "commit"),
+    plural(files, "file"),
+  ].join(" · ");
+  toggle.appendChild(counts);
+
+  const detail = document.createElement("div");
+  detail.className = "card-detail";
+  detail.id = `card-detail-${c.id}`;
+  detail.hidden = !open;
+  if (open) fillCardDetail(detail, c);
+
+  toggle.addEventListener("click", () => {
+    const now = !cardsExpanded.has(c.id);
+    if (now) cardsExpanded.add(c.id);
+    else cardsExpanded.delete(c.id);
+    toggle.setAttribute("aria-expanded", String(now));
+    if (now && !detail.childElementCount) fillCardDetail(detail, c);
+    detail.hidden = !now;
+  });
+  li.append(toggle, detail);
+  return li;
+}
+
+function cardSection(title, body) {
+  const section = document.createElement("div");
+  section.className = "card-section";
+  const h = document.createElement("h4");
+  h.className = "card-section-title";
+  h.textContent = title;
+  section.append(h, body);
+  return section;
+}
+
+function cardList(className) {
+  const ul = document.createElement("ul");
+  ul.className = `card-list ${className || ""}`.trim();
+  return ul;
+}
+
+/** Go to a problem or milestone, clearing the filter first when it hides the target. */
+function goToHistoryLinked(view, id) {
+  if (!document.getElementById(id) && historyFilterText) {
+    el.historyFilter.value = "";
+    setHistoryFilter("");
+  }
+  goToHistoryItem(view, id);
+}
+
+function fillCardDetail(detail, c) {
+  if (c.objective) detail.appendChild(historyLine("Objective:", c.objective));
+  if (c.description) detail.appendChild(historyLine("", c.description, "card-description"));
+
+  const criteria = c.criteria || [];
+  if (criteria.length) {
+    const ul = cardList("card-criteria");
+    for (const k of criteria) {
+      const li = document.createElement("li");
+      const stated = k.source === "stated";
+      const badge = historyChip(stated ? "stated" : "inferido", stated ? "card-crit-stated" : "card-crit-inferred");
+      badge.title = stated ? k.quote || "Stated in the tasks" : "Inferred by the model, not stated in the tasks";
+      const text = document.createElement("span");
+      text.className = "card-crit-text";
+      text.textContent = k.text;
+      li.append(badge, text);
+      if (stated && k.quote) li.appendChild(historyEvidence(k.quote));
+      ul.appendChild(li);
+    }
+    detail.appendChild(cardSection("Acceptance criteria", ul));
+  }
+
+  const tasks = c.tasks || [];
+  if (tasks.length) {
+    const ul = cardList();
+    for (const t of tasks) {
+      const li = document.createElement("li");
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "history-link";
+      link.textContent = `#${t.id} ${t.title || ""}`.trim();
+      link.addEventListener("click", () => openTaskById(t.id));
+      const meta = document.createElement("span");
+      meta.className = "history-meta";
+      meta.textContent = [STATUS_WORD[t.status] || t.status, t.date].filter(Boolean).join(" · ");
+      li.append(link, document.createTextNode(" "), meta);
+      ul.appendChild(li);
+    }
+    detail.appendChild(cardSection("Tasks", ul));
+  }
+
+  const commits = historyRefs([], c.commits);
+  if (commits) detail.appendChild(cardSection("Commits", commits));
+
+  const files = c.files || [];
+  if (files.length) {
+    const ul = cardList("card-files");
+    for (const f of files) {
+      const li = document.createElement("li");
+      const code = document.createElement("code");
+      code.textContent = f;
+      li.appendChild(code);
+      ul.appendChild(li);
+    }
+    const more = (c.files_total || 0) - files.length;
+    if (more > 0) {
+      const li = document.createElement("li");
+      li.className = "history-meta";
+      li.textContent = `+${more} more`;
+      ul.appendChild(li);
+    }
+    detail.appendChild(cardSection("Files", ul));
+  }
+
+  const known = new Set(((historyData && historyData.problems) || []).map((p) => p.id));
+  const problems = c.problems || [];
+  if (problems.length) {
+    const ul = cardList();
+    for (const p of problems) {
+      const li = document.createElement("li");
+      li.appendChild(cardLinkOrText(p.title, known.has(p.id) ? () => goToHistoryLinked("problems", `problem-${p.id}`) : null));
+      li.appendChild(document.createTextNode(" "));
+      li.appendChild(historyChip(HISTORY_STATE_LABEL[p.state] || "Open", `history-state history-state-${p.state || "open"}`));
+      ul.appendChild(li);
+    }
+    detail.appendChild(cardSection("Problems", ul));
+  }
+
+  const knownMilestones = new Set(((historyData && historyData.milestones) || []).map((m) => m.id));
+  const milestones = c.milestones || [];
+  if (milestones.length) {
+    const ul = cardList();
+    for (const m of milestones) {
+      const li = document.createElement("li");
+      li.appendChild(cardLinkOrText(m.title, knownMilestones.has(m.id) ? () => goToHistoryLinked("timeline", `milestone-${m.id}`) : null));
+      if (m.happened_on) {
+        const when = document.createElement("span");
+        when.className = "history-date";
+        when.textContent = ` ${m.happened_on}`;
+        li.appendChild(when);
+      }
+      ul.appendChild(li);
+    }
+    detail.appendChild(cardSection("Milestones", ul));
+  }
+
+  detail.appendChild(buildCardTools(c));
+}
+
+function cardLinkOrText(text, onClick) {
+  if (!onClick) {
+    const span = document.createElement("span");
+    span.textContent = text;
+    return span;
+  }
+  const link = document.createElement("button");
+  link.type = "button";
+  link.className = "history-link";
+  link.textContent = text;
+  link.addEventListener("click", onClick);
+  return link;
+}
+
+function buildCardTools(c) {
+  const tools = document.createElement("div");
+  tools.className = "card-tools";
+  if (cardConfirming === c.id) {
+    const ask = document.createElement("span");
+    ask.className = "arch-confirm-ask";
+    ask.textContent = "Remove?";
+    const yes = archButton("Yes, remove", "btn btn-sm arch-danger", `card-yes-${c.id}`);
+    yes.addEventListener("click", () => removeCard(c, yes));
+    const no = archButton("Cancel", "btn btn-ghost btn-sm", `card-no-${c.id}`);
+    no.addEventListener("click", () => {
+      cardConfirming = null;
+      rerenderCard(c.id, `card-remove-${c.id}`);
+    });
+    tools.append(ask, yes, no);
+  } else {
+    const del = archButton("Remove card", "btn btn-ghost btn-sm", `card-remove-${c.id}`);
+    del.setAttribute("aria-label", `Remove card ${c.title}`);
+    del.addEventListener("click", () => {
+      const was = cardConfirming;
+      cardConfirming = c.id;
+      if (was !== null) rerenderCard(was);
+      rerenderCard(c.id, `card-yes-${c.id}`);
+    });
+    tools.appendChild(del);
+  }
+  const error = document.createElement("p");
+  error.className = "history-cards-error card-error";
+  error.setAttribute("role", "alert");
+  error.hidden = true;
+  tools.appendChild(error);
+  return tools;
+}
+
+/** Swaps one tile for a fresh copy (confirm, cancel), leaving the rest of the board alone. */
+function rerenderCard(id, focusKey) {
+  const node = document.getElementById(`card-${id}`);
+  const card = historyData && historyData.cards.find((c) => c.id === id);
+  if (!node || !card) return;
+  node.replaceWith(buildCardItem(card, historyData.scope === "all"));
+  if (focusKey) restoreCardFocus(focusKey);
+}
+
+async function removeCard(c, button) {
+  button.disabled = true;
+  try {
+    await apiMutate("DELETE", `/api/cards/${c.id}`);
+  } catch (err) {
+    button.disabled = false;
+    const text = archErrorText(err);
+    const box = document.querySelector(`#card-${c.id} .card-error`);
+    if (box && text) {
+      box.textContent = text;
+      box.hidden = false;
+    }
+    return;
+  }
+  cardConfirming = null;
+  cardsExpanded.delete(c.id);
+  announce(`Removed card ${c.title}`);
+  await loadHistory();
+  document.getElementById("history-tab-cards").focus();
 }
 
 // ----- timeline -----
@@ -3793,6 +4246,9 @@ el.historyScope.addEventListener("change", () => {
   historyScopeChosen = true;
   historyData = null;
   historyRenderedKey = "";
+  cardConfirming = null;
+  cardsNotice = null;
+  cardsWasRunning = false;
   renderHistory();
   loadHistory();
 });
@@ -3802,6 +4258,7 @@ el.historyModel.addEventListener("change", () => {
   renderHistorySync();
 });
 el.historySync.addEventListener("click", startHistorySync);
+el.historyCardsMake.addEventListener("click", startCards);
 el.historyTabs.addEventListener("click", (evt) => {
   const tab = evt.target.closest("[role='tab']");
   if (tab) setHistoryView(tab.dataset.view, false);
@@ -3820,6 +4277,12 @@ el.historyTabs.addEventListener("keydown", (evt) => {
 el.history.addEventListener("keydown", (evt) => {
   if (evt.key !== "Escape" || isDrawerOpen()) return;
   evt.preventDefault();
+  if (cardConfirming !== null) {
+    const id = cardConfirming;
+    cardConfirming = null;
+    rerenderCard(id, `card-remove-${id}`);
+    return;
+  }
   // Escape in a filled filter clears the filter first; the next one closes.
   if (evt.target === el.historyFilter && el.historyFilter.value) {
     el.historyFilter.value = "";

@@ -301,6 +301,26 @@ paste: the copy leaves the command out because Claude Code collapses a long past
 text]" and would not run a `/compact` inside it. They come out of the same
 model call as the sync, at no extra cost.
 
+### Compact dashboard: cards
+
+Once a repository's history is synced, **Compact dashboard** in the History panel turns its
+finished tasks into cards, the way an issue tracker would hold the work: one card per feature,
+fix, chore or investigation, grouping the tasks that worked on it, shown in the **Cards** tab as
+a board by status (in progress, blocked, done, dropped). Each card has a title, kind (story,
+bug, chore, spike), objective, description, area, dates, acceptance criteria, and the tasks,
+commits, problems and milestones behind it, plus the files its tasks edited.
+
+It is made by Haiku, one call per batch of up to 60 tasks (26 tasks cost $0.10 and took about
+2.5 minutes), and only reads tasks the history sync already covered: the sync does the
+judging (what failed, what was decided), the cards only group and word it. The button stays off
+until the sync is up to date. Later runs add new tasks to open cards or open new ones.
+
+Nothing it returns is trusted. Tasks, commits, problems and milestones must be ones it was shown,
+and a task goes in one card only. A criterion is marked **stated** only when its quote appears
+word for word in one of the card's prompts; every other one is marked **inferido**. Files come
+from the edits Tasky recorded, never from the model, and there are no line numbers: they change
+with every later commit. A card that is wrong can be removed. The CLI is `tasky compact`.
+
 ### Architecture: areas and specs
 
 The Architecture button in the top bar shows, per repository, its **areas**: the controlled
@@ -423,6 +443,7 @@ call. Every hook exits successfully and prints nothing when something goes wrong
 | Smart search | One Haiku call (2–6¢), only when you press Smart search |
 | Architecture scan and view | 0 |
 | Map areas | One model call (Sonnet about 10–20¢ at effort medium), only when you press Map areas |
+| Compact dashboard | One Haiku call per batch of up to 60 synced tasks (about 10¢ for 26), only when you press it |
 | Quick diagram | 0 (Archify's CLI, no model) |
 | Draw with Archify | One headless agent session (Sonnet about $2–3 at effort low), only when you press it |
 | `tasky` MCP tools | Their definitions in each session's context; results only when called |

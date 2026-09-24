@@ -130,6 +130,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(handler=_cmd_history)
 
     p = sub.add_parser(
+        "compact",
+        help="group a repository's synced tasks into issue-tracker cards (one Haiku call a batch)",
+    )
+    p.add_argument("--cwd", default=None, help="a folder of the repo (default: current directory)")
+    p.add_argument("--repo", default=None, help="repo key, as the dashboard lists it")
+    p.set_defaults(handler=_cmd_compact)
+
+    p = sub.add_parser(
         "architecture",
         help="scan a repository's specs and areas; --map asks a model for the areas (tokens)",
     )
@@ -361,6 +369,32 @@ def _cmd_history(args: argparse.Namespace, config: Config, out: TextIO) -> int:
     )
     if summary["error"]:
         print(f"tasky: sync stopped: {summary['error']}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_compact(args: argparse.Namespace, config: Config, out: TextIO) -> int:
+    from tasky import cards, repos
+
+    repo = args.repo
+    if not repo:
+        with Store.open(config) as store:
+            repos.ensure(store, store.task_cwds())
+            repo = repos.repo_of(store, os.path.abspath(args.cwd or os.getcwd()))
+    try:
+        summary = cards.compact(config, repo)
+    except cards.CardsError as exc:
+        print(f"tasky: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"{summary['tasks']} task(s) read in {summary['batches']} batch(es): "
+        f"{summary['added']} card(s) added, {summary['updated']} updated, "
+        f"{summary['left_out']} task(s) in no card, {summary['model']}, "
+        f"${summary['cost_usd']:.4f}, {summary['pending']} task(s) still to compact",
+        file=out,
+    )
+    if summary["error"]:
+        print(f"tasky: compaction stopped: {summary['error']}", file=sys.stderr)
         return 1
     return 0
 

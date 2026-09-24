@@ -32,12 +32,17 @@ _PROBLEM_FIELDS = (
     "topic", "title", "symptom", "cause", "state", "first_seen", "last_seen", "task_ids",
     "specs",
 )
+_CARD_FIELDS = (
+    "title", "kind", "status", "objective", "description", "area", "criteria", "task_ids",
+    "commits", "problem_ids", "milestone_ids", "first_on", "last_on",
+)
+_CARD_LISTS = ("criteria", "task_ids", "commits", "problem_ids", "milestone_ids")
 _ATTEMPT_FIELDS = (
     "description", "outcome", "why", "evidence", "believed_from", "invalidated_on",
     "task_ids", "commits",
 )
 
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 HISTORY_FTS_REBUILD = """
 DELETE FROM history_fts;
 INSERT INTO history_fts (kind, ref_id, text)
@@ -151,6 +156,20 @@ CREATE TABLE IF NOT EXISTS attempts (
   commits TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT 'sync',
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS cards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, title TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'story', status TEXT NOT NULL DEFAULT 'done',
+  objective TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', area TEXT,
+  criteria TEXT NOT NULL DEFAULT '[]', task_ids TEXT NOT NULL DEFAULT '[]',
+  commits TEXT NOT NULL DEFAULT '[]', problem_ids TEXT NOT NULL DEFAULT '[]',
+  milestone_ids TEXT NOT NULL DEFAULT '[]', first_on TEXT, last_on TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS card_runs (
+  repo TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'idle', started_at TEXT, finished_at TEXT,
+  error TEXT, last_task_id INTEGER NOT NULL DEFAULT 0, last_cost_usd REAL NOT NULL DEFAULT 0,
+  total_cost_usd REAL NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS history_cursors (
   cwd TEXT PRIMARY KEY, last_task_id INTEGER NOT NULL DEFAULT 0
 );
@@ -255,6 +274,24 @@ CREATE TRIGGER IF NOT EXISTS trg_lanes_rev_upd AFTER UPDATE ON lanes BEGIN
   UPDATE meta SET value = value + 1 WHERE key = 'rev';
 END;
 CREATE TRIGGER IF NOT EXISTS trg_lanes_rev_del AFTER DELETE ON lanes BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_cards_rev_ins AFTER INSERT ON cards BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_cards_rev_upd AFTER UPDATE ON cards BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_cards_rev_del AFTER DELETE ON cards BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_card_runs_rev_ins AFTER INSERT ON card_runs BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_card_runs_rev_upd AFTER UPDATE ON card_runs BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_card_runs_rev_del AFTER DELETE ON card_runs BEGIN
   UPDATE meta SET value = value + 1 WHERE key = 'rev';
 END;
 CREATE TRIGGER IF NOT EXISTS trg_areas_rev_ins AFTER INSERT ON areas BEGIN
@@ -2055,6 +2092,132 @@ class Store:
     def finish_history_sync(self, repo: str, *, cost_usd: float, error: str | None) -> None:
         self._conn.execute(
             "UPDATE history_syncs SET state = 'idle', finished_at = ?, error = ?, "
+            "last_cost_usd = ?, total_cost_usd = total_cost_usd + ? WHERE repo = ?",
+            (now_iso(), error, cost_usd, cost_usd, repo),
+        )
+        self._conn.commit()
+
+    # -- cards: the compact dashboard ----------------------------------------
+    #
+    # A card groups the finished tasks of one piece of work in a repository, the way an issue
+    # tracker would: objective, description, inferred acceptance criteria, commits. Tasks are
+    # read past a per-repository cursor, like the history sync.
+
+    def _card_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        item = self._row(row)
+        for key in _CARD_LISTS:
+            item[key] = _json_list(item.get(key))
+        return item
+
+    def cards(self, repo: str | None) -> list[dict]:
+        where, params = ("", []) if repo is None else (" WHERE repo = ?", [repo])
+        rows = self._conn.execute(
+            "SELECT * FROM cards" + where  # noqa: S608 - fixed clause, values bound
+            + " ORDER BY COALESCE(last_on, '') DESC, id DESC",
+            params,
+        ).fetchall()
+        return [self._card_row(r) for r in rows]
+
+    def get_card(self, card_id: int) -> dict | None:
+        row = self._conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
+        return self._card_row(row) if row else None
+
+    def add_card(self, repo: str, **fields: Any) -> int:
+        fields = {k: v for k, v in fields.items() if k in _CARD_FIELDS}
+        for key in _CARD_LISTS:
+            fields[key] = json.dumps(list(fields.get(key) or []), ensure_ascii=False)
+        now = now_iso()
+        fields = {**fields, "repo": repo, "created_at": now, "updated_at": now}
+        cursor = self._conn.execute(
+            f"INSERT INTO cards ({', '.join(fields)}) "  # noqa: S608 - keys from _CARD_FIELDS
+            f"VALUES ({', '.join('?' for _ in fields)})",
+            list(fields.values()),
+        )
+        self._conn.commit()
+        return int(cursor.lastrowid)
+
+    def update_card(self, card_id: int, **fields: Any) -> None:
+        fields = {k: v for k, v in fields.items() if k in _CARD_FIELDS}
+        if not fields:
+            return
+        for key in _CARD_LISTS:
+            if key in fields:
+                fields[key] = json.dumps(list(fields[key]), ensure_ascii=False)
+        fields["updated_at"] = now_iso()
+        self._conn.execute(
+            f"UPDATE cards SET {', '.join(f'{k} = ?' for k in fields)} "  # noqa: S608
+            "WHERE id = ?",
+            (*fields.values(), card_id),
+        )
+        self._conn.commit()
+
+    def delete_card(self, card_id: int) -> bool:
+        cursor = self._conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def card_run(self, repo: str) -> dict | None:
+        row = self._conn.execute("SELECT * FROM card_runs WHERE repo = ?", (repo,)).fetchone()
+        return self._row(row) if row else None
+
+    def _uncarded_sql(self, repo: str) -> tuple[str, list[Any]]:
+        run = self.card_run(repo)
+        return (
+            "kind = 'prompt' AND status IN ('done', 'failed', 'interrupted') AND id > ? "
+            "AND cwd IN (SELECT cwd FROM repos WHERE repo = ?)",
+            [run["last_task_id"] if run else 0, repo],
+        )
+
+    def tasks_for_cards(self, repo: str, limit: int) -> list[dict]:
+        where, params = self._uncarded_sql(repo)
+        rows = self._conn.execute(
+            f"SELECT * FROM tasks WHERE {where} ORDER BY id ASC LIMIT ?",  # noqa: S608
+            [*params, limit],
+        ).fetchall()
+        return [self._task_row(r) for r in rows]
+
+    def pending_card_tasks(self, repo: str) -> int:
+        where, params = self._uncarded_sql(repo)
+        row = self._conn.execute(
+            f"SELECT COUNT(*) FROM tasks WHERE {where}", params  # noqa: S608
+        ).fetchone()
+        return int(row[0])
+
+    def advance_card_cursor(self, repo: str, last_task_id: int) -> None:
+        self._conn.execute(
+            "INSERT INTO card_runs (repo, last_task_id) VALUES (?, ?) ON CONFLICT(repo) DO "
+            "UPDATE SET last_task_id = MAX(last_task_id, excluded.last_task_id)",
+            (repo, last_task_id),
+        )
+        self._conn.commit()
+
+    def begin_card_run(self, repo: str, *, stale_after_s: float) -> bool:
+        """Mark a repo's compaction running; False if one already is (a stale claim is taken)."""
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT state, started_at FROM card_runs WHERE repo = ?", (repo,)
+            ).fetchone()
+            if row is not None and row["state"] == "running" and row["started_at"]:
+                started = _parse_iso(row["started_at"])
+                if started is not None and time.time() - started < stale_after_s:
+                    self._conn.rollback()
+                    return False
+            self._conn.execute(
+                "INSERT INTO card_runs (repo, state, started_at, error) "
+                "VALUES (?, 'running', ?, NULL) ON CONFLICT(repo) DO UPDATE SET "
+                "state = 'running', started_at = excluded.started_at, error = NULL",
+                (repo, now_iso()),
+            )
+            self._conn.commit()
+            return True
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def finish_card_run(self, repo: str, *, cost_usd: float, error: str | None) -> None:
+        self._conn.execute(
+            "UPDATE card_runs SET state = 'idle', finished_at = ?, error = ?, "
             "last_cost_usd = ?, total_cost_usd = total_cost_usd + ? WHERE repo = ?",
             (now_iso(), error, cost_usd, cost_usd, repo),
         )

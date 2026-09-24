@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] - 2026-09-24
+
+### Added
+
+- Compact dashboard: once the history is synced, Haiku groups a repository's finished tasks into
+  issue-tracker cards (story, bug, chore, spike) with objective, description, area, acceptance
+  criteria, tasks, commits, problems and milestones; the Cards tab shows them as a board by
+  status, with the files their tasks edited. Criteria are "stated" only when their quote is in a
+  prompt, otherwise "inferido". Also `tasky compact`.
+
 ## [0.12.0] - 2026-09-24
 
 ### Added

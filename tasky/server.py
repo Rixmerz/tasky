@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from tasky import (
     __version__,
     architecture,
+    cards,
     history,
     quickdiagram,
     repos,
@@ -66,6 +67,7 @@ _TASK_ENQUEUE_RE = re.compile(r"^/api/tasks/(\d{1,18})/enqueue$")
 _TASK_RESTORE_RE = re.compile(r"^/api/tasks/(\d{1,18})/restore$")
 _SESSION_ID_RE = re.compile(r"^/api/sessions/([^/]+)$")
 _AREA_ID_RE = re.compile(r"^/api/areas/(\d{1,18})$")
+_CARD_ID_RE = re.compile(r"^/api/cards/(\d{1,18})$")
 _TASK_PATCH_FIELDS = ("status", "title", "body", "before_id", "lane", "permission_mode")
 _SESSION_PATCH_FIELDS = ("auto_pull", "title")
 
@@ -235,6 +237,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._route_smart_search(body)
         elif method == "GET" and path == "/api/history":
             self._route_history()
+        elif method == "POST" and path == "/api/cards/compact":
+            self._route_cards_compact(body)
         elif method == "POST" and path == "/api/history/sync":
             self._route_history_sync(body)
         elif method == "GET" and path == "/api/architecture":
@@ -294,6 +298,15 @@ class _Handler(BaseHTTPRequestHandler):
                     self._route_patch_area(int(match.group(1)), body)
                 else:
                     self._route_delete_area(int(match.group(1)))
+                return
+            match = _CARD_ID_RE.match(path)
+            if match and method == "DELETE":
+                with Store.open(self.server.config) as store:
+                    deleted = store.delete_card(int(match.group(1)))
+                if deleted:
+                    self._send_json(200, {"deleted": True})
+                else:
+                    self._error(404, "no such card")
                 return
             match = _SESSION_ID_RE.match(path)
             if method == "PATCH" and match:
@@ -399,6 +412,7 @@ class _Handler(BaseHTTPRequestHandler):
             for entry in repo_list:
                 entry["pending"] = store.pending_history_tasks(entry["cwds"])
                 entry["sync"] = store.history_sync(entry["repo"])
+                entry["cards"] = cards.readiness(store, entry["repo"])
             repo = None if scope == "all" else scope
             payload = {
                 "scope": scope,
@@ -407,8 +421,48 @@ class _Handler(BaseHTTPRequestHandler):
                 "repos": repo_list,
                 "milestones": store.milestones(repo),
                 "problems": store.problems(repo),
+                "cards": cards.view(store, repo),
+                "cards_model": cards.MODEL,
             }
         self._send_json(200, payload)
+
+    def _route_cards_compact(self, body: dict | None) -> None:
+        """Start a background run that turns the repo's synced tasks into cards (Haiku)."""
+        repo = body.get("repo") if isinstance(body, dict) else None
+        if not isinstance(repo, str) or not repo:
+            self._error(400, "repo is required")
+            return
+        config = self.server.config
+        with Store.open(config) as store:
+            if not store.repo_cwds(repo):
+                self._error(404, "no tasks recorded for this repository")
+                return
+            ready = cards.readiness(store, repo)
+        if ready["history_running"] or ready["history_pending"]:
+            self._error(409, "sync the history first: the cards are made from synced tasks")
+            return
+        if ready["running"] and not self._stale(ready["run"], cards.STALE_RUN_S):
+            self._error(409, "cards of this repository are already being made")
+            return
+        if not ready["pending"]:
+            self._error(409, "every task of this repository is already in a card")
+            return
+        config.log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(config.log_dir / "cards.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            self.server.popen(
+                [sys.executable, str(worker._TASKY_BIN), "compact", "--repo", repo],
+                cwd=str(config.home), stdin=subprocess.DEVNULL, stdout=fd, stderr=fd,
+                start_new_session=True,
+            )
+        finally:
+            os.close(fd)
+        self._send_json(202, {"started": True, "pending": ready["pending"]})
+
+    @staticmethod
+    def _stale(run: dict | None, after_s: float) -> bool:
+        started = _parse_iso(run.get("started_at") or "") if run else None
+        return started is None or time.time() - started >= after_s
 
     def _route_history_sync(self, body: dict) -> None:
         repo = body.get("repo")

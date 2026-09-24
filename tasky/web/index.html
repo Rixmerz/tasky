@@ -156,18 +156,25 @@
     <h2 id="history-heading" class="history-heading" tabindex="-1">History</h2>
     <label for="history-scope" class="visually-hidden">Repository</label>
     <select id="history-scope" class="select history-scope"></select>
-    <label for="history-filter" class="visually-hidden">Filter problems, attempts, milestones</label>
-    <input type="search" id="history-filter" class="history-filter" placeholder="Filter problems, attempts, milestones" autocomplete="off" spellcheck="false" maxlength="200">
+    <label for="history-filter" class="visually-hidden">Filter cards, problems, attempts, milestones</label>
+    <input type="search" id="history-filter" class="history-filter" placeholder="Filter cards, problems, milestones" autocomplete="off" spellcheck="false" maxlength="200">
     <button type="button" id="history-close" class="btn btn-ghost btn-sm history-close">Back to board</button>
   </div>
   <div id="history-sync-row" class="history-sync" hidden>
-    <label for="history-model" class="history-model-label">Model</label>
-    <select id="history-model" class="select history-model">
-      <option value="sonnet">Sonnet · recommended</option>
-      <option value="opus">Opus · most thorough</option>
-    </select>
-    <button type="button" id="history-sync" class="btn btn-primary btn-sm">Sync</button>
+    <div id="history-sync-controls" class="history-sync-controls">
+      <label for="history-model" class="history-model-label">Model</label>
+      <select id="history-model" class="select history-model">
+        <option value="sonnet">Sonnet · recommended</option>
+        <option value="opus">Opus · most thorough</option>
+      </select>
+      <button type="button" id="history-sync" class="btn btn-primary btn-sm">Sync</button>
+    </div>
+    <div class="history-cards-action">
+      <button type="button" id="history-cards-make" class="btn btn-sm" aria-describedby="history-cards-hint">Compact dashboard</button>
+      <span id="history-cards-hint" class="history-cards-hint"></span>
+    </div>
     <p id="history-sync-status" class="history-sync-status" role="status" aria-live="polite"></p>
+    <p id="history-cards-status" class="history-sync-status history-cards-status" role="status" aria-live="polite"></p>
   </div>
   <section id="history-compact" class="history-compact" aria-labelledby="history-compact-heading" hidden>
     <h3 id="history-compact-heading" class="history-compact-heading">Suggested /compact <span class="history-compact-hint">in that session type <code>/compact</code>, a space, then paste</span></h3>
@@ -176,6 +183,9 @@
   <p id="history-empty" class="empty-state history-empty" hidden></p>
   <div id="history-body" class="history-body" hidden>
     <div id="history-tabs" class="history-tabs" role="tablist" aria-label="History views">
+      <button type="button" role="tab" id="history-tab-cards" aria-controls="history-panel-cards" aria-selected="false" tabindex="-1" data-view="cards">
+        <span class="tab-label">Cards</span><span class="tab-count" id="history-count-cards">0</span>
+      </button>
       <button type="button" role="tab" id="history-tab-timeline" aria-controls="history-panel-timeline" aria-selected="true" data-view="timeline">
         <span class="tab-label">Timeline</span><span class="tab-count" id="history-count-timeline">0</span>
       </button>
@@ -188,6 +198,10 @@
       <button type="button" role="tab" id="history-tab-map" aria-controls="history-panel-map" aria-selected="false" tabindex="-1" data-view="map">
         <span class="tab-label">Map</span><span class="tab-count" id="history-count-map">0</span>
       </button>
+    </div>
+    <div role="tabpanel" id="history-panel-cards" class="history-panel" aria-labelledby="history-tab-cards" tabindex="-1" hidden>
+      <p id="history-empty-cards" class="empty-state" hidden></p>
+      <div id="history-cards" class="cards-board"></div>
     </div>
     <div role="tabpanel" id="history-panel-timeline" class="history-panel" aria-labelledby="history-tab-timeline" tabindex="0">
       <p id="history-empty-timeline" class="empty-state" hidden></p>
