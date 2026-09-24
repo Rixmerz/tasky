@@ -246,7 +246,9 @@ Reading the history is free. It also reaches the agent in two ways:
 After a sync, every session that is still open and had tasks in it gets suggested instructions for
 Claude Code's `/compact`: what the summary must keep (the goal in progress, decisions and why, open
 problems and the attempts that already failed, files in flight, your stated constraints, the next
-step) and what it can drop. They appear under **Suggested /compact** in the History panel and as
+step) and what it can drop. They are written in English and telegraphic, and ask for a terse
+summary that still keeps every decision's reason and every failed attempt's cause. They appear
+under **Suggested /compact** in the History panel and as
 **Copy /compact** in the task's side panel; paste them into that session. They come out of the same
 model call as the sync, at no extra cost.
 

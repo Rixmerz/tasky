@@ -88,15 +88,18 @@ have no existing_id: never number them yourself.
 - topic: a short lowercase area name (for example "auth", "deploy", "ui"); reuse the topics \
 already in use.
 - Dates are YYYY-MM-DD, the date of the task where it happened.
-- Write in the language the developer writes in. Titles under 12 words.
+- Write problems and milestones in the language the developer writes in. Titles under 12 words.
 
 compact: for each session listed in <sessions>, write the instructions to give Claude Code's \
 /compact for that session, so its summary keeps what matters: the goal in progress, decisions \
 taken and why, open problems and the attempts that already failed (so they are not retried), \
 the files and components being changed, constraints and preferences the developer stated, and \
 the next step; and drops what no longer matters (resolved tangents, tool output already acted \
-on, abandoned ideas). Imperative, specific (names, paths, ids), under 120 words, based only on \
-what you were shown.
+on, abandoned ideas). Always in English, whatever language the session uses, keeping names, \
+paths, ids and quotes verbatim. Telegraphic imperative: fragments, no articles or filler, under \
+100 words, based only on what you were shown. End with this line, as is: "Summary style: terse \
+fragments, no filler; keep exact names, paths, ids; keep every decision's reason and every \
+failed attempt's cause in full."
 - Returning empty lists is fine when the new tasks change nothing.
 """
 

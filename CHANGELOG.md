@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - 2026-09-24
+
+### Changed
+
+- Suggested `/compact` instructions are always in English and telegraphic (names, paths, ids and
+  quotes stay verbatim), and ask for a terse summary that still keeps each decision's reason and
+  each failed attempt's cause in full: the summary stays in context for the rest of the session,
+  so that is where brevity pays; the reasons are what stop a failed fix from being retried.
+  Problems and milestones stay in the developer's language.
+
 ## [0.7.0] - 2026-09-24
 
 ### Added
