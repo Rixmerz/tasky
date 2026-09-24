@@ -855,8 +855,8 @@ function renderSessionLine(container, task) {
   const canCompact = session.state === "active" && !!session.compact_prompt;
   compactBtn.hidden = !canCompact;
   if (canCompact) {
-    if (compactBtn.dataset.copied !== "1") compactBtn.textContent = "Copy /compact";
-    compactBtn.onclick = () => copyCompact(compactCommand(session), compactBtn, "Copy /compact");
+    if (compactBtn.dataset.copied !== "1") compactBtn.textContent = "Copy /compact text";
+    compactBtn.onclick = () => copyCompact(compactInstructions(session), compactBtn, "Copy /compact text");
   }
 
   const copyBtn = container.querySelector(".copy-resume");
@@ -2247,8 +2247,13 @@ function renderHistoryModelOptions() {
   el.historyModel.value = models.includes(stored) ? stored : models.includes(fallback) ? fallback : models[0];
 }
 
-function compactCommand(session) {
-  return `/compact ${session.compact_prompt.replace(/\s+/g, " ").trim()}`;
+/**
+ * The instructions only, without "/compact": pasted text that long is collapsed
+ * into "[Pasted text]" by Claude Code, so a leading slash command inside it is
+ * never run. Type /compact, then paste this.
+ */
+function compactInstructions(session) {
+  return session.compact_prompt.replace(/\s+/g, " ").trim();
 }
 
 /** Open sessions of the shown repo with a /compact the last sync suggested, newest first. */
@@ -2277,12 +2282,12 @@ function renderHistoryCompact(repo) {
     btn.type = "button";
     btn.className = "btn btn-sm";
     btn.textContent = "Copy";
-    btn.setAttribute("aria-label", `Copy /compact for ${name.textContent}`);
-    btn.addEventListener("click", () => copyCompact(compactCommand(session), btn, "Copy"));
+    btn.setAttribute("aria-label", `Copy the /compact text for ${name.textContent}`);
+    btn.addEventListener("click", () => copyCompact(compactInstructions(session), btn, "Copy"));
     head.append(name, when, btn);
     const text = document.createElement("pre");
     text.className = "history-compact-text";
-    text.textContent = compactCommand(session);
+    text.textContent = compactInstructions(session);
     li.append(head, text);
     el.historyCompactList.appendChild(li);
   }
@@ -2293,7 +2298,7 @@ async function copyCompact(command, button, label) {
     await copyText(command);
     button.dataset.copied = "1";
     button.textContent = "Copied";
-    announce("/compact copied: paste it in that session");
+    announce("Copied: in that session type /compact, a space, then paste");
     window.setTimeout(() => {
       button.dataset.copied = "";
       if (button.isConnected) button.textContent = label;

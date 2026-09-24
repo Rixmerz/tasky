@@ -249,7 +249,9 @@ problems and the attempts that already failed, files in flight, your stated cons
 step) and what it can drop. They are written in English and telegraphic, and ask for a terse
 summary that still keeps every decision's reason and every failed attempt's cause. They appear
 under **Suggested /compact** in the History panel and as
-**Copy /compact** in the task's side panel; paste them into that session. They come out of the same
+**Copy /compact text** in the task's side panel. In that session type `/compact`, a space, then
+paste: the copy leaves the command out because Claude Code collapses a long paste into "[Pasted
+text]" and would not run a `/compact` inside it. They come out of the same
 model call as the sync, at no extra cost.
 
 ### Put the counters in your status line

@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.2] - 2026-09-24
+
+### Fixed
+
+- The `/compact` copy buttons copy the instructions only. Claude Code collapses a long paste into
+  "[Pasted text]", so a `/compact` inside it was sent as a plain message instead of running; type
+  `/compact`, a space, then paste.
+
 ## [0.7.1] - 2026-09-24
 
 ### Changed
