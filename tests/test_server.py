@@ -110,7 +110,7 @@ def test_security_headers_present(conn, token):
 # -- token auth ----------------------------------------------------------------
 
 
-API_GET_ROUTES = ["/api/version", "/api/state"]
+API_GET_ROUTES = ["/api/version", "/api/state", "/api/search?q=x"]
 
 
 @pytest.mark.parametrize("path", API_GET_ROUTES)
@@ -1330,3 +1330,43 @@ def test_version_poll_syncs_session_rename(running_server, conn, auth_headers, c
     running_server._titles_synced_at = float("-inf")
     resp, again = _request(conn, "GET", "/api/version", headers=auth_headers)
     assert again["rev"] == body["rev"]  # unchanged name does not bump the revision
+
+
+# -- search --------------------------------------------------------------------
+
+
+def test_search_returns_matching_tasks(store, conn, auth_headers):
+    hit = store.create_task(
+        kind="prompt", body="how do I rotate keys?", status="done", source="hook",
+        result="Use the vault CLI.", cwd="/proj",
+    )
+    store.create_task(kind="prompt", body="other", status="done", source="hook", cwd="/proj")
+    resp, parsed = _request(conn, "GET", "/api/search?q=vault", headers=auth_headers)
+    assert resp.status == 200
+    assert parsed["query"] == "vault"
+    assert [t["id"] for t in parsed["tasks"]] == [hit["id"]]
+    assert parsed["tasks"][0]["result"] == "Use the vault CLI."
+    assert parsed["more"] is False
+
+
+def test_search_filters_by_cwd(store, conn, auth_headers):
+    store.create_task(kind="prompt", body="note", status="done", source="hook", cwd="/a")
+    in_b = store.create_task(kind="prompt", body="note", status="done", source="hook", cwd="/b")
+    resp, parsed = _request(conn, "GET", "/api/search?q=note&cwd=%2Fb", headers=auth_headers)
+    assert resp.status == 200
+    assert [t["id"] for t in parsed["tasks"]] == [in_b["id"]]
+
+
+def test_search_flags_more_than_the_limit(store, conn, auth_headers, monkeypatch):
+    monkeypatch.setattr(server_mod, "SEARCH_LIMIT", 2)
+    for _ in range(3):
+        store.create_task(kind="prompt", body="many", status="done", source="hook")
+    resp, parsed = _request(conn, "GET", "/api/search?q=many", headers=auth_headers)
+    assert len(parsed["tasks"]) == 2
+    assert parsed["more"] is True
+
+
+def test_search_rejects_overlong_query(conn, auth_headers):
+    resp, parsed = _request(conn, "GET", "/api/search?q=" + "a" * 201, headers=auth_headers)
+    assert resp.status == 400
+    assert "error" in parsed

@@ -203,3 +203,23 @@ disturb a drag in progress.
 #### Scenario: Refresh during drag
 - **WHEN** another client changes a task while the user is dragging a card
 - **THEN** the drag continues and the change appears after the drop
+
+### Requirement: Search past tasks
+The dashboard SHALL offer a search box that finds tasks whose title, prompt or reply contains every
+word typed, across the whole ledger rather than only the tasks the board holds, newest first, within
+the active project filter. Each hit SHALL show where the words matched and open in the side panel.
+Searching SHALL spend no model tokens, SHALL treat typed `%`, `_` and `\` as literal characters, and
+SHALL require the dashboard token like every other API route.
+
+#### Scenario: Old answer found by a word in its reply
+- **WHEN** a task finished months ago, is older than the board's Done slice, and its reply mentions "NODE_EXTRA_CA_CERTS"
+- **THEN** typing "node_extra_ca_certs" in the search box lists that task, and clicking it shows the full reply
+
+#### Scenario: Every word must match
+- **WHEN** the user searches "deploy staging" and one task mentions both words while another mentions only "deploy"
+- **THEN** only the first task is listed
+
+#### Scenario: Leaving search
+- **WHEN** the user presses Esc in a non-empty search box
+- **THEN** the box clears and the board returns
+

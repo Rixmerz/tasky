@@ -37,6 +37,12 @@
     <button type="submit" class="btn btn-primary btn-sm quick-add-submit">Add</button>
   </form>
 
+  <form id="search" class="search" role="search">
+    <svg class="search-icon" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <label for="search-input" class="visually-hidden">Search prompts and replies</label>
+    <input type="search" id="search-input" placeholder="Search past tasks" autocomplete="off" spellcheck="false" maxlength="200">
+  </form>
+
   <div class="topbar-right">
     <button type="button" id="filter-chip" class="badge filter-chip" hidden title="Showing one project. Click to show all.">
       <span id="filter-chip-label"></span><span aria-hidden="true">&#215;</span><span class="visually-hidden">Clear project filter</span>
@@ -85,6 +91,14 @@
     <span class="tab-label">Done</span><span class="tab-count" id="tab-count-done">0</span>
   </button>
 </nav>
+
+<section id="search-results" class="search-results" aria-labelledby="search-heading" hidden>
+  <div class="search-head">
+    <h2 id="search-heading" class="search-heading" tabindex="-1"></h2>
+    <button type="button" id="search-clear" class="btn btn-ghost btn-sm">Back to board</button>
+  </div>
+  <ol id="search-list" class="search-list"></ol>
+</section>
 
 <main id="board" class="board">
   <section id="col-inbox" class="column" data-lane="inbox" aria-labelledby="inbox-heading">

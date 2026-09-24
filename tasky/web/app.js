@@ -4,6 +4,10 @@ import { parseDigest, summarize, renderDigest } from "./digest.js";
 
 const POLL_MS = 2000;
 const DONE_PAGE_SIZE = 20;
+const SEARCH_MIN_CHARS = 2;
+const SEARCH_DEBOUNCE_MS = 250;
+const SNIPPET_BEFORE = 60;
+const SNIPPET_AFTER = 140;
 const TOKEN_STORAGE_KEY = "tasky.token";
 const MODE_STORAGE_KEY = "tasky.permissionMode";
 const TAB_STORAGE_KEY = "tasky.mobileColumn";
@@ -149,6 +153,13 @@ const el = {
   drawerChildren: document.querySelector("#drawer .drawer-children"),
   drawerChildrenWrap: document.querySelector("#drawer .drawer-children-wrap"),
   drawerSessionLine: document.querySelector("#drawer .drawer-session-line"),
+  searchForm: document.getElementById("search"),
+  searchInput: document.getElementById("search-input"),
+  searchResults: document.getElementById("search-results"),
+  searchHeading: document.getElementById("search-heading"),
+  searchList: document.getElementById("search-list"),
+  searchClear: document.getElementById("search-clear"),
+  tablist: document.getElementById("tablist"),
 };
 
 // ---------- access token ----------
@@ -1068,8 +1079,13 @@ function isDrawerOpen() {
   return drawerTaskId !== null;
 }
 
+/** A task from the board, or a search hit older than the slice /api/state ships. */
+function findTask(taskId) {
+  return tasksById.get(taskId) || searchHitsById.get(taskId);
+}
+
 function openDrawer(taskId, opts = {}) {
-  const task = tasksById.get(taskId);
+  const task = findTask(taskId);
   if (!task) return;
   closeOverflowMenu();
   drawerReturnFocus = document.activeElement;
@@ -1097,7 +1113,7 @@ function closeDrawer() {
 /** Re-populates the open drawer after a mutation the drawer itself made. */
 function refreshDrawerIfOpen() {
   if (!isDrawerOpen()) return;
-  const task = tasksById.get(drawerTaskId);
+  const task = findTask(drawerTaskId);
   if (!task) {
     closeDrawer();
     return;
@@ -1934,10 +1950,190 @@ document.addEventListener("keydown", (evt) => {
   const active = document.activeElement;
   const inField = active && (active.tagName === "TEXTAREA" || active.tagName === "INPUT" || active.isContentEditable);
   if (inField) return;
-  if (evt.key === "n" || evt.key === "/") {
+  if (evt.key === "n") {
     evt.preventDefault();
     el.quickAddInput.focus();
+  } else if (evt.key === "/") {
+    evt.preventDefault();
+    el.searchInput.focus();
+    el.searchInput.select();
   }
+});
+
+// ---------- search ----------
+//
+// Searches the whole ledger on the server, not just the tasks the board holds,
+// so an old answer can be read again here instead of asked for again.
+
+let searchHitsById = new Map();
+let searchTimer = null;
+let searchSeq = 0;
+
+function searchQuery() {
+  return el.searchInput.value.trim();
+}
+
+function searchWords(query) {
+  return query.toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function setSearchMode(on) {
+  el.searchResults.hidden = !on;
+  el.board.hidden = on;
+  el.tablist.hidden = on;
+}
+
+function scheduleSearch() {
+  clearTimeout(searchTimer);
+  const query = searchQuery();
+  if (query.length < SEARCH_MIN_CHARS) {
+    searchSeq += 1;
+    searchHitsById = new Map();
+    el.searchList.textContent = "";
+    setSearchMode(false);
+    return;
+  }
+  searchTimer = setTimeout(() => runSearch(query), SEARCH_DEBOUNCE_MS);
+}
+
+async function runSearch(query) {
+  const seq = ++searchSeq;
+  const params = new URLSearchParams({ q: query });
+  if (projectFilter) params.set("cwd", projectFilter);
+  let data;
+  try {
+    data = await apiGet(`/api/search?${params}`);
+  } catch (err) {
+    handleApiError(err);
+    return;
+  }
+  // A slower reply to an older query must not overwrite a newer one.
+  if (seq !== searchSeq) return;
+  searchHitsById = new Map(data.tasks.map((t) => [t.id, t]));
+  renderSearchResults(query, data.tasks, data.more);
+}
+
+function clearSearch() {
+  el.searchInput.value = "";
+  scheduleSearch();
+}
+
+function renderSearchResults(query, tasks, more) {
+  setSearchMode(true);
+  const where = projectFilter ? ` in ${projectLabel(projectFilter)}` : "";
+  const count = tasks.length === 0 ? "No tasks" : `${tasks.length}${more ? "+" : ""} ${tasks.length === 1 ? "task" : "tasks"}`;
+  el.searchHeading.textContent = `${count} matching “${query}”${where}`;
+  announce(el.searchHeading.textContent);
+  const words = searchWords(query);
+  el.searchList.textContent = "";
+  for (const task of tasks) el.searchList.appendChild(createSearchHit(task, words));
+}
+
+function createSearchHit(task, words) {
+  const li = document.createElement("li");
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "search-hit";
+  btn.dataset.status = task.status;
+  btn.addEventListener("click", () => openDrawer(task.id));
+
+  const head = document.createElement("span");
+  head.className = "search-hit-head";
+  const glyph = document.createElement("span");
+  glyph.className = "search-hit-glyph";
+  glyph.setAttribute("aria-hidden", "true");
+  glyph.textContent = STATUS_GLYPH[task.status] || "";
+  const title = document.createElement("span");
+  title.className = "search-hit-title";
+  appendHighlighted(title, task.title, words);
+  head.append(glyph, title);
+
+  const metaParts = [STATUS_WORD[task.status] || task.status];
+  if (task.cwd) metaParts.push(projectLabel(task.cwd));
+  const time = taskTimeLabel(task);
+  if (time) metaParts.push(time);
+  const meta = document.createElement("span");
+  meta.className = "search-hit-meta";
+  meta.textContent = metaParts.join(" · ");
+
+  btn.append(head, meta);
+  const snippet = matchSnippet(task, words);
+  if (snippet) {
+    const line = document.createElement("span");
+    line.className = "search-hit-snippet";
+    const label = document.createElement("span");
+    label.className = "search-hit-source";
+    label.textContent = snippet.source;
+    line.appendChild(label);
+    appendHighlighted(line, snippet.text, words);
+    btn.appendChild(line);
+  }
+  li.appendChild(btn);
+  return li;
+}
+
+/** The passage around the first word found, from the prompt, then the reply. */
+function matchSnippet(task, words) {
+  const sources = [
+    ["Prompt", task.body && task.body !== task.title ? task.body : ""],
+    ["Reply", task.result || ""],
+  ];
+  for (const [source, raw] of sources) {
+    const text = raw.replace(/\s+/g, " ").trim();
+    const lower = text.toLowerCase();
+    const at = words.map((w) => lower.indexOf(w)).filter((i) => i >= 0);
+    if (at.length === 0) continue;
+    const first = Math.min(...at);
+    const start = Math.max(0, first - SNIPPET_BEFORE);
+    const end = Math.min(text.length, first + SNIPPET_AFTER);
+    const cut = `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
+    return { source, text: cut };
+  }
+  return null;
+}
+
+/** Appends text with every search word wrapped in <mark>, built as nodes, never as HTML. */
+function appendHighlighted(parent, text, words) {
+  const lower = text.toLowerCase();
+  let pos = 0;
+  while (pos < text.length) {
+    let next = -1;
+    let len = 0;
+    for (const w of words) {
+      const i = lower.indexOf(w, pos);
+      if (i >= 0 && (next < 0 || i < next || (i === next && w.length > len))) {
+        next = i;
+        len = w.length;
+      }
+    }
+    if (next < 0) break;
+    if (next > pos) parent.appendChild(document.createTextNode(text.slice(pos, next)));
+    const mark = document.createElement("mark");
+    mark.textContent = text.slice(next, next + len);
+    parent.appendChild(mark);
+    pos = next + len;
+  }
+  if (pos < text.length) parent.appendChild(document.createTextNode(text.slice(pos)));
+}
+
+el.searchForm.addEventListener("submit", (evt) => {
+  evt.preventDefault();
+  clearTimeout(searchTimer);
+  const query = searchQuery();
+  if (query.length >= SEARCH_MIN_CHARS) runSearch(query);
+});
+el.searchInput.addEventListener("input", scheduleSearch);
+el.searchInput.addEventListener("keydown", (evt) => {
+  if (evt.key === "Escape") {
+    evt.preventDefault();
+    evt.stopPropagation();
+    if (el.searchInput.value) clearSearch();
+    else el.searchInput.blur();
+  }
+});
+el.searchClear.addEventListener("click", () => {
+  clearSearch();
+  el.searchInput.focus();
 });
 
 // ---------- counters, tablist, mobile relocation ----------
@@ -2018,6 +2214,7 @@ el.projectFilter.addEventListener("change", () => {
   projectFilter = el.projectFilter.value;
   doneShown = DONE_PAGE_SIZE;
   renderAll();
+  scheduleSearch();
 });
 
 el.filterChip.addEventListener("click", () => {
@@ -2025,6 +2222,7 @@ el.filterChip.addEventListener("click", () => {
   projectFilter = "";
   doneShown = DONE_PAGE_SIZE;
   renderAll();
+  scheduleSearch();
 });
 
 el.quickAddInput.addEventListener("keydown", (evt) => {

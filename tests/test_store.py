@@ -823,3 +823,74 @@ def test_redaction_happens_before_truncation(tmp_path):
             kind="prompt", body="b", status="done", source="hook", result=secret
         )
     assert "sss" not in task["result"]
+
+
+# -- search ------------------------------------------------------------------
+
+
+def test_search_tasks_matches_prompt_and_reply(store):
+    by_prompt = store.create_task(
+        kind="prompt", body="Fix the Login redirect", status="done", source="hook"
+    )
+    by_reply = store.create_task(
+        kind="prompt",
+        body="why does it fail?",
+        status="done",
+        source="hook",
+        result="The login cookie expires early.",
+    )
+    store.create_task(kind="prompt", body="unrelated", status="done", source="hook")
+    ids = {t["id"] for t in store.search_tasks("LOGIN")}
+    assert ids == {by_prompt["id"], by_reply["id"]}
+
+
+def test_search_tasks_requires_every_word(store):
+    both = store.create_task(
+        kind="prompt", body="deploy api", status="done", source="hook", result="staging ok"
+    )
+    store.create_task(kind="prompt", body="deploy web", status="done", source="hook")
+    assert [t["id"] for t in store.search_tasks("deploy staging")] == [both["id"]]
+
+
+def test_search_tasks_treats_like_wildcards_literally(store):
+    literal = store.create_task(
+        kind="prompt", body="grow to 100% width", status="done", source="hook"
+    )
+    store.create_task(kind="prompt", body="grow to 1000 px", status="done", source="hook")
+    store.create_task(kind="prompt", body="snake_case", status="done", source="hook")
+    store.create_task(kind="prompt", body="snakeXcase", status="done", source="hook")
+    assert [t["id"] for t in store.search_tasks("100%")] == [literal["id"]]
+    assert [t["body"] for t in store.search_tasks("e_c")] == ["snake_case"]
+
+
+def test_search_tasks_reaches_past_the_state_slice(store):
+    old = store.create_task(
+        kind="prompt",
+        body="needle",
+        status="done",
+        source="hook",
+        finished_at="2020-01-01T00:00:00.000Z",
+    )
+    for _ in range(3):
+        store.create_task(kind="prompt", body="hay", status="done", source="hook")
+    assert old["id"] not in {t["id"] for t in store.state(done_limit=2)["tasks"]}
+    assert [t["id"] for t in store.search_tasks("needle")] == [old["id"]]
+
+
+def test_search_tasks_filters_by_cwd_orders_by_recency_and_limits(store):
+    older = store.create_task(
+        kind="prompt", body="note", status="done", source="hook", cwd="/a",
+        finished_at="2021-01-01T00:00:00.000Z",
+    )
+    newer = store.create_task(
+        kind="prompt", body="note", status="done", source="hook", cwd="/a",
+        finished_at="2022-01-01T00:00:00.000Z",
+    )
+    store.create_task(kind="prompt", body="note", status="done", source="hook", cwd="/b")
+    assert [t["id"] for t in store.search_tasks("note", cwd="/a")] == [newer["id"], older["id"]]
+    assert len(store.search_tasks("note", limit=1)) == 1
+
+
+def test_search_tasks_blank_query_returns_nothing(store):
+    store.create_task(kind="prompt", body="anything", status="done", source="hook")
+    assert store.search_tasks("   ") == []

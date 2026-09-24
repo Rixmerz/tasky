@@ -18,6 +18,9 @@ TASK_STATUSES = ("queued", "running", "done", "failed", "interrupted", "cancelle
 TERMINAL = ("done", "failed", "interrupted", "cancelled")
 TASK_KINDS = ("prompt", "delegation")
 
+SEARCH_LIMIT = 50
+SEARCH_MAX_WORDS = 8
+
 _SCHEMA_VERSION = 2
 _INIT_TIMEOUT_S = 10.0
 _SESSION_FIELDS = ("title", "auto_pull", "pull_chain", "state")
@@ -27,6 +30,7 @@ _LIST_TASKS_ORDER = (
     "CASE WHEN status = 'queued' THEN position END ASC, "
     "CASE WHEN status != 'queued' THEN COALESCE(started_at, created_at) END DESC"
 )
+_LIKE_SPECIALS = re.compile(r"[\\%_]")
 _TASK_UPDATE_FIELDS = (
     "title",
     "body",
@@ -505,6 +509,40 @@ class Store:
         if limit is not None:
             sql += " LIMIT ?"
             params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._task_row(r) for r in rows]
+
+    def search_tasks(
+        self, query: str, *, cwd: str | None = None, limit: int = SEARCH_LIMIT
+    ) -> list[dict]:
+        """Tasks whose title, prompt or reply holds every word of ``query``.
+
+        Reaches the whole ledger, not just the slice ``state()`` ships, so old
+        answers can be found without asking the model again. Matching is a
+        case-insensitive substring per word (SQLite ``LIKE``: ASCII case only).
+        """
+        words = query.split()[:SEARCH_MAX_WORDS]
+        if not words:
+            return []
+        clauses = []
+        params: list[Any] = []
+        for word in words:
+            pattern = "%" + _LIKE_SPECIALS.sub(r"\\\g<0>", word) + "%"
+            clauses.append(
+                "(title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\' "
+                "OR COALESCE(result, '') LIKE ? ESCAPE '\\')"
+            )
+            params.extend((pattern, pattern, pattern))
+        if cwd is not None:
+            clauses.append("cwd = ?")
+            params.append(cwd)
+        # clauses are fixed LIKE comparisons, one per word; every value is bound
+        sql = (
+            "SELECT * FROM tasks WHERE "  # noqa: S608
+            + " AND ".join(clauses)
+            + " ORDER BY COALESCE(finished_at, started_at, created_at) DESC, id DESC LIMIT ?"
+        )
+        params.append(limit)
         rows = self._conn.execute(sql, params).fetchall()
         return [self._task_row(r) for r in rows]
 

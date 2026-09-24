@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-09-24
+
+### Added
+
+- Search in the dashboard's top bar finds past tasks by the words in their title, prompt or reply,
+  across the whole ledger, not only the tasks the board shows. Every word must match; results come
+  newest first, respect the project filter, highlight the match and open in the side panel, so an
+  old answer can be read again without asking the model. Press `/` to focus it and Esc to clear it.
+- `GET /api/search?q=…&cwd=…` returns up to 50 matching tasks and whether there were more.
+
+### Changed
+
+- The `/` shortcut now focuses search; `n` still focuses the new-task bar.
+
 ## [0.3.0] - 2026-09-15
 
 ### Added

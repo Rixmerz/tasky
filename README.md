@@ -91,6 +91,11 @@ between Inbox and Up next; with the keyboard, focus a row's handle, press Space,
 keys and press Enter. Rows cycle through five colour rails so neighbours are easy to tell apart. On a
 phone, one column shows at a time.
 
+The search box next to the bar (press `/`) finds past tasks by any word in their title, prompt or
+reply, across everything Tasky has recorded, not just what the board shows. Every word must match,
+the newest 50 hits come first, the project filter applies, and clicking a hit opens it in the side
+panel: read an old answer again instead of asking Claude, at no token cost. Esc clears it.
+
 ### Queue a task
 
 | Where | How | Model tokens |
@@ -240,7 +245,7 @@ call. Every hook exits successfully and prints nothing when something goes wrong
 | --- | --- |
 | Recording prompts, delegations and results | 0 |
 | Queueing with `++`, the dashboard or the CLI | 0 |
-| Dashboard, CLI and status line | 0 |
+| Dashboard, search, CLI and status line | 0 |
 | Context reminder after resume or compaction | A few lines, only when tasks are unfinished |
 | Auto-pull | One normal turn per pulled task |
 | Run now and the run queue | One normal headless session per task |
@@ -313,6 +318,8 @@ Hooks read these from the environment of the Claude Code process.
 - A run queue task left `running` by a killed worker blocks its project's queue until you cancel it.
 - When a background subagent reports back, its parent task's result becomes the final report
   rather than the first reply.
+- Search only sees the stored part of a reply (the first `TASKY_MAX_RESULT` characters, 8000 by
+  default), and ignores letter case for ASCII only: "Ó" and "ó" are different letters to it.
 
 ## Development
 

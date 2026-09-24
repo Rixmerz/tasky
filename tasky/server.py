@@ -15,16 +15,17 @@ import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from tasky import scheduler, worker
 from tasky.config import Config, load_token, token_proof
-from tasky.store import TASK_STATUSES, Store
+from tasky.store import SEARCH_LIMIT, TASK_STATUSES, Store
 from tasky.titles import TitleWatcher
 
 _NONCE_RE = re.compile(r"[0-9a-f]{16,128}")
 _CONTENT_LENGTH_RE = re.compile(r"^\d{1,7}$")
 _MAX_BODY = 1024 * 1024  # 1 MiB
+_SEARCH_MAX_QUERY = 200
 _CSP = (
     "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; "
     "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'"
@@ -202,6 +203,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._route_version()
         elif method == "GET" and path == "/api/state":
             self._route_state()
+        elif method == "GET" and path == "/api/search":
+            self._route_search()
         elif method == "POST" and path == "/api/tasks":
             self._route_create_task(body)
         elif method == "POST" and path == "/api/import":
@@ -277,6 +280,20 @@ class _Handler(BaseHTTPRequestHandler):
             "allow_bypass": config.allow_bypass,
         }
         self._send_json(200, state)
+
+    def _route_search(self) -> None:
+        params = parse_qs(urlsplit(self.path).query)
+        query = params.get("q", [""])[0].strip()
+        if len(query) > _SEARCH_MAX_QUERY:
+            self._error(400, f"q is longer than {_SEARCH_MAX_QUERY} characters")
+            return
+        cwd = params.get("cwd", [""])[0] or None
+        with Store.open(self.server.config) as store:
+            tasks = store.search_tasks(query, cwd=cwd, limit=SEARCH_LIMIT + 1)
+        self._send_json(
+            200,
+            {"query": query, "tasks": tasks[:SEARCH_LIMIT], "more": len(tasks) > SEARCH_LIMIT},
+        )
 
     def _route_create_task(self, body: dict) -> None:
         task_body = body.get("body")
