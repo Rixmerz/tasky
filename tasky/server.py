@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from tasky import scheduler, worker
+from tasky import history, repos, scheduler, worker
 from tasky.config import Config, load_token, token_proof
 from tasky.store import SEARCH_LIMIT, TASK_STATUSES, Store
 from tasky.titles import TitleWatcher
@@ -206,10 +206,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._route_state()
         elif method == "GET" and path == "/api/search":
             self._route_search()
-        elif method == "GET" and path == "/api/insights":
-            self._route_insights()
-        elif method == "POST" and path == "/api/insights/sync":
-            self._route_insights_sync(body)
+        elif method == "GET" and path == "/api/history":
+            self._route_history()
+        elif method == "POST" and path == "/api/history/sync":
+            self._route_history_sync(body)
         elif method == "POST" and path == "/api/tasks":
             self._route_create_task(body)
         elif method == "POST" and path == "/api/import":
@@ -310,34 +310,44 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json(200, task)
 
-    def _route_insights(self) -> None:
-        cwd = parse_qs(urlsplit(self.path).query).get("cwd", [""])[0]
-        if not cwd:
-            self._error(400, "cwd is required")
-            return
-        with Store.open(self.server.config) as store:
+    def _route_history(self) -> None:
+        scope = parse_qs(urlsplit(self.path).query).get("repo", ["all"])[0] or "all"
+        config = self.server.config
+        with Store.open(config) as store:
+            repos.ensure(store, store.task_cwds())
+            repo_list = store.repo_list()
+            for entry in repo_list:
+                entry["pending"] = store.pending_history_tasks(entry["cwds"])
+                entry["sync"] = store.history_sync(entry["repo"])
+            repo = None if scope == "all" else scope
             payload = {
-                "cwd": cwd,
-                "insights": store.list_insights(cwd),
-                "sync": store.insight_sync(cwd),
-                "pending": store.pending_insight_tasks(cwd),
+                "scope": scope,
+                "default_model": config.history_model,
+                "models": list(history.MODELS),
+                "repos": repo_list,
+                "milestones": store.milestones(repo),
+                "problems": store.problems(repo),
             }
         self._send_json(200, payload)
 
-    def _route_insights_sync(self, body: dict) -> None:
-        cwd = body.get("cwd")
-        if not isinstance(cwd, str) or not cwd:
-            self._error(400, "cwd is required")
+    def _route_history_sync(self, body: dict) -> None:
+        repo = body.get("repo")
+        if not isinstance(repo, str) or not repo:
+            self._error(400, "repo is required")
+            return
+        model = body.get("model", self.server.config.history_model)
+        if model not in history.MODELS:
+            self._error(400, f"model must be one of {', '.join(history.MODELS)}")
             return
         config = self.server.config
         with Store.open(config) as store:
-            # Only folders Tasky has recorded work in: the sync runs git there.
-            if not store.has_project(cwd):
-                self._error(404, "no tasks recorded for this project")
+            # Only repos Tasky has recorded work in: the sync runs git in their folders.
+            if not store.repo_cwds(repo):
+                self._error(404, "no tasks recorded for this repository")
                 return
-            current = store.insight_sync(cwd)
+            current = store.history_sync(repo)
         if current is not None and current["state"] == "running":
-            self._error(409, "a sync of this project is already running")
+            self._error(409, "a sync of this repository is already running")
             return
         config.log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         fd = os.open(
@@ -345,7 +355,10 @@ class _Handler(BaseHTTPRequestHandler):
         )
         try:
             self.server.popen(
-                [sys.executable, str(worker._TASKY_BIN), "history", "--cwd", cwd],
+                [
+                    sys.executable, str(worker._TASKY_BIN), "history",
+                    "--repo", repo, "--model", model,
+                ],
                 cwd=str(config.home),
                 stdin=subprocess.DEVNULL,
                 stdout=fd,

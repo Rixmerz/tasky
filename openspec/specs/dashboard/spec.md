@@ -224,23 +224,30 @@ SHALL require the dashboard token like every other API route.
 - **THEN** the box clears and the board returns
 
 ### Requirement: Project history
-The dashboard SHALL show, per project, dead ends (fixes believed correct that turned out wrong),
-problems with their cause, solution and state, and dated milestones, each citing the tasks it was
-derived from. The history SHALL be built only when the user asks for a sync, which SHALL read only
-tasks finished since the previous sync, SHALL run a small model with no tools and with Tasky's hooks
-disabled, SHALL discard records that cite tasks the model was not shown, and SHALL show the cost of
-the last sync. Reading the history SHALL spend no tokens. A session that starts in a project with
-dead ends SHALL receive the most recent ones as context, up to a configurable count that can be zero.
+The dashboard SHALL keep, per repository, problems with the ordered chain of attempts made to fix
+them (outcome, why it failed, when it was believed correct and when it was shown wrong, evidence and
+source tasks) and dated milestones, and SHALL show them as a timeline, a problem list, a list of
+failed attempts and a map, for one repository or all of them. Folders that share a git `origin`
+SHALL share one history. The history SHALL be built only when the user asks for a sync with a model
+they choose, which SHALL read only tasks finished since the previous sync, SHALL run with no tools
+and with Tasky's hooks disabled, SHALL discard records citing tasks the model was not shown, SHALL
+keep an evidence quote only if it appears verbatim in a cited task, and SHALL show the cost of the
+last sync. Reading the history SHALL spend no tokens. A session that starts in a repository with
+failed attempts SHALL receive the most recent ones as context, up to a configurable count that can
+be zero. The history SHALL be searchable and writable by the agent through MCP tools.
 
-#### Scenario: A reverted fix becomes a dead end
-- **WHEN** one task records a fix, a later task says it did not work and names the real cause, and the user presses Sync with Haiku
-- **THEN** the History panel lists a dead end citing both tasks, with why it was wrong and what worked instead
+#### Scenario: A fix that did not hold stays on record
+- **WHEN** one task records a fix, a later task says it did not work and names the real cause, and the user syncs
+- **THEN** the problem shows the first attempt as failed with why and its evidence, followed by the fix that worked, and the failed one is listed under Dead ends
 
 #### Scenario: Sync reads only new work
-- **WHEN** a project was synced and two tasks finished afterwards
+- **WHEN** a repository was synced and two tasks finished afterwards
 - **THEN** the next sync sends the model those two tasks and none of the earlier ones
 
-#### Scenario: The agent is warned
-- **WHEN** a session starts in a project whose history has a dead end
-- **THEN** its context includes that dead end and what worked instead
+#### Scenario: The agent checks before repeating a fix
+- **WHEN** an agent calls search_history with words from a bug that already has a failed attempt
+- **THEN** it receives the problem with every attempt in order, including the failed one and why it failed
 
+#### Scenario: One bank across repositories
+- **WHEN** the user picks "All repos" in the History panel
+- **THEN** problems, attempts and milestones of every repository are listed together, each labelled with its repository

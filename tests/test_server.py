@@ -1375,35 +1375,60 @@ def test_search_rejects_overlong_query(conn, auth_headers):
 # -- project history -----------------------------------------------------------
 
 
-def test_insights_route_returns_records_and_sync_state(store, conn, auth_headers):
-    task = store.create_task(kind="prompt", body="a", status="done", source="hook", cwd="/p")
-    store.add_insight(cwd="/p", kind="milestone", title="Shipped", task_ids=[task["id"]])
-    resp, parsed = _request(conn, "GET", "/api/insights?cwd=%2Fp", headers=auth_headers)
+def _problem_with_attempts(store, cwd="/p"):
+    from tasky.config import now_iso
+
+    store.set_repo(cwd, "github.com/o/p", "p", now_iso())
+    task = store.create_task(kind="prompt", body="a", status="done", source="hook", cwd=cwd)
+    problem_id = store.add_problem(cwd=cwd, title="Login fails", task_ids=[task["id"]])
+    store.add_attempt(problem_id, description="retry", outcome="failed", why="cookie", task_ids=[])
+    store.add_attempt(problem_id, description="cookie domain", outcome="worked", task_ids=[])
+    return task, problem_id
+
+
+def test_history_route_returns_repos_problems_and_attempts(
+    store, running_server, conn, auth_headers, monkeypatch
+):
+    import tasky.repos as repos_mod
+
+    monkeypatch.setattr(repos_mod, "resolve", lambda cwd: ("github.com/o/p", "p"))
+    task, problem_id = _problem_with_attempts(store)
+    path = "/api/history?repo=github.com%2Fo%2Fp"
+    resp, parsed = _request(conn, "GET", path, headers=auth_headers)
     assert resp.status == 200
-    assert [i["title"] for i in parsed["insights"]] == ["Shipped"]
-    assert parsed["sync"] is None
-    assert parsed["pending"] == 1
+    assert parsed["scope"] == "github.com/o/p"
+    assert parsed["default_model"] == "sonnet"
+    assert [r["repo"] for r in parsed["repos"]] == ["github.com/o/p"]
+    assert parsed["repos"][0]["pending"] == 1
+    problem = parsed["problems"][0]
+    assert problem["id"] == problem_id and problem["name"] == "p"
+    assert [(a["seq"], a["outcome"]) for a in problem["attempts"]] == [(1, "failed"), (2, "worked")]
 
 
-def test_insights_sync_starts_a_background_process(store, running_server, conn, auth_headers):
-    store.create_task(kind="prompt", body="a", status="done", source="hook", cwd="/p")
+def test_history_sync_starts_a_background_process(store, running_server, conn, auth_headers):
+    _problem_with_attempts(store)
     launched = []
     running_server.popen = lambda cmd, **kw: launched.append(cmd)
-    resp, parsed = _request(conn, "POST", "/api/insights/sync", {"cwd": "/p"}, auth_headers)
+    resp, _ = _request(
+        conn, "POST", "/api/history/sync", {"repo": "github.com/o/p", "model": "haiku"},
+        auth_headers,
+    )
     assert resp.status == 202
-    assert launched and launched[0][-3:] == ["history", "--cwd", "/p"]
+    assert launched[0][-5:] == ["history", "--repo", "github.com/o/p", "--model", "haiku"]
 
 
-def test_insights_sync_rejects_unknown_projects_and_a_second_run(
+def test_history_sync_rejects_bad_model_unknown_repo_and_a_second_run(
     store, running_server, conn, auth_headers
 ):
     running_server.popen = lambda cmd, **kw: None
-    resp, _ = _request(conn, "POST", "/api/insights/sync", {"cwd": "/nope"}, auth_headers)
-    assert resp.status == 404
-    store.create_task(kind="prompt", body="a", status="done", source="hook", cwd="/p")
-    store.begin_insight_sync("/p", stale_after_s=60)
-    resp, _ = _request(conn, "POST", "/api/insights/sync", {"cwd": "/p"}, auth_headers)
-    assert resp.status == 409
+    _problem_with_attempts(store)
+    body = {"repo": "github.com/o/p", "model": "gpt"}
+    assert _request(conn, "POST", "/api/history/sync", body, auth_headers)[0].status == 400
+    body = {"repo": "nope"}
+    assert _request(conn, "POST", "/api/history/sync", body, auth_headers)[0].status == 404
+    store.begin_history_sync("github.com/o/p", "sonnet", stale_after_s=60)
+    body = {"repo": "github.com/o/p"}
+    assert _request(conn, "POST", "/api/history/sync", body, auth_headers)[0].status == 409
 
 
 def test_get_task_route(store, conn, auth_headers):

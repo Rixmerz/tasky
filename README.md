@@ -198,25 +198,38 @@ its replies render as cards too.
 
 ### Project history (the one feature that spends tokens)
 
-The History button in the top bar shows, per project, what a small model distilled from the tasks
-Tasky recorded there:
+The History button in the top bar keeps, per repository, what was learned while working on it:
 
-- **Dead ends**: fixes that were believed correct and turned out wrong, why, and what worked
-  instead, so nobody applies them again.
-- **Problems and solutions**: what broke, its cause, what fixed it, open or solved.
-- **Milestones**: dated steps that changed where the project stands, independent of versions.
+- **Problems**, each with its symptom, cause and state (open, solved, recurring) and the ordered
+  **chain of attempts**: every fix actually applied, whether it worked, failed or partly worked,
+  why it failed, from when it was believed correct until when it was shown wrong, and a verbatim
+  quote from the task that proves it.
+- **Dead ends**: every failed attempt across problems, with what worked instead, so nobody applies
+  a fix that already failed.
+- **Timeline**: dated milestones, independent of versions.
+- **Map**: repository → topics → problems and milestones → attempts, drawn from the same records.
 
-Every record links to the tasks it came from; click one to read what was actually said. Nothing is
-generated until you press **Sync with Haiku** (or run `tasky history --cwd DIR`). A sync reads only
-the tasks finished since the previous one, in batches, with the records already kept and the
-project's git log for the same days, and runs `claude -p --model haiku` with no tools, no MCP
-servers, no saved session and Tasky's own hooks off, so it is not recorded as a task. The status
-line shows the cost of the last sync as Claude Code reports it. Syncing the 13 tasks of one
-afternoon cost about $0.06.
+History is grouped by repository (its `origin` remote), so worktrees and clones share it, and the
+scope selector also shows **all repositories** as one bank of problems and solutions. Every record
+links to the tasks it came from.
 
-Reading the history is free. Dead ends also reach the agent: when a session starts in a project
-that has them, the newest five are added to its context (a few lines; `TASKY_DEAD_END_ITEMS=0`
-turns this off).
+Nothing is generated until you press **Sync** (or run `tasky history --cwd DIR`). A sync reads
+only the tasks finished since the previous one, in batches of up to 40, with the history already
+kept and the repository's git log for the same days. It runs `claude -p` with the model you pick
+(Sonnet by default; Haiku is cheaper, Opus more thorough), no tools, no MCP servers, no saved
+session and Tasky's own hooks off. Nothing it returns is taken on trust: records must cite tasks
+it was shown, evidence must appear verbatim in them, commits must be in the log it was given, and
+it can only change records of the repository being synced. The status line shows what the last
+sync cost as Claude Code reports it; syncing one afternoon of work (15 tasks) with Sonnet cost
+about $0.08.
+
+Reading the history is free. It also reaches the agent in two ways:
+
+- When a session starts in a repository with failed attempts, the newest five are added to its
+  context (`TASKY_DEAD_END_ITEMS`, `0` turns it off).
+- The plugin ships an MCP server, `tasky`, with `search_history`, `get_problem`, `dead_ends`,
+  `search_tasks` and `record_attempt`. The last one lets the agent write an attempt and its outcome
+  the moment it knows, with no sync and no extra model call; those attempts are tagged "agent".
 
 ### Put the counters in your status line
 
@@ -244,7 +257,9 @@ tasky done ID | tasky cancel ID
 tasky run ID [--mode now|fork] [--permission-mode MODE]
 tasky enqueue ID [--permission-mode MODE]
 tasky import [--dry-run]
-tasky history [--cwd DIR]           sync a project's history with Haiku (spends tokens)
+tasky history [--cwd DIR | --repo KEY] [--model haiku|sonnet|opus]
+                                    sync a repository's history (spends tokens)
+tasky mcp                           serve the history and ledger as MCP tools on stdio
 tasky status [--short]
 ```
 
@@ -270,8 +285,9 @@ call. Every hook exits successfully and prints nothing when something goes wrong
 | Queueing with `++`, the dashboard or the CLI | 0 |
 | Dashboard, search, CLI and status line | 0 |
 | Context reminder after resume or compaction | A few lines, only when tasks are unfinished |
-| Dead ends reminder at session start | A few lines, only in projects that have dead ends |
-| Sync with Haiku (project history) | One small Haiku call per batch of up to 40 tasks, only when you press it |
+| Dead ends reminder at session start | A few lines, only in repositories with failed attempts |
+| History sync | One model call per batch of up to 40 tasks, only when you press Sync |
+| `tasky` MCP tools | Their definitions in each session's context; results only when called |
 | Auto-pull | One normal turn per pulled task |
 | Run now and the run queue | One normal headless session per task |
 | Parallel with context | One headless session per task, starting with the cloned conversation as input |
@@ -327,9 +343,9 @@ What it does not protect against:
 | `TASKY_CONTEXT_ITEMS` | `10` | Tasks listed in the resume or compaction reminder |
 | `TASKY_CLAUDE_BIN` | `claude` | Binary used for parallel workers |
 | `TASKY_ALLOW_BYPASS` | unset | Set to `1` to allow `bypassPermissions` workers |
-| `TASKY_INSIGHTS_MODEL` | `haiku` | Model the history sync uses |
-| `TASKY_INSIGHTS_MAX_BATCHES` | `8` | Batches one sync reads before stopping; press again for more |
-| `TASKY_DEAD_END_ITEMS` | `5` | Dead ends added at session start; `0` turns it off |
+| `TASKY_HISTORY_MODEL` | `sonnet` | Default model for history syncs |
+| `TASKY_HISTORY_MAX_BATCHES` | `8` | Batches one sync reads before stopping; press again for more |
+| `TASKY_DEAD_END_ITEMS` | `5` | Failed attempts added at session start; `0` turns it off |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Where transcripts are imported from |
 
 Hooks read these from the environment of the Claude Code process.

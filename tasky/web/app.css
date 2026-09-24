@@ -27,6 +27,7 @@
   --attn-bg: #fef3c7;
   --fail: #dc2626;
   --fail-bg: #fee2e2;
+  --ok: #15803d;
 
   /* Card rails: a repeating 5-colour cycle so neighbours are tellable apart.
      Low chroma on purpose; they carry position, never status. */
@@ -67,6 +68,7 @@
     --attn-bg: #3b2a08;
     --fail: #f87171;
     --fail-bg: #3f1212;
+    --ok: #4ade80;
 
     --tint-0: #7d9be0;
     --tint-1: #ab96de;
@@ -1373,6 +1375,7 @@ details.digest-card > .digest-card-title {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 16px var(--gutter) 32px;
 }
 
@@ -1397,53 +1400,119 @@ details.digest-card > .digest-card-title {
   font-weight: 600;
 }
 
-.history-project {
+.history-scope,
+.history-model {
   width: auto;
   max-width: 320px;
 }
 
-.history-head #history-close {
+.history-filter {
+  flex: 1 1 220px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 13px;
+  box-shadow: var(--shadow);
+}
+
+.history-filter::placeholder {
+  color: var(--muted);
+}
+
+.history-close {
   margin-left: auto;
 }
 
 .history-sync {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px 10px;
   flex-wrap: wrap;
   margin-top: 12px;
-  margin-bottom: 20px;
 }
 
-.history-sync-status {
+.history-model-label {
   font-size: 12.5px;
   color: var(--muted);
 }
 
-.history-sync-status.is-error {
+.history-sync-status {
+  flex: 1 1 240px;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.history-sync-error {
   color: var(--fail);
 }
 
+.history > .empty-state {
+  margin-top: 16px;
+  padding: 24px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  text-align: center;
+}
+
 .history-body {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
+  margin-top: 16px;
 }
 
-.history-section h3 {
+/* tabs */
+
+.history-tabs {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 2px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.history-tabs [role="tab"] {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 12px;
+  margin-bottom: -1px;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
-.history-hint {
-  font-size: 12px;
-  font-weight: 400;
+.history-tabs [role="tab"]:hover {
+  color: var(--foreground);
+}
+
+.history-tabs [role="tab"][aria-selected="true"] {
+  color: var(--foreground);
+  border-bottom-color: var(--foreground);
+}
+
+.history-panel {
+  min-width: 0;
+}
+
+.history-panel > .history-hint {
+  margin-bottom: 10px;
+  font-size: 12.5px;
   color: var(--muted);
 }
+
+/* shared item parts */
 
 .history-list {
   list-style: none;
@@ -1451,37 +1520,33 @@ details.digest-card > .digest-card-title {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .history-item {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 10px 14px;
+  gap: 6px;
+  padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--card);
   box-shadow: var(--shadow);
-}
-
-.history-item[data-kind="dead_end"] {
-  border-left: 3px solid var(--fail);
-}
-
-.history-item[data-kind="problem"][data-state="open"] {
-  border-left: 3px solid var(--attn);
-}
-
-.history-timeline .history-item {
-  border-left: 3px solid var(--live);
+  min-width: 0;
 }
 
 .history-item-head {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 6px 8px;
   flex-wrap: wrap;
+}
+
+.history-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .history-date {
@@ -1490,14 +1555,9 @@ details.digest-card > .digest-card-title {
   color: var(--muted);
 }
 
-.history-title {
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-
-.history-state-open {
-  color: var(--attn);
-  border-color: var(--attn);
+.history-meta {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .history-line {
@@ -1505,28 +1565,392 @@ details.digest-card > .digest-card-title {
   overflow-wrap: anywhere;
 }
 
+.history-line.is-muted {
+  color: var(--muted);
+}
+
 .history-line-label {
   color: var(--muted);
+}
+
+.history-chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-topic {
+  background: var(--muted-bg);
+  border-color: transparent;
+}
+
+.history-repo {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.history-state-open {
+  color: var(--attn);
+  background: var(--attn-bg);
+  border-color: transparent;
+}
+
+.history-state-recurring {
+  color: var(--fail);
+  background: var(--fail-bg);
+  border-color: transparent;
+}
+
+.history-state-solved {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  border-color: transparent;
+}
+
+.history-evidence {
+  margin: 0;
+  padding: 4px 10px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-style: italic;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .history-refs {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 2px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.history-refs-label {
-  margin-right: 4px;
+  gap: 4px;
 }
 
 .history-ref {
   min-height: 24px;
+  height: 24px;
   padding: 0 6px;
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
+.history-commit {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--muted-bg);
+  border-color: transparent;
+}
+
+.history-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--foreground);
+  font-size: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.history-link:hover {
+  text-decoration-color: currentColor;
+}
+
+/* Where "go to" lands: a brief tint and ring. With reduced motion the tint
+   animation is off (global rule) and only the ring shows, then goes. */
+.is-flash {
+  outline: 2px solid var(--live);
+  outline-offset: 2px;
+  animation: history-flash 1.5s ease-out;
+}
+
+@keyframes history-flash {
+  from {
+    background-color: color-mix(in srgb, var(--live) 20%, var(--card));
+  }
+}
+
+/* timeline */
+
+.history-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.timeline-item {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  column-gap: 16px;
+  border-radius: var(--radius-sm);
+}
+
+.timeline-date {
+  padding-top: 11px;
+  text-align: right;
+}
+
+.timeline-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 0 18px 20px;
+  border-left: 2px solid var(--border);
+}
+
+.timeline-item:last-child .timeline-body {
+  padding-bottom: 4px;
+}
+
+.timeline-body::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 12px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--live);
+  background: var(--background);
+}
+
+/* problems and their attempt chains */
+
+.problem-card {
+  border-left: 3px solid var(--attn);
+}
+
+.problem-card[data-state="recurring"] {
+  border-left-color: var(--fail);
+}
+
+.problem-card[data-state="solved"] {
+  border-left-color: var(--ok);
+}
+
+.attempt-chain {
+  list-style: none;
+  margin: 6px 0 2px;
+  padding: 0;
+}
+
+.attempt {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  column-gap: 10px;
+  padding-bottom: 14px;
+  border-radius: var(--radius-sm);
+}
+
+.attempt:last-child {
+  padding-bottom: 0;
+}
+
+/* The connector: from under this marker down to the next one. */
+.attempt:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 22px;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+}
+
+.attempt-marker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  background: var(--card);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.attempt[data-outcome="worked"] .attempt-marker {
+  color: var(--ok);
+}
+
+.attempt[data-outcome="failed"] .attempt-marker {
+  color: var(--fail);
+}
+
+.attempt[data-outcome="partial"] .attempt-marker {
+  color: var(--attn);
+}
+
+.attempt-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-top: 1px;
+}
+
+.attempt-desc {
+  font-size: 13.5px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.attempt-agent {
+  height: 18px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 400;
+  vertical-align: 1px;
+}
+
+/* dead ends */
+
+.deadend {
+  border-left: 3px solid var(--fail);
+}
+
+/* mind map */
+
+.map-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0 0 10px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.map-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.map-swatch {
+  width: 16px;
+  height: 11px;
+  border-radius: 3px;
+  border: 1.5px solid var(--node-stroke, var(--border-strong));
+  background: var(--node-fill, var(--card));
+}
+
+.history-map {
+  max-width: 100%;
+  max-height: min(70vh, 760px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.map-svg {
+  display: block;
+}
+
+.map-edge {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 1.25;
+}
+
+.map-node rect {
+  fill: var(--node-fill, var(--card));
+  stroke: var(--node-stroke, var(--border-strong));
+  stroke-width: 1.25;
+}
+
+.map-node text {
+  fill: var(--node-text, var(--foreground));
+  font-family: var(--font-sans);
+  font-size: 11px;
+}
+
+.map-root {
+  --node-fill: var(--primary);
+  --node-stroke: var(--primary);
+  --node-text: var(--primary-fg);
+}
+
+.map-root text,
+.map-repo text,
+.map-topic text {
+  font-weight: 600;
+}
+
+.map-repo {
+  --node-fill: var(--muted-bg);
+  --node-stroke: var(--border-strong);
+}
+
+.map-topic {
+  --node-fill: var(--muted-bg);
+  --node-stroke: var(--border);
+}
+
+.map-problem.is-open {
+  --node-fill: var(--attn-bg);
+  --node-stroke: var(--attn);
+}
+
+.map-problem.is-recurring {
+  --node-fill: var(--fail-bg);
+  --node-stroke: var(--fail);
+}
+
+.map-problem.is-solved {
+  --node-fill: color-mix(in srgb, var(--ok) 12%, var(--card));
+  --node-stroke: var(--ok);
+}
+
+.map-attempt.is-worked {
+  --node-stroke: var(--ok);
+}
+
+.map-attempt.is-failed {
+  --node-stroke: var(--fail);
+}
+
+.map-attempt.is-partial {
+  --node-stroke: var(--attn);
+}
+
+.map-attempt.is-pending {
+  --node-stroke: var(--muted);
+}
+
+.map-attempt.is-pending rect {
+  stroke-dasharray: 3 2;
+}
+
+.map-milestone {
+  --node-fill: color-mix(in srgb, var(--live) 12%, var(--card));
+  --node-stroke: var(--live);
+}
+
+.map-node[tabindex] {
+  cursor: pointer;
+  outline: none;
+}
+
+.map-node[tabindex]:hover rect {
+  stroke-width: 2;
+}
+
+.map-node[tabindex]:focus-visible rect {
+  stroke: var(--foreground);
+  stroke-width: 2.5;
 }
 
 @media (min-width: 481px) {
@@ -1587,6 +2011,58 @@ details.digest-card > .digest-card-title {
   }
   .history {
     padding: 12px;
+  }
+  .history-head {
+    gap: 8px;
+  }
+  .history-scope {
+    flex: 1 1 0;
+    max-width: none;
+    min-width: 0;
+  }
+  .history-filter {
+    order: 3;
+    flex-basis: 100%;
+  }
+  .history-close {
+    margin-left: 0;
+  }
+  .history-sync-status {
+    flex-basis: 100%;
+  }
+  .history-tabs {
+    margin-left: -12px;
+    margin-right: -12px;
+    padding: 0 12px;
+  }
+  .history-tabs [role="tab"] {
+    padding: 0 10px;
+    min-height: 44px;
+  }
+  .history-item {
+    padding: 10px 12px;
+  }
+  .timeline-item {
+    display: block;
+    position: relative;
+    padding-left: 20px;
+    border-left: 2px solid var(--border);
+  }
+  .timeline-date {
+    display: block;
+    padding-top: 8px;
+    text-align: left;
+  }
+  .timeline-body {
+    position: static;
+    padding: 2px 0 16px;
+    border-left: 0;
+  }
+  .timeline-body::before {
+    top: 12px;
+  }
+  .history-map {
+    max-height: 65vh;
   }
   .history-toggle-label {
     display: none;

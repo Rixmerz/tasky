@@ -117,10 +117,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(handler=_cmd_status)
 
     p = sub.add_parser(
-        "history", help="sync a project's milestones, problems and dead ends (spends tokens)"
+        "history", help="sync a repository's problems, attempts and milestones (spends tokens)"
     )
-    p.add_argument("--cwd", default=None, help="project folder (default: current directory)")
+    p.add_argument("--cwd", default=None, help="a folder of the repo (default: current directory)")
+    p.add_argument("--repo", default=None, help="repo key, as the dashboard lists it")
+    p.add_argument("--model", default=None, help="haiku, sonnet or opus (default: sonnet)")
     p.set_defaults(handler=_cmd_history)
+
+    p = sub.add_parser("mcp", help="serve the history and task ledger as MCP tools on stdio")
+    p.set_defaults(handler=_cmd_mcp)
 
     p = sub.add_parser("hook", help="handle a Claude Code hook event from stdin")
     p.set_defaults(handler=_cmd_hook)
@@ -290,24 +295,34 @@ def _cmd_status(args: argparse.Namespace, config: Config, out: TextIO) -> int:
 
 
 def _cmd_history(args: argparse.Namespace, config: Config, out: TextIO) -> int:
-    from tasky import insights
+    from tasky import history
 
-    cwd = os.path.abspath(args.cwd or os.getcwd())
     try:
-        summary = insights.sync(config, cwd)
-    except insights.SyncError as exc:
+        if args.repo:
+            summary = history.sync(config, args.repo, model=args.model)
+        else:
+            cwd = os.path.abspath(args.cwd or os.getcwd())
+            summary = history.sync_folder(config, cwd, model=args.model)
+    except history.SyncError as exc:
         print(f"tasky: {exc}", file=sys.stderr)
         return 1
     print(
         f"{summary['tasks']} task(s) read in {summary['batches']} batch(es): "
         f"{summary['added']} record(s) added, {summary['updated']} updated, "
-        f"${summary['cost_usd']:.4f}, {summary['pending']} task(s) still to sync",
+        f"{summary['model']}, ${summary['cost_usd']:.4f}, "
+        f"{summary['pending']} task(s) still to sync",
         file=out,
     )
     if summary["error"]:
         print(f"tasky: sync stopped: {summary['error']}", file=sys.stderr)
         return 1
     return 0
+
+
+def _cmd_mcp(args: argparse.Namespace, config: Config, out: TextIO) -> int:
+    from tasky.mcp import serve
+
+    return serve(config, sys.stdin, out)
 
 
 def _cmd_hook(args: argparse.Namespace, config: Config, out: TextIO) -> int:

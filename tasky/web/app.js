@@ -163,15 +163,20 @@ const el = {
   historyToggle: document.getElementById("history-toggle"),
   history: document.getElementById("history"),
   historyHeading: document.getElementById("history-heading"),
-  historyProject: document.getElementById("history-project"),
+  historyScope: document.getElementById("history-scope"),
+  historyFilter: document.getElementById("history-filter"),
   historyClose: document.getElementById("history-close"),
+  historySyncRow: document.getElementById("history-sync-row"),
+  historyModel: document.getElementById("history-model"),
   historySync: document.getElementById("history-sync"),
   historySyncStatus: document.getElementById("history-sync-status"),
   historyEmpty: document.getElementById("history-empty"),
   historyBody: document.getElementById("history-body"),
-  historyDead: document.getElementById("history-dead"),
+  historyTabs: document.getElementById("history-tabs"),
+  historyTimeline: document.getElementById("history-timeline"),
   historyProblems: document.getElementById("history-problems"),
-  historyMilestones: document.getElementById("history-milestones"),
+  historyDead: document.getElementById("history-dead"),
+  historyMap: document.getElementById("history-map"),
 };
 
 // ---------- access token ----------
@@ -1988,33 +1993,101 @@ document.addEventListener("keydown", (evt) => {
 
 // ---------- project history ----------
 //
-// Milestones, problems and dead ends a small model distilled from a project's
-// tasks. Reading them is free; only "Sync with Haiku" spends tokens.
+// What a model distilled from a repo's tasks: milestones, and problems with
+// the chain of attempts that led to (or away from) a fix. Reading it is free;
+// only Sync spends tokens, with the model picked next to the button.
+
+const HISTORY_VIEWS = ["timeline", "problems", "deadends", "map"];
+const HISTORY_TAB_KEY = "tasky.historyTab";
+const HISTORY_MODEL_KEY = "tasky.historyModel";
+const HISTORY_DEFAULT_MODELS = ["haiku", "sonnet", "opus"];
+const HISTORY_MODEL_HINTS = { haiku: "cheapest", sonnet: "recommended", opus: "most thorough" };
+const HISTORY_STATE_LABEL = { open: "Open", recurring: "Recurring", solved: "Solved" };
+const HISTORY_OUTCOME = {
+  worked: { glyph: "✓", word: "Worked" },
+  failed: { glyph: "✗", word: "Failed" },
+  partial: { glyph: "◐", word: "Partial" },
+  pending: { glyph: "…", word: "Pending" },
+};
+const HISTORY_FLASH_MS = 1500;
+const HISTORY_START_GRACE_MS = 4000;
 
 let historyOpen = false;
-let historyCwd = "";
+let historyScope = ""; // a repo key, "all", or "" until the repo list is known
+let historyScopeChosen = false;
+let historyRepos = [];
 let historyData = null;
 let historySeq = 0;
-let historyStarting = false;
+let historyStarting = ""; // repo key a sync was just asked for, until the server reports it running
+let historyStartTimer = null;
+let historyView = "timeline";
+let historyFilterText = "";
+let historyRenderedKey = "";
+let historyScopeOptionsKey = "";
+let historyModelOptionsKey = "";
 
-function historyProjects() {
-  const { active, other } = projectActivity();
-  return [...active, ...other];
+function readLocal(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
 }
 
-function renderHistoryProjectOptions() {
-  const projects = historyProjects();
-  if (!historyCwd || !projects.some((p) => p.cwd === historyCwd)) {
-    historyCwd = projectFilter || (projects[0] && projects[0].cwd) || "";
+function writeLocal(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // best effort only
   }
-  el.historyProject.textContent = "";
-  for (const p of projects) {
-    const opt = document.createElement("option");
-    opt.value = p.cwd;
-    opt.textContent = p.label;
-    el.historyProject.appendChild(opt);
+}
+
+{
+  const stored = readLocal(HISTORY_TAB_KEY);
+  if (HISTORY_VIEWS.includes(stored)) historyView = stored;
+}
+
+function modelLabel(model) {
+  if (!model) return "";
+  return model.charAt(0).toUpperCase() + model.slice(1);
+}
+
+function plural(n, word) {
+  return `${n} ${n === 1 ? word : `${word}s`}`;
+}
+
+/** A repo's display name, with its key when another recorded repo shares the name. */
+function historyRepoLabel(key, fallbackName) {
+  const repo = historyRepos.find((r) => r.repo === key);
+  const name = (repo && repo.name) || fallbackName || key;
+  const twins = historyRepos.filter((r) => r.name === name).length;
+  return twins > 1 ? `${name} (${key})` : name;
+}
+
+function currentHistoryRepo() {
+  if (!historyScope || historyScope === "all") return null;
+  return historyRepos.find((r) => r.repo === historyScope) || null;
+}
+
+/** The repo the board is filtered to, else the most recently active one. */
+function defaultHistoryScope(repos) {
+  if (!repos.length) return "all";
+  if (projectFilter) {
+    const hit = repos.find((r) => Array.isArray(r.cwds) && r.cwds.includes(projectFilter));
+    if (hit) return hit.repo;
   }
-  el.historyProject.value = historyCwd;
+  return repos[0].repo;
+}
+
+/** An "all" reply narrowed to one repo, so the first load needs no second round trip. */
+function scopeHistoryData(data, scope) {
+  if (scope === "all" || data.scope === scope) return data;
+  return {
+    ...data,
+    scope,
+    milestones: (data.milestones || []).filter((m) => m.repo === scope),
+    problems: (data.problems || []).filter((p) => p.repo === scope),
+  };
 }
 
 function openHistory() {
@@ -2024,8 +2097,9 @@ function openHistory() {
   el.history.hidden = false;
   el.board.hidden = true;
   el.tablist.hidden = true;
-  renderHistoryProjectOptions();
+  if (!historyScopeChosen) historyScope = historyRepos.length ? defaultHistoryScope(historyRepos) : "";
   historyData = null;
+  historyRenderedKey = "";
   renderHistory();
   loadHistory();
   el.historyHeading.focus();
@@ -2041,162 +2115,734 @@ function closeHistory(focusToggle = true) {
 }
 
 async function loadHistory() {
-  if (!historyCwd) return;
   const seq = ++historySeq;
-  const cwd = historyCwd;
+  const scope = historyScope;
+  let data;
   try {
-    const data = await apiGet(`/api/insights?${new URLSearchParams({ cwd })}`);
-    // A reply for a project switched away from, or older than a newer load, is dropped.
-    if (seq !== historySeq || cwd !== historyCwd) return;
-    historyData = data;
-    if (data.sync && data.sync.state === "running") historyStarting = false;
-    renderHistory();
+    data = await apiGet(`/api/history?${new URLSearchParams({ repo: scope || "all" })}`);
   } catch (err) {
-    handleApiError(err);
-  }
-}
-
-function syncStatusText(data) {
-  const sync = data && data.sync;
-  const pending = data ? data.pending : 0;
-  const toRead = `${pending} ${pending === 1 ? "task" : "tasks"} to read`;
-  if (historyStarting || (sync && sync.state === "running")) return "Syncing… Haiku is reading this project's tasks.";
-  if (!sync) return `Never synced · ${toRead} · spends tokens`;
-  const parts = [`Synced ${relativeTime(sync.finished_at) || "just now"}`];
-  if (sync.last_cost_usd) parts.push(`$${sync.last_cost_usd.toFixed(4)}`);
-  parts.push(pending ? toRead : "up to date");
-  if (sync.error) parts.push(`stopped: ${sync.error}`);
-  return parts.join(" · ");
-}
-
-function renderHistory() {
-  const data = historyData;
-  const running = historyStarting || (data && data.sync && data.sync.state === "running");
-  el.historySync.disabled = !historyCwd || running || (data && data.pending === 0);
-  el.historySync.textContent = running ? "Syncing…" : "Sync with Haiku";
-  el.historySyncStatus.textContent = historyCwd ? syncStatusText(data) : "";
-  el.historySyncStatus.classList.toggle("is-error", Boolean(data && data.sync && data.sync.error));
-
-  const insights = (data && data.insights) || [];
-  const dead = insights.filter((i) => i.kind === "dead_end").reverse();
-  const problems = insights
-    .filter((i) => i.kind === "problem")
-    .sort((a, b) => (a.state === b.state ? 0 : a.state === "open" ? -1 : 1));
-  const milestones = insights.filter((i) => i.kind === "milestone");
-
-  el.historyEmpty.hidden = insights.length !== 0 || !data;
-  if (!historyCwd) {
-    el.historyEmpty.hidden = false;
-    el.historyEmpty.textContent = "No projects recorded yet.";
-  } else if (data && insights.length === 0) {
-    el.historyEmpty.textContent = data.pending
-      ? `No history yet. Sync reads this project's ${data.pending} recorded tasks with Haiku and keeps milestones, problems and dead ends.`
-      : "No history yet, and no finished tasks to read.";
-  }
-  el.historyBody.hidden = insights.length === 0;
-
-  fillHistoryList(el.historyDead, dead);
-  fillHistoryList(el.historyProblems, problems);
-  fillHistoryList(el.historyMilestones, milestones);
-  el.historyDead.closest(".history-section").hidden = dead.length === 0;
-  el.historyProblems.closest(".history-section").hidden = problems.length === 0;
-  el.historyMilestones.closest(".history-section").hidden = milestones.length === 0;
-}
-
-function fillHistoryList(list, items) {
-  list.textContent = "";
-  for (const item of items) list.appendChild(createHistoryItem(item));
-}
-
-function createHistoryItem(item) {
-  const li = document.createElement("li");
-  li.className = "history-item";
-  li.dataset.kind = item.kind;
-  if (item.state) li.dataset.state = item.state;
-
-  const head = document.createElement("div");
-  head.className = "history-item-head";
-  if (item.happened_on) {
-    const when = document.createElement("time");
-    when.className = "history-date";
-    when.dateTime = item.happened_on;
-    when.textContent = item.happened_on;
-    head.appendChild(when);
-  }
-  const title = document.createElement("span");
-  title.className = "history-title";
-  title.textContent = item.title;
-  head.appendChild(title);
-  if (item.kind === "problem") {
-    const badge = document.createElement("span");
-    badge.className = `badge history-state history-state-${item.state || "open"}`;
-    badge.textContent = item.state === "solved" ? "Solved" : "Open";
-    head.appendChild(badge);
-  }
-  li.appendChild(head);
-
-  const labels = {
-    problem: ["Cause", "Solution"],
-    dead_end: ["Why it was wrong", "What worked instead"],
-    milestone: ["", ""],
-  }[item.kind] || ["", ""];
-  appendHistoryLine(li, labels[0], item.detail);
-  appendHistoryLine(li, labels[1], item.solution);
-
-  if (item.task_ids.length) {
-    const refs = document.createElement("div");
-    refs.className = "history-refs";
-    const label = document.createElement("span");
-    label.className = "history-refs-label";
-    label.textContent = "From";
-    refs.appendChild(label);
-    for (const id of item.task_ids) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "btn btn-ghost btn-sm history-ref";
-      btn.textContent = `#${id}`;
-      btn.setAttribute("aria-label", `Open task ${id}`);
-      btn.addEventListener("click", () => openTaskById(id));
-      refs.appendChild(btn);
+    if (seq !== historySeq) return;
+    if (scope && scope !== "all" && /\(404\)/.test(err.message)) {
+      // The repo left the ledger; fall back to the default choice.
+      historyScope = "";
+      historyScopeChosen = false;
+      loadHistory();
+      return;
     }
-    li.appendChild(refs);
-  }
-  return li;
-}
-
-function appendHistoryLine(parent, label, text) {
-  if (!text) return;
-  const p = document.createElement("p");
-  p.className = "history-line";
-  if (label) {
-    const strong = document.createElement("span");
-    strong.className = "history-line-label";
-    strong.textContent = `${label}: `;
-    p.appendChild(strong);
-  }
-  p.appendChild(document.createTextNode(text));
-  parent.appendChild(p);
-}
-
-async function startHistorySync() {
-  if (!historyCwd) return;
-  historyStarting = true;
-  renderHistory();
-  try {
-    await apiMutate("POST", "/api/insights/sync", { cwd: historyCwd });
-    announce("History sync started");
-  } catch (err) {
-    historyStarting = false;
-    renderHistory();
     handleApiError(err);
     return;
   }
-  // The sync process claims the project a moment after it starts; until the
-  // ledger says so, keep showing it as starting rather than idle.
-  setTimeout(() => {
-    historyStarting = false;
+  // A reply for a scope switched away from, or older than a newer load, is dropped.
+  if (seq !== historySeq || scope !== historyScope) return;
+  historyRepos = Array.isArray(data.repos) ? data.repos : [];
+  if (!historyScope || (historyScope !== "all" && !historyRepos.some((r) => r.repo === historyScope))) {
+    historyScope = defaultHistoryScope(historyRepos);
+  }
+  if (data.scope !== historyScope) {
+    if (data.scope !== "all") {
+      loadHistory();
+      return;
+    }
+    data = scopeHistoryData(data, historyScope);
+  }
+  data.milestones = Array.isArray(data.milestones) ? data.milestones : [];
+  data.problems = Array.isArray(data.problems) ? data.problems : [];
+  historyData = data;
+  const repo = currentHistoryRepo();
+  if (historyStarting && repo && repo.repo === historyStarting && repo.sync && repo.sync.state === "running") {
+    clearHistoryStarting();
+  }
+  renderHistory();
+}
+
+function clearHistoryStarting() {
+  historyStarting = "";
+  clearTimeout(historyStartTimer);
+  historyStartTimer = null;
+}
+
+function historyIsRunning(repo) {
+  return Boolean(repo) && (historyStarting === repo.repo || Boolean(repo.sync && repo.sync.state === "running"));
+}
+
+async function startHistorySync() {
+  const repo = currentHistoryRepo();
+  if (!repo || historyIsRunning(repo)) return;
+  const model = el.historyModel.value;
+  historyStarting = repo.repo;
+  renderHistorySync();
+  try {
+    await apiMutate("POST", "/api/history/sync", { repo: repo.repo, model });
+    announce(`History sync started with ${modelLabel(model)}`);
+  } catch (err) {
+    clearHistoryStarting();
+    renderHistorySync();
+    handleApiError(err);
     loadHistory();
-  }, 4000);
+    return;
+  }
+  // The sync process claims the repo a moment after it starts; until the
+  // server says so, keep showing it as starting rather than idle.
+  clearTimeout(historyStartTimer);
+  historyStartTimer = setTimeout(() => {
+    historyStarting = "";
+    historyStartTimer = null;
+    loadHistory();
+  }, HISTORY_START_GRACE_MS);
+}
+
+// ----- header, sync row, tabs -----
+
+function renderHistoryScopeOptions() {
+  const key = JSON.stringify(historyRepos.map((r) => [r.repo, r.name]));
+  if (key !== historyScopeOptionsKey) {
+    historyScopeOptionsKey = key;
+    el.historyScope.textContent = "";
+    const all = document.createElement("option");
+    all.value = "all";
+    all.textContent = "All repos";
+    el.historyScope.appendChild(all);
+    for (const r of historyRepos) {
+      const opt = document.createElement("option");
+      opt.value = r.repo;
+      opt.textContent = historyRepoLabel(r.repo, r.name);
+      el.historyScope.appendChild(opt);
+    }
+  }
+  el.historyScope.value = historyScope || "all";
+  el.historyScope.disabled = historyRepos.length === 0;
+}
+
+function historyModels() {
+  const models = historyData && historyData.models;
+  return Array.isArray(models) && models.length ? models : HISTORY_DEFAULT_MODELS;
+}
+
+function renderHistoryModelOptions() {
+  const models = historyModels();
+  const key = models.join(",");
+  if (key !== historyModelOptionsKey) {
+    historyModelOptionsKey = key;
+    el.historyModel.textContent = "";
+    for (const m of models) {
+      const opt = document.createElement("option");
+      opt.value = m;
+      const hint = HISTORY_MODEL_HINTS[m];
+      opt.textContent = hint ? `${modelLabel(m)} · ${hint}` : modelLabel(m);
+      el.historyModel.appendChild(opt);
+    }
+  }
+  const stored = readLocal(HISTORY_MODEL_KEY);
+  const fallback = historyData && historyData.default_model;
+  el.historyModel.value = models.includes(stored) ? stored : models.includes(fallback) ? fallback : models[0];
+}
+
+function renderHistorySync() {
+  const repo = currentHistoryRepo();
+  el.historySyncRow.hidden = !repo;
+  if (!repo) return;
+  renderHistoryModelOptions();
+  const running = historyIsRunning(repo);
+  const pending = repo.pending || 0;
+  el.historySync.disabled = running || pending === 0;
+  el.historySync.textContent = running ? "Syncing…" : "Sync";
+  el.historyModel.disabled = running;
+
+  const status = el.historySyncStatus;
+  const sync = repo.sync;
+  const toRead = `${plural(pending, "task")} to read`;
+  status.textContent = "";
+  status.title = sync && sync.total_cost_usd ? `Spent on this repo so far: $${Number(sync.total_cost_usd).toFixed(4)}` : "";
+  if (running) {
+    const model = (sync && sync.state === "running" && sync.model) || el.historyModel.value;
+    status.textContent = `Syncing… ${modelLabel(model)} is reading this repo's tasks.`;
+    return;
+  }
+  if (!sync) {
+    status.textContent = `Never synced · ${toRead} · spends tokens`;
+    return;
+  }
+  const when = relativeTime(sync.finished_at || sync.started_at);
+  const parts = [when && when !== "just now" ? `Synced ${when}` : "Synced just now"];
+  if (sync.last_cost_usd) parts.push(`$${Number(sync.last_cost_usd).toFixed(4)}`);
+  if (sync.model) parts.push(sync.model);
+  parts.push(pending ? toRead : "up to date");
+  status.appendChild(document.createTextNode(parts.join(" · ")));
+  if (sync.error) {
+    status.appendChild(document.createTextNode(" · "));
+    const err = document.createElement("span");
+    err.className = "history-sync-error";
+    err.textContent = `stopped: ${sync.error}`;
+    status.appendChild(err);
+  }
+}
+
+function setHistoryView(view, focusTab) {
+  if (!HISTORY_VIEWS.includes(view)) return;
+  if (view !== historyView) writeLocal(HISTORY_TAB_KEY, view);
+  historyView = view;
+  for (const v of HISTORY_VIEWS) {
+    const tab = document.getElementById(`history-tab-${v}`);
+    const panel = document.getElementById(`history-panel-${v}`);
+    const selected = v === view;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    panel.hidden = !selected;
+  }
+  if (focusTab) document.getElementById(`history-tab-${view}`).focus();
+}
+
+function renderHistory() {
+  renderHistoryScopeOptions();
+  renderHistorySync();
+  const data = historyData;
+  if (!data) {
+    el.historyEmpty.hidden = true;
+    el.historyBody.hidden = true;
+    historyRenderedKey = "";
+    return;
+  }
+  let emptyText = "";
+  if (!historyRepos.length) {
+    emptyText = "No repos recorded yet.";
+  } else if (data.milestones.length + data.problems.length === 0) {
+    const repo = currentHistoryRepo();
+    if (!repo) emptyText = "No history for any repo yet. Pick a repo to sync it.";
+    else if (repo.pending) emptyText = `No history for this repo yet. Sync reads its ${plural(repo.pending, "recorded task")} with the chosen model.`;
+    else emptyText = "No history for this repo yet, and no recorded tasks to read.";
+  }
+  el.historyEmpty.textContent = emptyText;
+  el.historyEmpty.hidden = !emptyText;
+  el.historyBody.hidden = Boolean(emptyText);
+  if (emptyText) {
+    historyRenderedKey = "";
+    return;
+  }
+  // Polls re-deliver the same history often; rebuilding it would drop focus
+  // and scroll position for nothing.
+  const key = JSON.stringify([data.scope, data.milestones, data.problems, historyFilterText]);
+  if (key !== historyRenderedKey) {
+    historyRenderedKey = key;
+    renderHistoryViews();
+  }
+  setHistoryView(historyView, false);
+}
+
+// ----- filtering and ordering -----
+
+function historyHaystack(...values) {
+  return values.filter(Boolean).join("\n").toLowerCase();
+}
+
+function milestoneMatches(m) {
+  return !historyFilterText || historyHaystack(m.title, m.detail, m.topic, m.name).includes(historyFilterText);
+}
+
+function attemptMatches(a) {
+  return !historyFilterText || historyHaystack(a.description, a.why, a.evidence).includes(historyFilterText);
+}
+
+function problemMatches(p) {
+  if (!historyFilterText) return true;
+  if (historyHaystack(p.title, p.symptom, p.cause, p.topic, p.name).includes(historyFilterText)) return true;
+  return (p.attempts || []).some(attemptMatches);
+}
+
+/** Newest first, undated last. Dates are ISO strings, so they compare as text. */
+function compareDateDesc(a, b) {
+  if (a === b) return 0;
+  if (!a) return 1;
+  if (!b) return -1;
+  return a < b ? 1 : -1;
+}
+
+function sortProblems(problems) {
+  const rank = (p) => (p.state === "solved" ? 1 : 0);
+  return problems.slice().sort((a, b) => rank(a) - rank(b) || compareDateDesc(a.last_seen, b.last_seen) || b.id - a.id);
+}
+
+function collectDeadEnds(problems) {
+  const out = [];
+  for (const problem of problems) {
+    for (const attempt of problem.attempts || []) {
+      if (attempt.outcome === "failed") out.push({ attempt, problem });
+    }
+  }
+  const when = (d) => d.attempt.invalidated_on || d.attempt.believed_from;
+  return out.sort((a, b) => compareDateDesc(when(a), when(b)) || b.attempt.id - a.attempt.id);
+}
+
+function renderHistoryViews() {
+  const data = historyData;
+  const showRepo = data.scope === "all";
+  const milestones = data.milestones.filter(milestoneMatches);
+  const problems = sortProblems(data.problems.filter(problemMatches));
+  const deadEnds = collectDeadEnds(problems);
+  const filtered = Boolean(historyFilterText);
+
+  renderTimeline(milestones, showRepo, filtered);
+  renderProblems(problems, showRepo, filtered);
+  renderDeadEnds(deadEnds, showRepo, filtered);
+  renderMap(milestones, problems, showRepo, filtered);
+
+  setHistoryCount("timeline", milestones.length);
+  setHistoryCount("problems", problems.length);
+  setHistoryCount("deadends", deadEnds.length);
+  setHistoryCount("map", milestones.length + problems.length);
+}
+
+function setHistoryCount(view, n) {
+  document.getElementById(`history-count-${view}`).textContent = String(n);
+}
+
+function setTabEmpty(view, text) {
+  const node = document.getElementById(`history-empty-${view}`);
+  node.textContent = text;
+  node.hidden = !text;
+}
+
+function noMatchText(what) {
+  return `No ${what} match “${el.historyFilter.value.trim()}”.`;
+}
+
+// ----- shared bits -----
+
+function historyChip(text, className) {
+  const chip = document.createElement("span");
+  chip.className = `badge history-chip ${className || ""}`.trim();
+  chip.textContent = text;
+  return chip;
+}
+
+function historyLine(label, text, className) {
+  const p = document.createElement("p");
+  p.className = `history-line ${className || ""}`.trim();
+  if (label) {
+    const strong = document.createElement("span");
+    strong.className = "history-line-label";
+    strong.textContent = `${label} `;
+    p.appendChild(strong);
+  }
+  p.appendChild(document.createTextNode(text));
+  return p;
+}
+
+function historyDates(from, to) {
+  if (!from && !to) return null;
+  const p = document.createElement("p");
+  p.className = "history-meta";
+  const parts = [];
+  if (from) parts.push(`believed from ${from}`);
+  if (to) parts.push(`invalidated on ${to}`);
+  p.textContent = parts.join(" → ");
+  return p;
+}
+
+function historyEvidence(text) {
+  const quote = document.createElement("blockquote");
+  quote.className = "history-evidence";
+  quote.textContent = text;
+  return quote;
+}
+
+function shortCommit(commit) {
+  return /^[0-9a-f]{8,40}$/i.test(commit) ? commit.slice(0, 7) : commit;
+}
+
+function historyRefs(taskIds, commits) {
+  const ids = Array.isArray(taskIds) ? taskIds : [];
+  const shas = Array.isArray(commits) ? commits : [];
+  if (!ids.length && !shas.length) return null;
+  const refs = document.createElement("div");
+  refs.className = "history-refs";
+  for (const id of ids) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-ghost btn-sm history-ref";
+    btn.textContent = `#${id}`;
+    btn.setAttribute("aria-label", `Open task ${id}`);
+    btn.addEventListener("click", () => openTaskById(id));
+    refs.appendChild(btn);
+  }
+  for (const sha of shas) {
+    const code = document.createElement("code");
+    code.className = "badge history-commit";
+    code.textContent = shortCommit(sha);
+    code.title = `Commit ${sha}`;
+    refs.appendChild(code);
+  }
+  return refs;
+}
+
+function historyHead(title, level) {
+  const head = document.createElement("div");
+  head.className = "history-item-head";
+  const h = document.createElement(level || "h3");
+  h.className = "history-title";
+  h.textContent = title;
+  head.appendChild(h);
+  return head;
+}
+
+function appendMaybe(parent, child) {
+  if (child) parent.appendChild(child);
+}
+
+/** Switch tab, bring the item into view and flash it so the eye lands on it. */
+function goToHistoryItem(view, id) {
+  setHistoryView(view, false);
+  const target = document.getElementById(id);
+  if (!target) return;
+  target.scrollIntoView({ block: "center", behavior: reducedMotion() ? "auto" : "smooth" });
+  target.focus({ preventScroll: true });
+  target.classList.remove("is-flash");
+  void target.offsetWidth; // restart the animation when flashed twice in a row
+  target.classList.add("is-flash");
+  setTimeout(() => target.classList.remove("is-flash"), HISTORY_FLASH_MS);
+}
+
+// ----- timeline -----
+
+function renderTimeline(milestones, showRepo, filtered) {
+  const list = el.historyTimeline;
+  list.textContent = "";
+  setTabEmpty("timeline", milestones.length ? "" : filtered ? noMatchText("milestones") : "No milestones recorded yet.");
+  for (const m of milestones) list.appendChild(createMilestoneItem(m, showRepo));
+}
+
+function createMilestoneItem(m, showRepo) {
+  const li = document.createElement("li");
+  li.className = "timeline-item";
+  li.id = `milestone-${m.id}`;
+  li.tabIndex = -1;
+
+  const when = document.createElement(m.happened_on ? "time" : "span");
+  when.className = "history-date timeline-date";
+  if (m.happened_on) when.dateTime = m.happened_on;
+  when.textContent = m.happened_on || "undated";
+  li.appendChild(when);
+
+  const body = document.createElement("div");
+  body.className = "timeline-body";
+  const head = historyHead(m.title);
+  if (m.topic) head.appendChild(historyChip(m.topic, "history-topic"));
+  if (showRepo) head.appendChild(historyChip(historyRepoLabel(m.repo, m.name), "history-repo"));
+  body.appendChild(head);
+  if (m.detail) body.appendChild(historyLine("", m.detail));
+  appendMaybe(body, historyRefs(m.task_ids, m.commits));
+  li.appendChild(body);
+  return li;
+}
+
+// ----- problems -----
+
+function renderProblems(problems, showRepo, filtered) {
+  const list = el.historyProblems;
+  list.textContent = "";
+  setTabEmpty("problems", problems.length ? "" : filtered ? noMatchText("problems") : "No problems recorded yet.");
+  for (const p of problems) list.appendChild(createProblemCard(p, showRepo));
+}
+
+function createProblemCard(p, showRepo) {
+  const li = document.createElement("li");
+  li.className = "history-item problem-card";
+  li.id = `problem-${p.id}`;
+  li.dataset.state = p.state || "open";
+  li.tabIndex = -1;
+
+  const head = historyHead(p.title);
+  head.appendChild(historyChip(HISTORY_STATE_LABEL[p.state] || "Open", `history-state history-state-${p.state || "open"}`));
+  if (p.topic) head.appendChild(historyChip(p.topic, "history-topic"));
+  if (showRepo) head.appendChild(historyChip(historyRepoLabel(p.repo, p.name), "history-repo"));
+  li.appendChild(head);
+
+  if (p.first_seen || p.last_seen) {
+    const seen = document.createElement("p");
+    seen.className = "history-meta";
+    const parts = [];
+    if (p.first_seen) parts.push(`first seen ${p.first_seen}`);
+    if (p.last_seen && p.last_seen !== p.first_seen) parts.push(`last seen ${p.last_seen}`);
+    seen.textContent = parts.join(" · ");
+    li.appendChild(seen);
+  }
+  if (p.symptom) li.appendChild(historyLine("Symptom:", p.symptom));
+  if (p.cause) li.appendChild(historyLine("Cause:", p.cause));
+
+  const attempts = p.attempts || [];
+  if (attempts.length) {
+    const chain = document.createElement("ol");
+    chain.className = "attempt-chain";
+    chain.setAttribute("aria-label", `Attempts at “${p.title}”`);
+    for (const a of attempts) chain.appendChild(createAttemptItem(a));
+    li.appendChild(chain);
+  }
+  appendMaybe(li, historyRefs(p.task_ids, []));
+  return li;
+}
+
+function createAttemptItem(a) {
+  const outcome = HISTORY_OUTCOME[a.outcome] ? a.outcome : "pending";
+  const li = document.createElement("li");
+  li.className = "attempt";
+  li.id = `attempt-${a.id}`;
+  li.dataset.outcome = outcome;
+  li.tabIndex = -1;
+
+  const marker = document.createElement("span");
+  marker.className = "attempt-marker";
+  marker.setAttribute("aria-hidden", "true");
+  marker.textContent = HISTORY_OUTCOME[outcome].glyph;
+  li.appendChild(marker);
+
+  const body = document.createElement("div");
+  body.className = "attempt-body";
+  const desc = document.createElement("p");
+  desc.className = "attempt-desc";
+  const word = document.createElement("span");
+  word.className = "visually-hidden";
+  word.textContent = `${HISTORY_OUTCOME[outcome].word}: `;
+  desc.appendChild(word);
+  desc.appendChild(document.createTextNode(a.description));
+  if (a.source === "agent") {
+    desc.appendChild(document.createTextNode(" "));
+    const tag = historyChip("agent", "attempt-agent");
+    tag.title = "Recorded by an agent while it worked, not by a sync";
+    desc.appendChild(tag);
+  }
+  body.appendChild(desc);
+  if (a.why) {
+    const label = outcome === "failed" || outcome === "partial" ? "Why it failed:" : "Why:";
+    body.appendChild(historyLine(label, a.why));
+  }
+  if (a.evidence) body.appendChild(historyEvidence(a.evidence));
+  appendMaybe(body, historyDates(a.believed_from, a.invalidated_on));
+  appendMaybe(body, historyRefs(a.task_ids, a.commits));
+  li.appendChild(body);
+  return li;
+}
+
+// ----- dead ends -----
+
+function renderDeadEnds(deadEnds, showRepo, filtered) {
+  const list = el.historyDead;
+  list.textContent = "";
+  setTabEmpty("deadends", deadEnds.length ? "" : filtered ? noMatchText("dead ends") : "No dead ends recorded yet.");
+  for (const d of deadEnds) list.appendChild(createDeadEndItem(d.attempt, d.problem, showRepo));
+}
+
+function createDeadEndItem(a, problem, showRepo) {
+  const li = document.createElement("li");
+  li.className = "history-item deadend";
+
+  const head = historyHead(a.description);
+  if (a.source === "agent") head.appendChild(historyChip("agent", "attempt-agent"));
+  if (showRepo) head.appendChild(historyChip(historyRepoLabel(problem.repo, problem.name), "history-repo"));
+  li.appendChild(head);
+  if (a.why) li.appendChild(historyLine("Why it failed:", a.why));
+  if (a.evidence) li.appendChild(historyEvidence(a.evidence));
+  appendMaybe(li, historyDates(a.believed_from, a.invalidated_on));
+
+  const where = document.createElement("p");
+  where.className = "history-line";
+  const label = document.createElement("span");
+  label.className = "history-line-label";
+  label.textContent = "Problem: ";
+  where.appendChild(label);
+  const link = document.createElement("button");
+  link.type = "button";
+  link.className = "history-link";
+  link.textContent = problem.title;
+  link.addEventListener("click", () => goToHistoryItem("problems", `problem-${problem.id}`));
+  where.appendChild(link);
+  li.appendChild(where);
+
+  const worked = (problem.attempts || []).find((x) => x.outcome === "worked");
+  li.appendChild(historyLine("What worked instead:", worked ? worked.description : "nothing recorded yet", worked ? "" : "is-muted"));
+  appendMaybe(li, historyRefs(a.task_ids, a.commits));
+  return li;
+}
+
+// ----- mind map -----
+//
+// A left-to-right tree: root → (repos) → topics → problems and milestones →
+// attempts. Every leaf gets its own row, parents sit centred on their
+// children, and each depth has a fixed column. Drawn with createElementNS.
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const MAP_ROW_H = 30;
+const MAP_COL_W = 250;
+const MAP_NODE_W = 220;
+const MAP_NODE_H = 22;
+const MAP_PAD = 12;
+const MAP_LABEL_MAX = 34;
+
+function svgEl(tag, attrs) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs || {})) node.setAttribute(key, String(value));
+  return node;
+}
+
+function truncateLabel(text, max) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+}
+
+function mapNode(label, kind, extra) {
+  return { label: label || "", kind, children: [], ...extra };
+}
+
+function buildHistoryTree(milestones, problems, showRepo) {
+  const repo = currentHistoryRepo();
+  const root = mapNode(showRepo ? "All repos" : (repo && repo.name) || historyScope, "root");
+  const repoNodes = new Map();
+  const topicNodes = new Map();
+
+  const topicFor = (item) => {
+    let parent = root;
+    if (showRepo) {
+      parent = repoNodes.get(item.repo);
+      if (!parent) {
+        parent = mapNode(historyRepoLabel(item.repo, item.name), "repo", { full: item.repo });
+        repoNodes.set(item.repo, parent);
+        root.children.push(parent);
+      }
+    }
+    const topic = item.topic || "General";
+    const key = `${showRepo ? item.repo : ""}\n${topic}`;
+    let node = topicNodes.get(key);
+    if (!node) {
+      node = mapNode(topic, "topic");
+      topicNodes.set(key, node);
+      parent.children.push(node);
+    }
+    return node;
+  };
+
+  for (const p of problems) {
+    const state = HISTORY_STATE_LABEL[p.state] ? p.state : "open";
+    const problemNode = mapNode(p.title, "problem", {
+      status: state,
+      view: "problems",
+      target: `problem-${p.id}`,
+      aria: `Problem, ${HISTORY_STATE_LABEL[state].toLowerCase()}: ${p.title}`,
+    });
+    for (const a of p.attempts || []) {
+      const outcome = HISTORY_OUTCOME[a.outcome] ? a.outcome : "pending";
+      problemNode.children.push(
+        mapNode(a.description, "attempt", {
+          status: outcome,
+          glyph: HISTORY_OUTCOME[outcome].glyph,
+          view: "problems",
+          target: `attempt-${a.id}`,
+          aria: `Attempt, ${HISTORY_OUTCOME[outcome].word.toLowerCase()}: ${a.description}`,
+        }),
+      );
+    }
+    topicFor(p).children.push(problemNode);
+  }
+  for (const m of milestones) {
+    topicFor(m).children.push(
+      mapNode(m.title, "milestone", {
+        view: "timeline",
+        target: `milestone-${m.id}`,
+        full: m.happened_on ? `${m.happened_on} · ${m.title}` : m.title,
+        aria: `Milestone${m.happened_on ? ` ${m.happened_on}` : ""}: ${m.title}`,
+      }),
+    );
+  }
+  return root;
+}
+
+/** Leaves take consecutive rows; a parent sits halfway between its first and last child. */
+function layoutHistoryTree(root) {
+  let rows = 0;
+  let maxDepth = 0;
+  const visit = (node, depth) => {
+    node.depth = depth;
+    if (depth > maxDepth) maxDepth = depth;
+    if (!node.children.length) {
+      node.y = rows * MAP_ROW_H;
+      rows += 1;
+      return;
+    }
+    for (const child of node.children) visit(child, depth + 1);
+    node.y = (node.children[0].y + node.children[node.children.length - 1].y) / 2;
+  };
+  visit(root, 0);
+  return { rows, maxDepth };
+}
+
+function renderMap(milestones, problems, showRepo, filtered) {
+  el.historyMap.textContent = "";
+  const count = milestones.length + problems.length;
+  setTabEmpty("map", count ? "" : filtered ? noMatchText("items") : "Nothing to map yet.");
+  el.historyMap.hidden = count === 0;
+  if (!count) return;
+
+  const root = buildHistoryTree(milestones, problems, showRepo);
+  const { rows, maxDepth } = layoutHistoryTree(root);
+  const width = MAP_PAD * 2 + maxDepth * MAP_COL_W + MAP_NODE_W;
+  const height = MAP_PAD * 2 + (rows - 1) * MAP_ROW_H + MAP_NODE_H;
+  const svg = svgEl("svg", {
+    class: "map-svg",
+    width,
+    height,
+    viewBox: `0 0 ${width} ${height}`,
+    role: "group",
+    "aria-label": `Mind map of ${root.label}`,
+  });
+  const edges = svgEl("g", { class: "map-edges", "aria-hidden": "true" });
+  const nodes = svgEl("g", { class: "map-nodes" });
+  svg.appendChild(edges);
+  svg.appendChild(nodes);
+
+  const anchor = (node) => ({ x: MAP_PAD + node.depth * MAP_COL_W, y: MAP_PAD + node.y + MAP_NODE_H / 2 });
+  const draw = (node) => {
+    const from = anchor(node);
+    for (const child of node.children) {
+      const to = anchor(child);
+      const x1 = from.x + MAP_NODE_W;
+      const mid = (x1 + to.x) / 2;
+      edges.appendChild(svgEl("path", { class: "map-edge", d: `M${x1} ${from.y} C${mid} ${from.y} ${mid} ${to.y} ${to.x} ${to.y}` }));
+    }
+    nodes.appendChild(createMapNode(node, from));
+    for (const child of node.children) draw(child);
+  };
+  draw(root);
+  el.historyMap.appendChild(svg);
+}
+
+function createMapNode(node, at) {
+  const cls = `map-node map-${node.kind}${node.status ? ` is-${node.status}` : ""}`;
+  const g = svgEl("g", { class: cls, transform: `translate(${at.x} ${at.y - MAP_NODE_H / 2})` });
+  const title = svgEl("title");
+  title.textContent = node.full || node.label;
+  g.appendChild(title);
+  g.appendChild(svgEl("rect", { width: MAP_NODE_W, height: MAP_NODE_H, rx: 6, ry: 6 }));
+  const text = svgEl("text", { x: 8, y: MAP_NODE_H / 2, "dominant-baseline": "central" });
+  text.textContent = `${node.glyph ? `${node.glyph} ` : ""}${truncateLabel(node.label, MAP_LABEL_MAX)}`;
+  g.appendChild(text);
+  if (node.target) {
+    g.setAttribute("tabindex", "0");
+    g.setAttribute("role", "button");
+    g.setAttribute("aria-label", node.aria);
+    const go = () => goToHistoryItem(node.view, node.target);
+    g.addEventListener("click", go);
+    g.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        go();
+      }
+    });
+  }
+  return g;
+}
+
+// ----- wiring -----
+
+function setHistoryFilter(value) {
+  historyFilterText = value.trim().toLowerCase();
+  if (historyData) renderHistory();
 }
 
 el.historyToggle.addEventListener("click", () => {
@@ -2204,18 +2850,45 @@ el.historyToggle.addEventListener("click", () => {
   else openHistory();
 });
 el.historyClose.addEventListener("click", () => closeHistory());
-el.historyProject.addEventListener("change", () => {
-  historyCwd = el.historyProject.value;
+el.historyScope.addEventListener("change", () => {
+  historyScope = el.historyScope.value;
+  historyScopeChosen = true;
   historyData = null;
+  historyRenderedKey = "";
   renderHistory();
   loadHistory();
 });
+el.historyFilter.addEventListener("input", () => setHistoryFilter(el.historyFilter.value));
+el.historyModel.addEventListener("change", () => {
+  writeLocal(HISTORY_MODEL_KEY, el.historyModel.value);
+  renderHistorySync();
+});
 el.historySync.addEventListener("click", startHistorySync);
+el.historyTabs.addEventListener("click", (evt) => {
+  const tab = evt.target.closest("[role='tab']");
+  if (tab) setHistoryView(tab.dataset.view, false);
+});
+el.historyTabs.addEventListener("keydown", (evt) => {
+  const i = HISTORY_VIEWS.indexOf(historyView);
+  let next = null;
+  if (evt.key === "ArrowRight") next = HISTORY_VIEWS[(i + 1) % HISTORY_VIEWS.length];
+  else if (evt.key === "ArrowLeft") next = HISTORY_VIEWS[(i - 1 + HISTORY_VIEWS.length) % HISTORY_VIEWS.length];
+  else if (evt.key === "Home") next = HISTORY_VIEWS[0];
+  else if (evt.key === "End") next = HISTORY_VIEWS[HISTORY_VIEWS.length - 1];
+  if (!next) return;
+  evt.preventDefault();
+  setHistoryView(next, true);
+});
 el.history.addEventListener("keydown", (evt) => {
-  if (evt.key === "Escape" && !isDrawerOpen()) {
-    evt.preventDefault();
-    closeHistory();
+  if (evt.key !== "Escape" || isDrawerOpen()) return;
+  evt.preventDefault();
+  // Escape in a filled filter clears the filter first; the next one closes.
+  if (evt.target === el.historyFilter && el.historyFilter.value) {
+    el.historyFilter.value = "";
+    setHistoryFilter("");
+    return;
   }
+  closeHistory();
 });
 
 // ---------- search ----------

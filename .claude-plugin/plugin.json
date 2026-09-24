@@ -1,9 +1,17 @@
 {
   "name": "tasky",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A visual task ledger for Claude Code: records prompts, delegated subagents and results through hooks at zero token cost, with a zero-token chat queue, opt-in queue draining, parallel headless workers and a local dashboard.",
   "homepage": "https://github.com/Rixmerz/tasky",
   "repository": "https://github.com/Rixmerz/tasky",
   "license": "MIT",
-  "keywords": ["tasks", "queue", "hooks", "dashboard", "adhd", "productivity"]
+  "keywords": [
+    "tasks",
+    "queue",
+    "hooks",
+    "dashboard",
+    "adhd",
+    "productivity"
+  ],
+  "mcpServers": "./.mcp.json"
 }

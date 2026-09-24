@@ -106,29 +106,66 @@
 
 <section id="history" class="history" aria-labelledby="history-heading" hidden>
   <div class="history-head">
-    <h2 id="history-heading" class="history-heading" tabindex="-1">History of</h2>
-    <label for="history-project" class="visually-hidden">Project</label>
-    <select id="history-project" class="select history-project"></select>
-    <button type="button" id="history-close" class="btn btn-ghost btn-sm">Back to board</button>
+    <h2 id="history-heading" class="history-heading" tabindex="-1">History</h2>
+    <label for="history-scope" class="visually-hidden">Repository</label>
+    <select id="history-scope" class="select history-scope"></select>
+    <label for="history-filter" class="visually-hidden">Filter problems, attempts, milestones</label>
+    <input type="search" id="history-filter" class="history-filter" placeholder="Filter problems, attempts, milestones" autocomplete="off" spellcheck="false" maxlength="200">
+    <button type="button" id="history-close" class="btn btn-ghost btn-sm history-close">Back to board</button>
   </div>
-  <div class="history-sync">
-    <button type="button" id="history-sync" class="btn btn-primary btn-sm">Sync with Haiku</button>
+  <div id="history-sync-row" class="history-sync" hidden>
+    <label for="history-model" class="history-model-label">Model</label>
+    <select id="history-model" class="select history-model">
+      <option value="haiku">Haiku · cheapest</option>
+      <option value="sonnet">Sonnet · recommended</option>
+      <option value="opus">Opus · most thorough</option>
+    </select>
+    <button type="button" id="history-sync" class="btn btn-primary btn-sm">Sync</button>
     <p id="history-sync-status" class="history-sync-status" role="status" aria-live="polite"></p>
   </div>
-  <p id="history-empty" class="empty-state" hidden></p>
-  <div id="history-body" class="history-body">
-    <section class="history-section" aria-labelledby="history-dead-heading">
-      <h3 id="history-dead-heading">Dead ends <span class="history-hint">fixes that looked right and were not</span></h3>
-      <ol id="history-dead" class="history-list"></ol>
-    </section>
-    <section class="history-section" aria-labelledby="history-problems-heading">
-      <h3 id="history-problems-heading">Problems and solutions</h3>
+  <p id="history-empty" class="empty-state history-empty" hidden></p>
+  <div id="history-body" class="history-body" hidden>
+    <div id="history-tabs" class="history-tabs" role="tablist" aria-label="History views">
+      <button type="button" role="tab" id="history-tab-timeline" aria-controls="history-panel-timeline" aria-selected="true" data-view="timeline">
+        <span class="tab-label">Timeline</span><span class="tab-count" id="history-count-timeline">0</span>
+      </button>
+      <button type="button" role="tab" id="history-tab-problems" aria-controls="history-panel-problems" aria-selected="false" tabindex="-1" data-view="problems">
+        <span class="tab-label">Problems</span><span class="tab-count" id="history-count-problems">0</span>
+      </button>
+      <button type="button" role="tab" id="history-tab-deadends" aria-controls="history-panel-deadends" aria-selected="false" tabindex="-1" data-view="deadends">
+        <span class="tab-label">Dead ends</span><span class="tab-count" id="history-count-deadends">0</span>
+      </button>
+      <button type="button" role="tab" id="history-tab-map" aria-controls="history-panel-map" aria-selected="false" tabindex="-1" data-view="map">
+        <span class="tab-label">Map</span><span class="tab-count" id="history-count-map">0</span>
+      </button>
+    </div>
+    <div role="tabpanel" id="history-panel-timeline" class="history-panel" aria-labelledby="history-tab-timeline" tabindex="0">
+      <p id="history-empty-timeline" class="empty-state" hidden></p>
+      <ol id="history-timeline" class="history-timeline"></ol>
+    </div>
+    <div role="tabpanel" id="history-panel-problems" class="history-panel" aria-labelledby="history-tab-problems" tabindex="0" hidden>
+      <p id="history-empty-problems" class="empty-state" hidden></p>
       <ol id="history-problems" class="history-list"></ol>
-    </section>
-    <section class="history-section" aria-labelledby="history-milestones-heading">
-      <h3 id="history-milestones-heading">Milestones</h3>
-      <ol id="history-milestones" class="history-list history-timeline"></ol>
-    </section>
+    </div>
+    <div role="tabpanel" id="history-panel-deadends" class="history-panel" aria-labelledby="history-tab-deadends" tabindex="0" hidden>
+      <p class="history-hint">Fixes that looked right and were not.</p>
+      <p id="history-empty-deadends" class="empty-state" hidden></p>
+      <ol id="history-dead" class="history-list"></ol>
+    </div>
+    <div role="tabpanel" id="history-panel-map" class="history-panel" aria-labelledby="history-tab-map" tabindex="-1" hidden>
+      <ul class="map-legend" aria-label="Map legend">
+        <li><span class="map-swatch map-problem is-open" aria-hidden="true"></span>Open problem</li>
+        <li><span class="map-swatch map-problem is-recurring" aria-hidden="true"></span>Recurring</li>
+        <li><span class="map-swatch map-problem is-solved" aria-hidden="true"></span>Solved</li>
+        <li><span class="map-swatch map-attempt is-worked" aria-hidden="true"></span>Worked</li>
+        <li><span class="map-swatch map-attempt is-failed" aria-hidden="true"></span>Failed</li>
+        <li><span class="map-swatch map-attempt is-partial" aria-hidden="true"></span>Partial</li>
+        <li><span class="map-swatch map-attempt is-pending" aria-hidden="true"></span>Pending</li>
+        <li><span class="map-swatch map-milestone" aria-hidden="true"></span>Milestone</li>
+      </ul>
+      <p id="history-empty-map" class="empty-state" hidden></p>
+      <div id="history-map" class="history-map"></div>
+    </div>
   </div>
 </section>
 

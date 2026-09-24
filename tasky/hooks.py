@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any, TextIO
 
+from tasky import repos
 from tasky.config import Config, now_iso
 from tasky.prompts import classify, parse_notifications, queue_request
 from tasky.store import Store
@@ -60,8 +61,8 @@ def _session_start(
             lines += [f"#{t['id']} [{t['status']}] {t['title']}" for t in tasks]
             blocks.append("\n".join(lines))
     cwd = event.get("cwd")
-    if cwd and config.dead_end_items > 0:
-        dead = store.dead_ends(cwd, config.dead_end_items)
+    if cwd and config.dead_end_items > 0 and store.has_history():
+        dead = store.dead_ends(repos.repo_of(store, cwd), config.dead_end_items)
         if dead:
             blocks.append(_dead_end_context(dead))
     if not blocks:
@@ -76,17 +77,19 @@ def _session_start(
 
 def _dead_end_context(dead: list[dict]) -> str:
     lines = [
-        "Tasky project history: fixes that were believed correct here and turned out wrong. "
-        "Before applying a fix that looks like one of these, say so and check it first."
+        "Tasky history of this repository: fixes that were applied here, believed correct, and "
+        "did not work. Before applying one of these again, say so and check it first. The "
+        "tasky MCP tools (search_history, get_problem) have the full chains."
     ]
     for d in dead:
-        line = f"- {d['title']}"
-        if d["happened_on"]:
-            line += f" ({d['happened_on']})"
-        if d["detail"]:
-            line += f": {d['detail'][:240]}"
-        if d["solution"]:
-            line += f" What worked instead: {d['solution'][:240]}"
+        line = f"- #{d['problem_id']} {d['problem_title']}: tried {d['description'][:200]}"
+        when = d["invalidated_on"] or d["believed_from"]
+        if when:
+            line += f" ({when})"
+        if d["why"]:
+            line += f"; failed because {d['why'][:200]}"
+        if d["worked_instead"]:
+            line += f"; what worked: {d['worked_instead'][:200]}"
         lines.append(line)
     return "\n".join(lines)
 

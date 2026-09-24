@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-09-24
+
+### Added
+
+- Problems keep the ordered chain of attempts made to fix them: outcome (worked, failed, partial,
+  pending), why it failed, the dates it was believed correct and shown wrong, a verbatim evidence
+  quote checked against the cited task, and the tasks and commits it came from. Problems can be
+  open, solved or recurring.
+- History is grouped by repository (its `origin` remote, else the main checkout), so worktrees and
+  clones share it, and can be viewed per repository or across all of them.
+- The History panel has four views: Timeline, Problems, Dead ends and a Map
+  (repository → topics → problems and milestones → attempts), plus a text filter.
+- The sync model is chosen per sync (Haiku, Sonnet or Opus); Sonnet is the default.
+- An MCP server, `tasky`, bundled with the plugin: `search_history` (accent-insensitive full-text
+  search), `get_problem`, `dead_ends`, `search_tasks` and `record_attempt`, which lets the agent
+  record an attempt and its outcome without a sync.
+
+### Changed
+
+- Schema version 4 replaces the 0.5.0 history tables; existing records are migrated (a 0.5.0 dead
+  end becomes a problem whose first attempt failed) and the sync cursor carries over.
+- `/api/insights` is replaced by `GET /api/history` and `POST /api/history/sync`;
+  `TASKY_INSIGHTS_*` by `TASKY_HISTORY_MODEL` and `TASKY_HISTORY_MAX_BATCHES`.
+
+### Fixed
+
+- A model numbering new records itself no longer makes the sync drop them: an id it was not shown
+  is treated as a new record.
+
 ## [0.5.0] - 2026-09-24
 
 ### Added
