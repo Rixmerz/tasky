@@ -9,6 +9,7 @@ pure: which area a file, a history topic or a spec belongs to.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import PurePosixPath
@@ -77,14 +78,20 @@ def area_of(rel: str, areas: list[dict]) -> list[int]:
     return best
 
 
+def key(text: str) -> str:
+    """The form names, aliases and questions are matched in: a slug without accents."""
+    folded = unicodedata.normalize("NFKD", slug(text))
+    return "".join(c for c in folded if not unicodedata.combining(c))
+
+
 def names_index(areas: list[dict]) -> dict[str, int]:
-    """slug(name or alias) → area id; a name wins over another area's alias."""
+    """key(name or alias) → area id; a name wins over another area's alias."""
     index: dict[str, int] = {}
     for area in areas:
         for alias in area.get("aliases") or []:
-            index.setdefault(slug(alias), area["id"])
+            index.setdefault(key(alias), area["id"])
     for area in areas:
-        index[slug(area["name"])] = area["id"]
+        index[key(area["name"])] = area["id"]
     index.pop("", None)
     return index
 
@@ -92,7 +99,45 @@ def names_index(areas: list[dict]) -> dict[str, int]:
 def by_name(text: str | None, areas: list[dict]) -> int | None:
     if not text:
         return None
-    return names_index(areas).get(slug(text))
+    return names_index(areas).get(key(text))
+
+
+def query_areas(query: str, areas: list[dict], max_words: int = 4) -> list[tuple[int, str]]:
+    """Areas a question names, by name or alias, as (area id, the words that named it).
+
+    Tries every run of up to ``max_words`` words, longest first, so "inicio de
+    sesión" finds the area that lists it before "sesión" alone can; a word
+    ending in s also tries its singular, and a word of 4+ letters may be the
+    start of a one-word name or alias.
+    """
+    index = names_index(areas)
+    words = [w for w in _SLUG_SPLIT.split(query.casefold()) if w]
+    found: dict[int, str] = {}
+    taken: set[int] = set()
+    for size in range(min(max_words, len(words)), 0, -1):
+        for start in range(len(words) - size + 1):
+            span = set(range(start, start + size))
+            if span & taken:
+                continue
+            phrase = " ".join(words[start : start + size])
+            tries = [phrase]
+            if size == 1 and len(phrase) > 3 and phrase.endswith("s"):
+                tries.append(phrase[:-1])
+            for text in tries:
+                area_id = index.get(key(text))
+                if area_id is not None:
+                    found.setdefault(area_id, phrase)
+                    taken |= span
+                    break
+    # A word of 4+ letters that starts exactly one area's one-word name or alias ("mongo").
+    for pos, word in enumerate(words):
+        if pos in taken or len(word) < 4:
+            continue
+        prefix = key(word)
+        ids = {i for k, i in index.items() if "-" not in k and k.startswith(prefix)}
+        if len(ids) == 1:
+            found.setdefault(ids.pop(), word)
+    return list(found.items())
 
 
 def files_areas(rel_paths: Iterable[str], areas: list[dict], limit: int = 3) -> list[int]:
@@ -117,5 +162,5 @@ def spec_areas(spec: dict, areas: list[dict]) -> list[int]:
     listed = [a["id"] for a in areas if spec["path"] in (a.get("specs") or [])]
     if listed:
         return listed
-    named = names_index(areas).get(spec_key(spec["path"]))
+    named = names_index(areas).get(key(spec_key(spec["path"])))
     return [named] if named is not None else []

@@ -260,7 +260,18 @@ session and Tasky's own hooks off. Nothing it returns is taken on trust: records
 it was shown, evidence must appear verbatim in them, commits must be in the log it was given, and
 it can only change records of the repository being synced. The status line shows what the last
 sync cost as Claude Code reports it; syncing one afternoon of work (15 tasks) with Sonnet cost
-about $0.08.
+about $0.08 before 0.11.0.
+
+The sync runs at effort `high`. On the same real batch, the default, low and medium efforts listed
+the problems but recorded almost none of the fixes tried; high recorded three attempts that
+worked, each with a verified quote, for about twice the cost ($0.18 against $0.08 for 7 tasks).
+
+When the repository has areas (see Architecture), the sync is shown them and their specs: each
+problem and milestone gets the area it belongs to as its topic (a topic that is an area's alias
+becomes the area's name), may name the specs it is about (the requirement a problem breaks, the
+change a milestone completes), and words you used for an area that are not its aliases yet
+become aliases. An alias is kept only if you actually wrote it in one of the tasks, and never on
+an area you edited yourself.
 
 Reading the history is free. It also reaches the agent in two ways:
 
@@ -272,6 +283,12 @@ Reading the history is free. It also reaches the agent in two ways:
   `search_conversations` searches every stored message (with the turns around each hit) and
   `last_session` says what the latest sessions in the repository did, with their latest recap.
   `get_architecture` names the repository's areas (see below).
+
+`search_history` climbs a fixed ladder of free steps and stops at the first one with results, so
+it never turns into a hunt: every word as written, plus the problems and milestones of any area
+the question names by name or alias ("inicio de sesión", or "mongo" for an area aliased
+"mongodb"); then any word; and when nothing matches, the areas that have history, with how much,
+to ask again by area. No step calls a model: the agent asking is already one.
 
 After a sync, every session that is still open and had tasks in it gets suggested instructions for
 Claude Code's `/compact`: what the summary must keep (the goal in progress, decisions and why, open
@@ -298,13 +315,15 @@ vocabulary for where work happened. An area is a business part of the product ("
 - **specs**: OpenSpec capabilities and changes, spec-kit features, Kiro specs and architecture
   decision records (Nygard, MADR and home-grown styles, Spanish headings included), with their
   status, summary and requirement names;
-- the **problems** and **milestones** of the History that belong to it, by topic or by their tasks.
+- the **problems** and **milestones** of the History that belong to it: by topic, else by the
+  specs they name, else by the files their tasks edited. Each spec also lists the problems and
+  milestones that name it.
 
 **Scan** (free) reads the repository: specs, ADRs, `*.architecture.json` from
 [Archify](https://github.com/tt-a1i/archify) and `graphify-out/graph.json` from Graphify. When a
 repository has no areas yet and Archify boundaries or Graphify communities exist, the scan adopts
 them. **Map areas** makes one model call (Sonnet by default, Opus optional; about $0.09 for a
-900-file repository with 12 specs) that proposes the vocabulary from the folder tree, the specs,
+900-file repository with 12 specs, about $0.13 at effort medium since 0.11.0) that proposes the vocabulary from the folder tree, the specs,
 the candidates, the History topics and where edits happened. Nothing it returns is trusted: paths
 must exist, specs must be ones it was shown, a path belongs to one area only. You can add, rename,
 edit and delete areas; an area you edited keeps its name and description when you map again, and
@@ -316,8 +335,10 @@ normal task on the board, that uses the skill to draw the repository's runtime a
 code evidence, with Tasky's areas as boundary names, into `docs/architecture/<repo>.architecture.json`
 and `.html` in your checkout (not committed). The session may only edit files in the checkout, run
 Archify's own CLI and a few read-only git commands. When it finishes the repository is scanned
-again, the diagram's boundaries become candidate areas, and **Open** shows the diagram in your
-browser. It is the most expensive button in Tasky: drawing Tasky itself with Sonnet took 15
+again, the diagram's boundaries become candidate areas, **View** shows the diagram inside the
+dashboard and **Open** in your browser. Inside the dashboard the page runs sandboxed from a
+short-lived link: it keeps its zoom, themes and export, and cannot read Tasky's token or call its
+API. It is the most expensive button in Tasky: drawing Tasky itself with Sonnet took 15
 minutes and about $6 (90 turns validating and fixing the diagram until Archify accepted it).
 Archify draws one repository per diagram: its code evidence is pinned to one origin and
 commit, so other services can only appear as external components.
@@ -388,7 +409,7 @@ call. Every hook exits successfully and prints nothing when something goes wrong
 | History sync | One model call per batch of up to 40 tasks, only when you press Sync |
 | Smart search | One Haiku call (2–6¢), only when you press Smart search |
 | Architecture scan and view | 0 |
-| Map areas | One model call (Sonnet about 5–15¢), only when you press Map areas |
+| Map areas | One model call (Sonnet about 10–20¢ at effort medium), only when you press Map areas |
 | Draw with Archify | One headless agent session (Sonnet about $3–7), only when you press it |
 | `tasky` MCP tools | Their definitions in each session's context; results only when called |
 | Auto-pull | One normal turn per pulled task |

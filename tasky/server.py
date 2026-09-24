@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -41,6 +42,16 @@ _CSP = (
     "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; "
     "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'"
 )
+# An Archify page embedded in the Architecture view: its own inline scripts and styles
+# only, in a sandbox without same-origin, so it can read neither the token nor the API.
+_DIAGRAM_CSP = (
+    "sandbox allow-scripts allow-downloads allow-popups; default-src 'none'; "
+    "script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; "
+    "font-src data:; media-src blob:; connect-src data: blob:; worker-src blob:; "
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+)
+DIAGRAM_LINK_S = 15 * 60
+_DIAGRAM_LINK_RE = re.compile(r"^/diagram/([A-Za-z0-9_-]{32})$")
 _STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
@@ -74,13 +85,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- shared plumbing ----------------------------------------------------
 
-    def _send(self, status: int, body: bytes, content_type: str) -> None:
+    def _send(self, status: int, body: bytes, content_type: str, csp: str = _CSP) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", _CSP)
+        self.send_header("Content-Security-Policy", csp)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -235,6 +246,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._route_architecture_diagram(body)
         elif method == "POST" and path == "/api/architecture/open":
             self._route_architecture_open(body)
+        elif method == "POST" and path == "/api/architecture/embed":
+            self._route_architecture_embed(body)
+        elif method == "GET" and _DIAGRAM_LINK_RE.match(path):
+            self._route_diagram_page(path)
         elif method == "POST" and path == "/api/areas":
             self._route_create_area(body)
         elif method == "POST" and path == "/api/tasks":
@@ -571,24 +586,55 @@ class _Handler(BaseHTTPRequestHandler):
             store.set_diagram_task(repo, task["id"])
         self._send_json(202, {"task": task, "json": request["json"], "html": request["html"]})
 
-    def _route_architecture_open(self, body: dict | None) -> None:
+    def _diagram_file(self, body: dict | None) -> Path | None:
+        """The diagram page a request names, or None after answering with the error.
+
+        Only a page the scan found as a diagram's rendering, inside the checkout.
+        """
         repo = self._known_repo(body)
         if repo is None:
-            return
+            return None
         assert isinstance(body, dict)
         wanted = body.get("path")
         with Store.open(self.server.config) as store:
             row = store.architecture(repo) or {}
-        # Only a page the scan found as a diagram's rendering, inside the checkout.
         known = {d["html"] for d in row.get("diagrams") or [] if d.get("html")}
         if not isinstance(wanted, str) or wanted not in known or not row.get("root"):
             self._error(404, "no such diagram")
-            return
+            return None
         base = Path(row["root"]).resolve()
         page = (base / wanted).resolve()
         if not page.is_relative_to(base) or not page.is_file():
             self._error(404, "no such diagram")
+            return None
+        return page
+
+    def _route_architecture_embed(self, body: dict | None) -> None:
+        """A short-lived link to a diagram page, for an iframe (which cannot send the token)."""
+        page = self._diagram_file(body)
+        if page is None:
             return
+        self._send_json(200, {"url": f"/diagram/{self.server.diagram_link(page)}"})
+
+    def _route_diagram_page(self, path: str) -> None:
+        match = _DIAGRAM_LINK_RE.match(path)
+        assert match is not None
+        page = self.server.diagram_page(match.group(1))
+        try:
+            content = page.read_bytes() if page is not None else None
+        except OSError:
+            content = None
+        if content is None:
+            self._error(404, "this diagram link expired; open the diagram again")
+            return
+        self._send(200, content, "text/html; charset=utf-8", csp=_DIAGRAM_CSP)
+
+    def _route_architecture_open(self, body: dict | None) -> None:
+        page = self._diagram_file(body)
+        if page is None:
+            return
+        assert isinstance(body, dict)
+        wanted = body["path"]
         command = architecture.opener()
         if command is None:
             self._error(501, "opening files is not supported on this platform")
@@ -972,6 +1018,23 @@ class _Server(ThreadingHTTPServer):
     # attribute instead of subprocess.Popen directly, so a test can replace
     # it and never spawn a real `claude` process (see design.md decision 2).
     popen: object
+    _diagram_links: dict[str, tuple[Path, float]]
+
+    def diagram_link(self, page: Path) -> str:
+        """A random id that serves ``page`` for DIAGRAM_LINK_S seconds."""
+        now = time.monotonic()
+        self._diagram_links = {
+            k: v for k, v in self._diagram_links.items() if v[1] > now
+        }
+        link = secrets.token_urlsafe(24)
+        self._diagram_links[link] = (page, now + DIAGRAM_LINK_S)
+        return link
+
+    def diagram_page(self, link: str) -> Path | None:
+        entry = self._diagram_links.get(link)
+        if entry is None or entry[1] <= time.monotonic():
+            return None
+        return entry[0]
 
     def sync_titles(self, store: Store, *, interval: float = 3.0) -> None:
         """Copy session names set with /rename into the ledger, and advance
@@ -1042,6 +1105,7 @@ def make_server(
     server.popen = subprocess.Popen
     server.titles = TitleWatcher()
     server._titles_lock = threading.Lock()
+    server._diagram_links = {}
     server._titles_synced_at = float("-inf")
     if token is not None:
         # Tests pin a token and never touch the file; treat it as the only

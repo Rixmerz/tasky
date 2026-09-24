@@ -3883,6 +3883,8 @@ let archDrawNotice = null; // {text} when the last Draw click could not start on
 let archDrawWasActive = false;
 let archDrawStatusKey = "";
 let archDiagramsKey = "";
+// "<repo>\n<html path>" of the diagram shown inside the page, so a redraw of the list keeps it.
+let archDiagramShown = "";
 
 function archView() {
   return archData && archData.view ? archData.view : null;
@@ -4359,7 +4361,14 @@ function buildArchDiagram(diagram) {
     btn.setAttribute("aria-label", `Open ${title} in your browser`);
     btn.title = diagram.html;
     btn.addEventListener("click", () => openArchDiagram(diagram.html, btn, note));
-    side.append(note, btn);
+    const view = archButton("View", "btn btn-sm btn-primary arch-diagram-view", `view-${diagram.html}`);
+    view.setAttribute("aria-expanded", "false");
+    view.setAttribute("aria-label", `Show ${title} here`);
+    view.addEventListener("click", () => toggleArchDiagramView(diagram, title, li, view, note));
+    side.append(note, view, btn);
+    if (archDiagramShown === `${archRepo}\n${diagram.html}`) {
+      queueMicrotask(() => toggleArchDiagramView(diagram, title, li, view, note, true));
+    }
   } else {
     const none = document.createElement("span");
     none.className = "arch-hint";
@@ -4368,6 +4377,50 @@ function buildArchDiagram(diagram) {
   }
   li.append(text, side);
   return li;
+}
+
+/**
+ * Show or hide an Archify page inside the list item. The page gets a short-lived link
+ * (an iframe cannot send the token) and runs sandboxed, without access to Tasky's origin.
+ */
+async function toggleArchDiagramView(diagram, title, li, button, note, reopen = false) {
+  const repo = archRepo;
+  const shown = li.querySelector(".arch-diagram-frame");
+  if (shown && !reopen) {
+    shown.remove();
+    archDiagramShown = "";
+    button.textContent = "View";
+    button.setAttribute("aria-expanded", "false");
+    return;
+  }
+  if (!repo || button.dataset.busy === "1" || shown) return;
+  button.dataset.busy = "1";
+  button.setAttribute("aria-busy", "true");
+  note.textContent = "";
+  note.classList.remove("arch-attn");
+  try {
+    const res = await apiMutate("POST", "/api/architecture/embed", { repo, path: diagram.html });
+    if (repo !== archRepo || !li.isConnected) return;
+    const frame = document.createElement("iframe");
+    frame.className = "arch-diagram-frame";
+    frame.title = `${title} diagram`;
+    frame.setAttribute("sandbox", "allow-scripts allow-downloads allow-popups");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.src = res.url;
+    li.appendChild(frame);
+    archDiagramShown = `${repo}\n${diagram.html}`;
+    button.textContent = "Hide";
+    button.setAttribute("aria-expanded", "true");
+  } catch (err) {
+    const text = archErrorText(err);
+    if (text) {
+      note.textContent = text;
+      note.classList.add("arch-attn");
+    }
+  } finally {
+    button.dataset.busy = "";
+    button.removeAttribute("aria-busy");
+  }
 }
 
 /** Archify diagrams found in the repo; shown while one is being drawn, too. */

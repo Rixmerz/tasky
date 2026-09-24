@@ -141,6 +141,8 @@ def _format_problem(p: dict) -> str:
     head = f"#{p['id']} [{p['state']}] {p['title']} (repo {p['name']}"
     head += f", topic {p['topic']})" if p.get("topic") else ")"
     lines = [head]
+    if p.get("specs"):
+        lines.append(f"  specs: {', '.join(p['specs'])}")
     if p.get("symptom"):
         lines.append(f"  symptom: {p['symptom']}")
     if p.get("cause"):
@@ -163,7 +165,8 @@ def _format_problem(p: dict) -> str:
 
 def _format_milestone(m: dict) -> str:
     line = f"milestone {m.get('happened_on') or '?'} {m['title']} (repo {m['name']})"
-    return line + (f": {m['detail']}" if m.get("detail") else "")
+    line += f": {m['detail']}" if m.get("detail") else ""
+    return line + (f" | specs: {', '.join(m['specs'])}" if m.get("specs") else "")
 
 
 def _format_hit(store: Store, hit: dict) -> str:
@@ -210,10 +213,7 @@ def call_tool(store: Store, name: str, args: dict) -> str:
         query = str(args.get("query") or "").strip()
         if not query:
             raise ToolError("query is required")
-        found = store.search_history(query, _scope_repo(store, args))
-        parts = [_format_problem(p) for p in found["problems"]]
-        parts += [_format_milestone(m) for m in found["milestones"]]
-        return "\n\n".join(parts) or "No matching problems or milestones."
+        return _search_history(store, query, _scope_repo(store, args))
     if name == "get_problem":
         problem = store.get_problem(_int(args, "id"))
         if problem is None:
@@ -270,6 +270,71 @@ def call_tool(store: Store, name: str, args: dict) -> str:
     raise ToolError(f"unknown tool {name!r}")
 
 
+HISTORY_HITS = 20
+
+
+def _search_history(store: Store, query: str, repo: str | None) -> str:
+    """A fixed ladder of free steps, so a search never turns into a hunt.
+
+    1. every word, as written (full text, accent-insensitive), plus the
+       problems and milestones of the areas the question names by name or alias;
+    2. only when that finds nothing: any word;
+    3. still nothing: the areas with how much history each has, to ask by area.
+    """
+    from tasky import architecture
+    from tasky import areas as area_rules
+
+    found = store.search_history(query, repo, HISTORY_HITS, any_word=False)
+    problems, milestones = found["problems"], found["milestones"]
+    header = ""
+    views = [architecture.overview(store, r) for r in ([repo] if repo else store.area_repos())]
+    named = [
+        (area, phrase)
+        for view in views
+        for area_id, phrase in area_rules.query_areas(query, view["areas"])
+        for area in view["areas"]
+        if area["id"] == area_id
+    ]
+    for area, _phrase in named:
+        for kind, items, get in (
+            ("problems", problems, store.get_problem),
+            ("milestones", milestones, store.get_milestone),
+        ):
+            have = {i["id"] for i in items}
+            for brief in area[kind]:
+                if brief["id"] in have or len(problems) + len(milestones) >= HISTORY_HITS:
+                    continue
+                record = get(brief["id"])
+                if record is not None:
+                    items.append(record)
+    if named:
+        header = "Areas named: " + ", ".join(
+            area["name"]
+            + ("" if area_rules.key(phrase) == area_rules.key(area["name"]) else f' ("{phrase}")')
+            for area, phrase in named
+        )
+    if not problems and not milestones:
+        found = store.search_history(query, repo, HISTORY_HITS)
+        problems, milestones = found["problems"], found["milestones"]
+        if problems or milestones:
+            header = "No record has every word; these have some of them."
+    parts = [_format_problem(p) for p in problems]
+    parts += [_format_milestone(m) for m in milestones]
+    if parts:
+        return "\n\n".join([header, *parts] if header else parts)
+    areas = [
+        f"{a['name']} ({len(a['problems'])} problem(s), {len(a['milestones'])} milestone(s))"
+        + (f" aka {', '.join(a['aliases'][:4])}" if a["aliases"] else "")
+        for view in views for a in view["areas"] if a["problems"] or a["milestones"]
+    ]
+    if not areas:
+        return "No matching problems or milestones."
+    return (
+        "No matching problems or milestones. Areas with history: " + "; ".join(areas[:30])
+        + ". Search again with an area name, or call get_architecture with area=<name>."
+    )
+
+
 def _int(args: dict, key: str, default: int | None = None) -> int:
     value = args.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int):
@@ -322,6 +387,13 @@ def _architecture(store: Store, wanted: str) -> str:
             status = f", {spec['status']}" if spec["status"] else ""
             lines.append(f"spec {path} [{spec['kind']}{status}] {spec['title']}: {spec['summary']}")
             lines += [f"  · {item}" for item in spec["items"][:15]]
+            lines += [
+                f"  problem #{p['id']} [{p['state']}] {p['title']}" for p in spec["problems"][:5]
+            ]
+            lines += [
+                f"  milestone {m['happened_on'] or '?'}: {m['title']}"
+                for m in spec["milestones"][:5]
+            ]
         for problem in area["problems"][:10]:
             chain = store.get_problem(problem["id"])
             if chain is not None:

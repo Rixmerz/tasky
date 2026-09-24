@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] - 2026-09-24
+
+### Added
+
+- History sync uses the repository's areas: a problem's or milestone's topic is the area it
+  belongs to (an alias becomes the area's name), records may name the specs they are about, and
+  words the developer wrote for an area become aliases (never on an area the developer edited).
+- Problems and milestones link to areas through their specs, and each spec lists them.
+- `search_history` climbs a fixed ladder of free steps: every word plus the areas the question
+  names by name, alias or the start of one; then any word; then the areas that have history.
+- View shows an Archify diagram inside the Architecture tab, sandboxed and served from a
+  short-lived link.
+
+### Changed
+
+- History sync runs at effort `high` and Map areas at effort `medium`, chosen by measuring the same
+  real prompts at every level: lower sync efforts dropped the chain of attempts.
+- Area names and aliases are matched without accents ("sesion" finds "sesión").
+
 ## [0.10.0] - 2026-09-24
 
 ### Added

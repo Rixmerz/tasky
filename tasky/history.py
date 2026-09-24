@@ -23,6 +23,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from tasky import areas as area_rules
 from tasky import repos
 from tasky.config import Config, now_iso
 from tasky.store import Store
@@ -30,6 +31,9 @@ from tasky.store import Store
 # No Haiku: the sync judges whether a fix really failed across tasks days apart, which Haiku
 # got wrong in testing, and its saving is a few cents per sync (the fixed prompt dominates).
 MODELS = ("sonnet", "opus")
+# Measured on a real batch (2026-09-24): only high recorded the chain of attempts with
+# verified evidence; default, low and medium listed the problems but not what was tried.
+SYNC_EFFORT = "high"
 OUTCOMES = ("pending", "worked", "failed", "partial")
 STATES = ("open", "solved", "recurring")
 BATCH_TASKS = 40
@@ -39,6 +43,9 @@ REPLY_CHARS = 2_500
 KNOWN_PROBLEMS = 80
 KNOWN_MILESTONES = 80
 GIT_COMMITS = 150
+KNOWN_AREAS = 60
+KNOWN_SPECS = 80
+RECORD_SPECS = 3
 CALL_TIMEOUT_S = 600
 STALE_SYNC_S = 45 * 60
 _TITLE = 160
@@ -85,8 +92,11 @@ Rules:
 have no existing_id: never number them yourself.
 - task_ids: every new task the record or change is based on, only from the new tasks shown.
 - commits: short hashes from the git log shown, only when a commit is the evidence.
-- topic: a short lowercase area name (for example "auth", "deploy", "ui"); reuse the topics \
-already in use.
+- topic: the name of the area in <areas> the record belongs to, copied exactly. Only when no \
+area fits, or there is no <areas>, a short lowercase name (for example "auth", "deploy", "ui"); \
+reuse the topics already in use.
+- specs: paths from <specs> the record is about: the requirement a problem breaks, the change \
+a milestone completes or starts. Only paths listed there; usually none.
 - Dates are YYYY-MM-DD, the date of the task where it happened.
 - Write problems and milestones in the language the developer writes in. Titles under 12 words.
 
@@ -101,6 +111,10 @@ paths, ids and quotes verbatim. Telegraphic imperative: fragments, no articles o
 fragments, no filler; keep exact names, paths, ids; keep every decision's reason and every \
 failed attempt's cause in full."
 - Returning empty lists is fine when the new tasks change nothing.
+
+aliases: words the developer used in the new tasks to mean an area in <areas> that are neither \
+its name nor one of its aliases (a translation, an abbreviation, a nickname), copied as \
+written, 1 to 4 words. Usually none.
 """
 
 _ATTEMPT_SCHEMA: dict[str, Any] = {
@@ -134,6 +148,7 @@ OUTPUT_SCHEMA: dict[str, Any] = {
                     "state": {"type": "string", "enum": list(STATES)},
                     "happened_on": {"type": "string"},
                     "task_ids": {"type": "array", "items": {"type": "integer"}},
+                    "specs": {"type": "array", "items": {"type": "string"}},
                     "attempts": {"type": "array", "items": _ATTEMPT_SCHEMA},
                 },
             },
@@ -161,7 +176,16 @@ OUTPUT_SCHEMA: dict[str, Any] = {
                     "happened_on": {"type": "string"},
                     "task_ids": {"type": "array", "items": {"type": "integer"}},
                     "commits": {"type": "array", "items": {"type": "string"}},
+                    "specs": {"type": "array", "items": {"type": "string"}},
                 },
+            },
+        },
+        "aliases": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"area": {"type": "string"}, "alias": {"type": "string"}},
+                "required": ["area", "alias"],
             },
         },
     },
@@ -199,6 +223,7 @@ def sync(
         "tasks": 0,
         "added": 0,
         "updated": 0,
+        "aliases": 0,
         "cost_usd": 0.0,
         "model": model,
     }
@@ -212,12 +237,18 @@ def sync(
                 known_problems = store.problems(repo)[:KNOWN_PROBLEMS]
                 known_milestones = store.milestones(repo)[-KNOWN_MILESTONES:]
                 sessions = _active_sessions(store, tasks)
+                known_areas = store.areas(repo)[:KNOWN_AREAS]
+                known_specs = _known_specs(store.specs(repo))
             git = git_log(cwds[0], tasks)
-            prompt = build_prompt(known_problems, known_milestones, tasks, git, sessions)
-            output, cost = call_model(config, model, prompt, run=run)
+            prompt = build_prompt(
+                known_problems, known_milestones, tasks, git, sessions,
+                areas=known_areas, specs=known_specs,
+            )
+            output, cost = call_model(config, model, prompt, run=run, effort=SYNC_EFFORT)
             summary["cost_usd"] += cost
             with Store.open(config) as store:
                 added, updated = apply_output(store, repo, output, tasks, git)
+                summary["aliases"] += apply_aliases(store, repo, output, tasks)
                 summary["compact"] += apply_compact(store, output, sessions)
                 for cwd in {t["cwd"] for t in tasks}:
                     store.advance_history_cursor(
@@ -304,17 +335,36 @@ def apply_compact(store: Store, output: dict, sessions: list[dict]) -> int:
     return stored
 
 
+def _known_specs(specs: list[dict]) -> list[dict]:
+    """The specs a sync is shown: current ones first, then archived changes, newest first."""
+    ordered = sorted(specs, key=lambda s: s.get("dated") or "", reverse=True)
+    ordered.sort(key=lambda s: s.get("status") == "archived")
+    return ordered[:KNOWN_SPECS]
+
+
+def _area_line(area: dict) -> str:
+    line = f"{area['name']} [{area['kind']}]"
+    if area.get("aliases"):
+        line += " aka: " + ", ".join(area["aliases"][:8])
+    if area.get("description"):
+        line += f" | {area['description'][:160]}"
+    return line
+
+
 def build_prompt(
     problems: list[dict],
     milestones: list[dict],
     tasks: list[dict],
     git: str,
     sessions: list[dict] | None = None,
+    *,
+    areas: list[dict] | None = None,
+    specs: list[dict] | None = None,
 ) -> str:
     known = {
         "problems": [
             {
-                **_as_existing(p, ("id", "title", "state", "topic", "cause")),
+                **_as_existing(p, ("id", "title", "state", "topic", "specs", "cause")),
                 "attempts": [
                     _as_existing(a, ("id", "seq", "description", "outcome", "why"))
                     for a in p["attempts"]
@@ -323,10 +373,20 @@ def build_prompt(
             for p in problems
         ],
         "milestones": [
-            _as_existing(m, ("id", "happened_on", "title", "topic")) for m in milestones
+            _as_existing(m, ("id", "happened_on", "title", "topic", "specs")) for m in milestones
         ],
     }
-    lines = ["<history>", json.dumps(known, ensure_ascii=False), "</history>", "", "<tasks>"]
+    lines = ["<history>", json.dumps(known, ensure_ascii=False), "</history>", ""]
+    if areas:
+        lines += ["<areas>", *(_area_line(a) for a in areas), "</areas>", ""]
+    if specs:
+        lines += ["<specs>"]
+        lines += [
+            f"{s['path']} | {s['title'][:120]}" + (f" | {s['status']}" if s.get("status") else "")
+            for s in specs
+        ]
+        lines += ["</specs>", ""]
+    lines.append("<tasks>")
     for task in tasks:
         lines.append(f'<task id="{task["id"]}" date="{_day(task)}" status="{task["status"]}">')
         lines.append(f"<asked>{_clip(task['body'], PROMPT_CHARS)}</asked>")
@@ -384,6 +444,7 @@ def call_model(
     run: Runner = subprocess.run,
     system_prompt: str | None = None,
     schema: dict | None = None,
+    effort: str | None = None,
 ) -> tuple[dict, float]:
     env = dict(os.environ)
     env["TASKY_HOOKS_OFF"] = "1"
@@ -405,6 +466,8 @@ def call_model(
         "--json-schema",
         json.dumps(schema or OUTPUT_SCHEMA),
     ]
+    if effort:
+        cmd += ["--effort", effort]
     try:
         # Run from Tasky's home, not the project: the project's CLAUDE.md would
         # only add tokens and instructions meant for coding, not for this.
@@ -457,9 +520,38 @@ def _norm(text: str) -> str:
 class _Batch:
     """What the model was shown, used to check what it returns."""
 
-    def __init__(self, tasks: list[dict], git: str) -> None:
+    def __init__(
+        self,
+        tasks: list[dict],
+        git: str,
+        areas: list[dict] | None = None,
+        spec_paths: set[str] | None = None,
+    ) -> None:
         self.tasks = {t["id"]: t for t in tasks}
         self.hashes = {line.split(" ", 1)[0] for line in git.splitlines() if line}
+        self.areas = areas or []
+        self.spec_paths = spec_paths or set()
+
+    def topic(self, value: Any) -> str | None:
+        """The topic as given, or the name of the area it names (by name or alias)."""
+        text = _text(value, _TOPIC)
+        area_id = area_rules.by_name(text, self.areas) if text else None
+        if area_id is None:
+            return text
+        return next(a["name"] for a in self.areas if a["id"] == area_id)
+
+    def specs(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        kept = [s for s in value if isinstance(s, str) and s in self.spec_paths]
+        return list(dict.fromkeys(kept))[:RECORD_SPECS]
+
+    def said(self, text: str) -> bool:
+        """Whether ``text`` appears (modulo whitespace and case) in a task of the batch."""
+        needle = _norm(text)
+        return any(
+            needle in _norm(f"{t['body'] or ''}\n{t['result'] or ''}") for t in self.tasks.values()
+        )
 
     def cited(self, value: Any) -> list[int]:
         if not isinstance(value, list):
@@ -501,7 +593,7 @@ def apply_output(
     store: Store, repo: str, output: dict, tasks: list[dict], git: str
 ) -> tuple[int, int]:
     """Store what the model returned, trusting none of it; returns (added, updated)."""
-    batch = _Batch(tasks, git)
+    batch = _Batch(tasks, git, store.areas(repo), {s["path"] for s in store.specs(repo)})
     in_repo = set(store.repo_cwds(repo))
     added = updated = 0
     for item in output.get("milestones") or []:
@@ -515,6 +607,36 @@ def apply_output(
     return added, updated
 
 
+def apply_aliases(store: Store, repo: str, output: dict, tasks: list[dict]) -> int:
+    """Add the aliases the model found for existing areas; returns how many were added.
+
+    An alias is kept only when the developer wrote it in a task of the batch,
+    it names no area yet, and the area was not last edited by the developer
+    (their edits, removed aliases included, are not overridden).
+    """
+    batch = _Batch(tasks, "")
+    added = 0
+    for item in output.get("aliases") or []:
+        if not isinstance(item, dict):
+            continue
+        alias = " ".join(str(item.get("alias") or "").split())[: area_rules.NAME_CHARS]
+        if not alias or len(alias.split()) > 4 or not batch.said(alias):
+            continue
+        current = store.areas(repo)
+        area_id = area_rules.by_name(str(item.get("area") or ""), current)
+        area = next((a for a in current if a["id"] == area_id), None)
+        if (
+            area is None
+            or area["source"] == "user"
+            or len(area["aliases"]) >= area_rules.MAX_ALIASES
+            or area_rules.key(alias) in area_rules.names_index(current)
+        ):
+            continue
+        store.save_area(repo, area["name"], aliases=[*area["aliases"], alias.casefold()])
+        added += 1
+    return added
+
+
 def _existing_id(item: dict) -> int | None:
     value = item.get("existing_id")
     return value if isinstance(value, int) and not isinstance(value, bool) else None
@@ -525,11 +647,12 @@ def _apply_milestone(store: Store, batch: _Batch, in_repo: set[str], item: dict)
     fields = {
         "title": _text(item.get("title"), _TITLE),
         "detail": _text(item.get("detail"), _TEXT),
-        "topic": _text(item.get("topic"), _TOPIC),
+        "topic": batch.topic(item.get("topic")),
         "happened_on": _date(item.get("happened_on")),
     }
     fields = {k: v for k, v in fields.items() if v is not None}
     commits = batch.commits(item.get("commits"))
+    specs = batch.specs(item.get("specs"))
     milestone_id = _existing_id(item)
     current = store.get_milestone(milestone_id) if milestone_id is not None else None
     if current is not None and current["cwd"] not in in_repo:
@@ -540,6 +663,8 @@ def _apply_milestone(store: Store, batch: _Batch, in_repo: set[str], item: dict)
             fields["task_ids"] = [*current["task_ids"], *cited]
         if commits:
             fields["commits"] = [*current["commits"], *commits]
+        if specs:
+            fields["specs"] = [*current["specs"], *specs]
         if not fields:
             return 0, 0
         store.update_milestone(milestone_id, **fields)
@@ -550,6 +675,7 @@ def _apply_milestone(store: Store, batch: _Batch, in_repo: set[str], item: dict)
         cwd=batch.first_cwd(cited),
         task_ids=cited,
         commits=commits,
+        specs=specs,
         **{"detail": "", **fields},
     )
     return 1, 0
@@ -564,10 +690,11 @@ def _apply_problem(store: Store, batch: _Batch, in_repo: set[str], item: dict) -
         "title": _text(item.get("title"), _TITLE),
         "symptom": _text(item.get("symptom"), _TEXT),
         "cause": _text(item.get("cause"), _TEXT),
-        "topic": _text(item.get("topic"), _TOPIC),
+        "topic": batch.topic(item.get("topic")),
         "state": item.get("state") if item.get("state") in STATES else None,
     }
     fields = {k: v for k, v in fields.items() if v is not None}
+    specs = batch.specs(item.get("specs"))
     problem_id = _existing_id(item)
     current = store.get_problem(problem_id) if problem_id is not None else None
     if current is not None and current["cwd"] not in in_repo:
@@ -580,6 +707,8 @@ def _apply_problem(store: Store, batch: _Batch, in_repo: set[str], item: dict) -
             fields["task_ids"] = [*current["task_ids"], *all_cited]
         if happened and (current["last_seen"] or "") < happened:
             fields["last_seen"] = happened
+        if specs:
+            fields["specs"] = [*current["specs"], *specs]
         if fields:
             store.update_problem(problem_id, **fields)
             updated += 1
@@ -593,6 +722,7 @@ def _apply_problem(store: Store, batch: _Batch, in_repo: set[str], item: dict) -
             first_seen=happened,
             last_seen=happened,
             task_ids=evidence_ids,
+            specs=specs,
             **{"symptom": "", "cause": "", "state": "open", **fields},
         )
         added += 1

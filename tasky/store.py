@@ -27,16 +27,17 @@ TASK_KINDS = ("prompt", "delegation")
 
 SEARCH_LIMIT = 50
 SEARCH_MAX_WORDS = 8
-_MILESTONE_FIELDS = ("topic", "title", "detail", "happened_on", "task_ids", "commits")
+_MILESTONE_FIELDS = ("topic", "title", "detail", "happened_on", "task_ids", "commits", "specs")
 _PROBLEM_FIELDS = (
     "topic", "title", "symptom", "cause", "state", "first_seen", "last_seen", "task_ids",
+    "specs",
 )
 _ATTEMPT_FIELDS = (
     "description", "outcome", "why", "evidence", "believed_from", "invalidated_on",
     "task_ids", "commits",
 )
 
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 HISTORY_FTS_REBUILD = """
 DELETE FROM history_fts;
 INSERT INTO history_fts (kind, ref_id, text)
@@ -132,13 +133,15 @@ CREATE TABLE IF NOT EXISTS architecture (
 CREATE TABLE IF NOT EXISTS milestones (
   id INTEGER PRIMARY KEY AUTOINCREMENT, cwd TEXT NOT NULL, topic TEXT, title TEXT NOT NULL,
   detail TEXT NOT NULL DEFAULT '', happened_on TEXT, task_ids TEXT NOT NULL DEFAULT '[]',
-  commits TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  commits TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  specs TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS problems (
   id INTEGER PRIMARY KEY AUTOINCREMENT, cwd TEXT NOT NULL, topic TEXT, title TEXT NOT NULL,
   symptom TEXT NOT NULL DEFAULT '', cause TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL DEFAULT 'open', first_seen TEXT, last_seen TEXT,
-  task_ids TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  task_ids TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  specs TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS attempts (
   id INTEGER PRIMARY KEY AUTOINCREMENT, problem_id INTEGER NOT NULL, seq INTEGER NOT NULL,
@@ -409,6 +412,7 @@ class Store:
                         self._migrate_v5_to_v6()
                     self._migrate_v6_to_v7()
                     self._migrate_v7_to_v8()
+                    self._migrate_v8_to_v9()
                     self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                 self._conn.commit()
                 return
@@ -477,6 +481,15 @@ class Store:
             )
         if "diagram_task_id" not in existing:
             self._conn.execute("ALTER TABLE architecture ADD COLUMN diagram_task_id INTEGER")
+
+    def _migrate_v8_to_v9(self) -> None:
+        """Problems and milestones name the specs they are about."""
+        for table in ("problems", "milestones"):
+            existing = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            if "specs" not in existing:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN specs TEXT NOT NULL DEFAULT '[]'"  # noqa: S608
+                )
 
     def repair(self) -> dict[str, int]:
         """Run the 0.8.0 repairs again, e.g. after old transcripts were copied."""
@@ -1735,8 +1748,9 @@ class Store:
             for i in self._ids(item.get("task_ids"))
             if isinstance(i, int) and not isinstance(i, bool)
         ]
-        if "commits" in item:
-            item["commits"] = [c for c in self._ids(item["commits"]) if isinstance(c, str)]
+        for key in ("commits", "specs"):
+            if key in item:
+                item[key] = [c for c in self._ids(item[key]) if isinstance(c, str)]
         return item
 
     def _scope_sql(self, repo: str | None) -> tuple[str, list[Any]]:
@@ -1832,9 +1846,9 @@ class Store:
     def _insert(self, table: str, fields: dict[str, Any]) -> int:
         now = now_iso()
         fields = {**fields, "created_at": now, "updated_at": now}
-        for key in ("task_ids", "commits"):
+        for key in ("task_ids", "commits", "specs"):
             if key in fields:
-                fields[key] = json.dumps(list(dict.fromkeys(fields[key])))
+                fields[key] = json.dumps(list(dict.fromkeys(fields[key])), ensure_ascii=False)
         cols = ", ".join(fields)
         marks = ", ".join("?" for _ in fields)
         # table and column names come from the fixed callers below; values are bound
@@ -1848,9 +1862,9 @@ class Store:
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return
-        for key in ("task_ids", "commits"):
+        for key in ("task_ids", "commits", "specs"):
             if key in fields:
-                fields[key] = json.dumps(list(dict.fromkeys(fields[key])))
+                fields[key] = json.dumps(list(dict.fromkeys(fields[key])), ensure_ascii=False)
         fields["updated_at"] = now_iso()
         assignments = ", ".join(f"{k} = ?" for k in fields)
         self._conn.execute(
@@ -1910,18 +1924,20 @@ class Store:
         names = self._names()
         return [self._label(self._history_row(r), names) for r in rows]
 
-    def search_history(self, query: str, repo: str | None, limit: int = 20) -> dict:
+    def search_history(
+        self, query: str, repo: str | None, limit: int = 20, *, any_word: bool = True
+    ) -> dict:
         """Problems (with their attempts) and milestones matching ``query``, best first.
 
-        Every word must match (FTS5, accent-insensitive); when nothing does,
-        any word may. Attempt hits surface their problem.
+        Every word must match (FTS5, accent-insensitive); when nothing does and
+        ``any_word``, any word may. Attempt hits surface their problem.
         """
         words = [w.replace('"', "") for w in query.split()][:SEARCH_MAX_WORDS]
         words = [w for w in words if w]
         if not words:
             return {"problems": [], "milestones": []}
         rows: list[sqlite3.Row] = []
-        for joiner in (" ", " OR "):
+        for joiner in (" ", " OR ") if any_word else (" ",):
             match = joiner.join(f'"{w}"' for w in words)
             rows = self._conn.execute(
                 "SELECT kind, ref_id FROM history_fts WHERE history_fts MATCH ? "
@@ -1957,6 +1973,13 @@ class Store:
             if len(problems) + len(milestones) < limit:
                 bucket.append(item)
         return {"problems": problems, "milestones": milestones}
+
+    def area_repos(self) -> list[str]:
+        return [
+            r[0] for r in self._conn.execute(
+                "SELECT DISTINCT repo FROM areas WHERE deleted_at IS NULL ORDER BY repo"
+            ).fetchall()
+        ]
 
     def history_cursor(self, cwd: str) -> int:
         row = self._conn.execute(

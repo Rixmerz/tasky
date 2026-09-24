@@ -49,6 +49,9 @@ MAX_AREAS = 30
 TREE_LINES = 300
 PROMPT_SPECS_CHARS = 30_000
 STALE_MAPPING_S = 20 * 60
+# Measured (2026-09-24): medium kept every spec link for ~$0.13; the default effort cost
+# $0.03 but assigned no specs, and high cost $0.21 for the same areas.
+MAP_EFFORT = "medium"
 _SUMMARY = 300
 _ITEM = 140
 _ITEMS = 40
@@ -925,7 +928,8 @@ def map_areas(
             )
         try:
             output, cost = history.call_model(
-                config, model, prompt, run=run, system_prompt=SYSTEM_PROMPT, schema=OUTPUT_SCHEMA
+                config, model, prompt, run=run, system_prompt=SYSTEM_PROMPT,
+                schema=OUTPUT_SCHEMA, effort=MAP_EFFORT,
             )
         except history.SyncError as exc:
             raise ArchitectureError(str(exc)) from exc
@@ -1004,10 +1008,21 @@ def overview(store: Store, repo: str, *, recent: int = 5) -> dict:
                 area["recent_tasks"].append(_task_brief(task))
             area["last_task"] = area["last_task"] or _task_brief(task)["date"]
 
+    spec_by_path = {spec["path"]: spec for spec in specs}
+    for spec in specs:
+        spec["problems"] = []
+        spec["milestones"] = []
+
     def linked(item: dict) -> list[int]:
         named = area_rules.by_name(item.get("topic"), area_list)
         if named is not None:
             return [named]
+        through_specs = list(dict.fromkeys(
+            i for path in item.get("specs") or [] if path in spec_by_path
+            for i in area_rules.spec_areas(spec_by_path[path], area_list)
+        ))
+        if through_specs:
+            return through_specs
         counts: Counter[int] = Counter(
             ref["id"] for tid in item["task_ids"] if tid in by_task
             for ref in task_areas.get(tid, [])
@@ -1016,6 +1031,11 @@ def overview(store: Store, repo: str, *, recent: int = 5) -> dict:
 
     unplaced_topics: Counter[str] = Counter()
     for problem in store.problems(repo):
+        for path in problem.get("specs") or []:
+            if path in spec_by_path:
+                spec_by_path[path]["problems"].append(
+                    {"id": problem["id"], "title": problem["title"], "state": problem["state"]}
+                )
         ids = linked(problem)
         for i in ids:
             index[i]["problems"].append({
@@ -1026,6 +1046,12 @@ def overview(store: Store, repo: str, *, recent: int = 5) -> dict:
         if not ids and problem.get("topic"):
             unplaced_topics[problem["topic"]] += 1
     for milestone in store.milestones(repo):
+        for path in milestone.get("specs") or []:
+            if path in spec_by_path:
+                spec_by_path[path]["milestones"].append(
+                    {"id": milestone["id"], "title": milestone["title"],
+                     "happened_on": milestone["happened_on"]}
+                )
         ids = linked(milestone)
         for i in ids:
             index[i]["milestones"].append({

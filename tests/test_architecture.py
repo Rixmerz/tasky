@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from tasky import architecture, cli, mcp, repos
+from tasky import architecture, cli, history, mcp, repos
 from tasky import areas as area_rules
 from tasky.config import load_token
 from tasky.server import make_server
@@ -358,7 +358,7 @@ def test_v6_database_migrates_without_rereading_transcripts(tmp_path, config):
         store._conn.execute("ALTER TABLE repos DROP COLUMN root")
         store._conn.commit()
     with Store.open(config) as store:
-        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 9
         assert store.transcript_offset("/t.jsonl") == (10, 10)
         row = store.repo_row("/p")
         assert row["root"] is None and row["checked_at"] == ""  # resolved again, with its root
@@ -675,3 +675,109 @@ def test_api_diagram_without_the_skill(api, store, root):
     status, body = api("POST", "/api/architecture/diagram", {"repo": REPO})
     assert status == 409 and "not installed" in body["error"]
     assert api("POST", "/api/architecture/diagram", {"repo": REPO, "model": "haiku"})[0] == 400
+
+
+# -- stage 3: the sync names areas, links specs, learns aliases; the search ladder ---------
+
+
+def test_query_areas_finds_names_aliases_and_prefixes():
+    areas = [
+        {"id": 1, "name": "auth", "aliases": ["inicio de sesión", "login"]},
+        {"id": 2, "name": "database", "aliases": ["mongodb", "db"]},
+        {"id": 3, "name": "models", "aliases": ["modelos", "mocks"]},
+    ]
+    assert area_rules.query_areas("el Inicio de Sesion falla", areas) == [(1, "inicio de sesion")]
+    assert area_rules.query_areas("logins rotos con mongo", areas) == [(1, "logins"), (2, "mongo")]
+    assert area_rules.query_areas("mo", areas) == []  # too short to be a prefix
+    assert area_rules.query_areas("modelos", areas) == [(3, "modelos")]
+    assert area_rules.by_name("Inicio de sesión", areas) == 1
+
+
+def test_sync_names_areas_links_specs_and_learns_aliases(config, store, root):
+    cwd = str(root)
+    task = _task(store, cwd, "el cobro con tarjeta falla", "p1", [f"{root}/src/checkout/step0.ts"])
+    store.save_area(REPO, "checkout", kind="business", aliases=["pago"], paths=["src/checkout"],
+                    source="model")
+    store.save_area(REPO, "auth", paths=["src/auth"], source="user")
+    architecture.scan(config, REPO)
+    spec = "openspec/specs/checkout/spec.md"
+    fake = FakeClaude({
+        "problems": [
+            {"title": "Card declined", "topic": "Pago", "task_ids": [task["id"]],
+             "specs": [spec, "not/a/spec.md"]},
+            {"title": "Odd rounding", "topic": "misc", "task_ids": [task["id"]], "specs": [spec]},
+        ],
+        "milestones": [{"title": "Cards work", "topic": "sesiones", "task_ids": [task["id"]],
+                        "specs": [spec]}],
+        "compact": [],
+        "aliases": [
+            {"area": "checkout", "alias": "Cobro"},  # written by the developer: kept
+            {"area": "checkout", "alias": "facturación"},  # never written: dropped
+            {"area": "auth", "alias": "tarjeta"},  # the developer's own area: left alone
+            {"area": "nope", "alias": "falla"},
+        ],
+    })
+    summary = history.sync(config, REPO, run=fake)
+    assert summary["error"] is None and summary["aliases"] == 1
+    cmd = fake.calls[0]["cmd"]
+    assert cmd[cmd.index("--effort") + 1] == history.SYNC_EFFORT == "high"
+    prompt = fake.calls[0]["input"]
+    assert "checkout [business] aka: pago" in prompt and f"{spec} | checkout | current" in prompt
+    problems = {p["title"]: p for p in store.problems(REPO)}
+    assert problems["Card declined"]["topic"] == "checkout"
+    assert problems["Card declined"]["specs"] == [spec]
+    assert store.milestones(REPO)[0]["specs"] == [spec]
+    checkout = next(a for a in store.areas(REPO) if a["name"] == "checkout")
+    assert checkout["aliases"] == ["pago", "cobro"] and checkout["source"] == "model"
+    assert next(a for a in store.areas(REPO) if a["name"] == "auth")["aliases"] == []
+    view = architecture.overview(store, REPO)
+    areas = {a["name"]: a for a in view["areas"]}
+    # "misc" names no area: its spec places it.
+    assert {p["title"] for p in areas["checkout"]["problems"]} == {"Card declined", "Odd rounding"}
+    linked = next(s for s in view["specs"] if s["path"] == spec)
+    assert len(linked["problems"]) == 2 and linked["milestones"][0]["title"] == "Cards work"
+
+
+def test_mcp_search_history_climbs_the_ladder(config, store, root, monkeypatch):
+    monkeypatch.setattr(mcp.os, "getcwd", lambda: str(root))
+    cwd = str(root)
+    task = _task(store, cwd, "pay", "p1", [f"{root}/src/checkout/step0.ts"])
+    store.save_area(REPO, "checkout", aliases=["pago", "mongodb"], paths=["src/checkout"],
+                    source="model")
+    store.add_problem(cwd=cwd, title="Card declined", topic="checkout", symptom="bank said no",
+                      first_seen=None, last_seen=None, task_ids=[task["id"]])
+    store.add_problem(cwd=cwd, title="Slow build", topic="build", symptom="", first_seen=None,
+                      last_seen=None, task_ids=[])
+
+    def search(query):
+        return mcp.call_tool(store, "search_history", {"query": query})
+
+    assert "Card declined" in search("bank") and "Areas named" not in search("bank")
+    text = search("problemas de pago")  # no record has these words; the alias names the area
+    assert text.startswith('Areas named: checkout ("pago")') and "Card declined" in text
+    assert "Card declined" in search("mongo")  # the start of an alias
+    text = search("slow deploy")
+    assert text.startswith("No record has every word") and "Slow build" in text
+    text = search("xyzzy")
+    assert "Areas with history: checkout (1 problem(s), 0 milestone(s)) aka pago" in text
+
+
+def test_api_embeds_a_diagram_in_a_sandbox(api, store, root):
+    _write(root, "docs/shop.html", "<html><script>1</script></html>")
+    _task(store, str(root), "hi", "p0")
+    architecture.scan(config=api.server.config, repo=REPO)
+    status, body = api("POST", "/api/architecture/embed", {"repo": REPO, "path": "docs/shop.html"})
+    assert status == 200 and body["url"].startswith("/diagram/")
+    assert api("POST", "/api/architecture/embed", {"repo": REPO, "path": "src/a.ts"})[0] == 404
+    conn = http.client.HTTPConnection("127.0.0.1", api.server.server_port)
+    conn.request("GET", body["url"])  # no token: an iframe cannot send one
+    resp = conn.getresponse()
+    assert resp.status == 200 and resp.read() == b"<html><script>1</script></html>"
+    csp = resp.getheader("Content-Security-Policy")
+    assert csp.startswith("sandbox allow-scripts") and "allow-same-origin" not in csp
+    assert "frame-ancestors 'self'" in csp
+    conn.request("GET", "/diagram/" + "x" * 32)
+    resp = conn.getresponse()
+    assert resp.status == 404
+    resp.read()
+    conn.close()
