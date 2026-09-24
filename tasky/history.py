@@ -27,7 +27,9 @@ from tasky import repos
 from tasky.config import Config
 from tasky.store import Store
 
-MODELS = ("haiku", "sonnet", "opus")
+# No Haiku: the sync judges whether a fix really failed across tasks days apart, which Haiku
+# got wrong in testing, and its saving is a few cents per sync (the fixed prompt dominates).
+MODELS = ("sonnet", "opus")
 OUTCOMES = ("pending", "worked", "failed", "partial")
 STATES = ("open", "solved", "recurring")
 BATCH_TASKS = 40

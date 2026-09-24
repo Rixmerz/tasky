@@ -119,7 +119,7 @@ def test_sync_builds_a_problem_with_its_attempt_chain(store, config):
         }
     )
 
-    summary = history.sync(config, REPO, model="haiku", run=fake)
+    summary = history.sync(config, REPO, model="opus", run=fake)
 
     assert summary["error"] is None
     assert summary["pending"] == 0
@@ -136,7 +136,7 @@ def test_sync_builds_a_problem_with_its_attempt_chain(store, config):
     assert failed["evidence"] == "The retry did not help"
     assert worked["evidence"] == ""  # not a verbatim quote: dropped
     assert store.milestones(REPO) == []  # cited a task the model was not shown
-    assert store.history_sync(REPO)["model"] == "haiku"
+    assert store.history_sync(REPO)["model"] == "opus"
 
 
 def test_sync_runs_the_model_without_tools_hooks_or_project_context(store, config):
@@ -282,8 +282,9 @@ def test_failed_batch_keeps_earlier_batches_and_records_the_error(store, config,
 
 def test_sync_refuses_unknown_models_and_a_second_run(store, config):
     _task(store, "a", "b")
-    with pytest.raises(history.SyncError):
-        history.sync(config, REPO, model="gpt-4", run=FakeClaude())
+    for model in ("gpt-4", "haiku"):
+        with pytest.raises(history.SyncError):
+            history.sync(config, REPO, model=model, run=FakeClaude())
     store.begin_history_sync(REPO, "sonnet", stale_after_s=60)
     with pytest.raises(history.SyncError):
         history.sync(config, REPO, run=FakeClaude())

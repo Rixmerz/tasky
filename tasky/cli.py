@@ -121,7 +121,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--cwd", default=None, help="a folder of the repo (default: current directory)")
     p.add_argument("--repo", default=None, help="repo key, as the dashboard lists it")
-    p.add_argument("--model", default=None, help="haiku, sonnet or opus (default: sonnet)")
+    p.add_argument("--model", default=None, help="sonnet or opus (default: sonnet)")
     p.set_defaults(handler=_cmd_history)
 
     p = sub.add_parser("mcp", help="serve the history and task ledger as MCP tools on stdio")

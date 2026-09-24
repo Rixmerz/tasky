@@ -2000,8 +2000,8 @@ document.addEventListener("keydown", (evt) => {
 const HISTORY_VIEWS = ["timeline", "problems", "deadends", "map"];
 const HISTORY_TAB_KEY = "tasky.historyTab";
 const HISTORY_MODEL_KEY = "tasky.historyModel";
-const HISTORY_DEFAULT_MODELS = ["haiku", "sonnet", "opus"];
-const HISTORY_MODEL_HINTS = { haiku: "cheapest", sonnet: "recommended", opus: "most thorough" };
+const HISTORY_DEFAULT_MODELS = ["sonnet", "opus"];
+const HISTORY_MODEL_HINTS = { sonnet: "recommended", opus: "most thorough" };
 const HISTORY_STATE_LABEL = { open: "Open", recurring: "Recurring", solved: "Solved" };
 const HISTORY_OUTCOME = {
   worked: { glyph: "✓", word: "Worked" },

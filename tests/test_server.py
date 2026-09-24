@@ -1410,11 +1410,11 @@ def test_history_sync_starts_a_background_process(store, running_server, conn, a
     launched = []
     running_server.popen = lambda cmd, **kw: launched.append(cmd)
     resp, _ = _request(
-        conn, "POST", "/api/history/sync", {"repo": "github.com/o/p", "model": "haiku"},
+        conn, "POST", "/api/history/sync", {"repo": "github.com/o/p", "model": "opus"},
         auth_headers,
     )
     assert resp.status == 202
-    assert launched[0][-5:] == ["history", "--repo", "github.com/o/p", "--model", "haiku"]
+    assert launched[0][-5:] == ["history", "--repo", "github.com/o/p", "--model", "opus"]
 
 
 def test_history_sync_rejects_bad_model_unknown_repo_and_a_second_run(

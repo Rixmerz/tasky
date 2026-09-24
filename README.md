@@ -216,7 +216,7 @@ links to the tasks it came from.
 Nothing is generated until you press **Sync** (or run `tasky history --cwd DIR`). A sync reads
 only the tasks finished since the previous one, in batches of up to 40, with the history already
 kept and the repository's git log for the same days. It runs `claude -p` with the model you pick
-(Sonnet by default; Haiku is cheaper, Opus more thorough), no tools, no MCP servers, no saved
+(Sonnet by default, Opus for more thoroughness), no tools, no MCP servers, no saved
 session and Tasky's own hooks off. Nothing it returns is taken on trust: records must cite tasks
 it was shown, evidence must appear verbatim in them, commits must be in the log it was given, and
 it can only change records of the repository being synced. The status line shows what the last
@@ -257,7 +257,7 @@ tasky done ID | tasky cancel ID
 tasky run ID [--mode now|fork] [--permission-mode MODE]
 tasky enqueue ID [--permission-mode MODE]
 tasky import [--dry-run]
-tasky history [--cwd DIR | --repo KEY] [--model haiku|sonnet|opus]
+tasky history [--cwd DIR | --repo KEY] [--model sonnet|opus]
                                     sync a repository's history (spends tokens)
 tasky mcp                           serve the history and ledger as MCP tools on stdio
 tasky status [--short]

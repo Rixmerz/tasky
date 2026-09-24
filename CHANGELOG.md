@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-09-24
+
+### Removed
+
+- Haiku as a history sync model. The sync has to judge whether a fix really failed across tasks
+  days apart; Haiku recorded an unapplied idea as a solution in testing, and saved only about two
+  cents per sync because the fixed instructions dominate the cost. Sonnet (default) and Opus remain.
+
 ## [0.6.0] - 2026-09-24
 
 ### Added
