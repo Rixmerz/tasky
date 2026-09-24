@@ -69,3 +69,21 @@ its specs' requirements, problems with their failed fixes, milestones and recent
 #### Scenario: Unknown area
 - **WHEN** the agent calls `get_architecture` with an area that does not exist
 - **THEN** the result is an error that lists the repository's areas
+
+### Requirement: Drawing with the Archify skill
+When the Archify skill is installed for Claude Code (user skills, the repository's skills or a
+plugin), the dashboard SHALL offer to draw the repository's architecture. The system SHALL start one
+headless task in the repository's main checkout with the chosen model, permission mode `acceptEdits`
+and, besides edits, only Archify's CLI and read-only git commands allowed, asking for a diagram
+backed by repository evidence with the repository's areas as boundary names, written under
+`docs/architecture/`. A second drawing SHALL be refused while one runs. When the task finishes after
+the last scan, the next read SHALL scan again. Opening a diagram SHALL only open a rendered page the
+scan found, inside the checkout.
+
+#### Scenario: Skill missing
+- **WHEN** the user asks to draw and no Archify skill with its CLI is installed
+- **THEN** the request is refused with "the Archify skill is not installed for Claude Code"
+
+#### Scenario: Path outside the diagrams
+- **WHEN** the dashboard asks to open `../../etc/passwd`
+- **THEN** nothing is opened and the answer is 404

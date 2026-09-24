@@ -231,6 +231,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._route_architecture_scan(body)
         elif method == "POST" and path == "/api/architecture/map":
             self._route_architecture_map(body)
+        elif method == "POST" and path == "/api/architecture/diagram":
+            self._route_architecture_diagram(body)
+        elif method == "POST" and path == "/api/architecture/open":
+            self._route_architecture_open(body)
         elif method == "POST" and path == "/api/areas":
             self._route_create_area(body)
         elif method == "POST" and path == "/api/tasks":
@@ -439,14 +443,38 @@ class _Handler(BaseHTTPRequestHandler):
                 entry["areas"] = len(store.areas(entry["repo"]))
             known = {e["repo"] for e in repo_list}
             repo = wanted if wanted in known else (repo_list[0]["repo"] if repo_list else None)
+            diagram_task = self._diagram_task(store, repo) if repo else None
+        if diagram_task is not None and diagram_task.pop("rescan"):
+            # The drawing finished after the last scan: read its diagram now, for free.
+            with contextlib.suppress(architecture.ArchitectureError):
+                architecture.scan(config, repo)
+        with Store.open(config) as store:
             view = architecture.overview(store, repo) if repo else None
+            root = architecture.scan_root(store, repo) if repo else None
+        skill = architecture.archify_skill(config, root)
         self._send_json(200, {
             "repo": repo,
             "repos": repo_list,
             "default_model": config.history_model,
             "models": list(architecture.MODELS),
             "view": view,
+            "archify": {"installed": skill is not None, "dir": skill["dir"] if skill else None},
+            "diagram_task": diagram_task,
         })
+
+    @staticmethod
+    def _diagram_task(store: Store, repo: str) -> dict | None:
+        """The last Archify drawing of the repo, and whether its result still needs a scan."""
+        row = store.architecture(repo)
+        task = store.get_task(row["diagram_task_id"]) if row and row["diagram_task_id"] else None
+        if task is None:
+            return None
+        finished = task["finished_at"] or ""
+        return {
+            "id": task["id"], "status": task["status"], "started_at": task["started_at"],
+            "finished_at": task["finished_at"], "result": (task["result"] or "")[:600],
+            "rescan": task["status"] == "done" and finished > (row["scanned_at"] or ""),
+        }
 
     def _known_repo(self, body: dict | None) -> str | None:
         repo = body.get("repo") if isinstance(body, dict) else None
@@ -506,6 +534,70 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             os.close(fd)
         self._send_json(202, {"started": True})
+
+    def _route_architecture_diagram(self, body: dict | None) -> None:
+        repo = self._known_repo(body)
+        if repo is None:
+            return
+        assert isinstance(body, dict)
+        config = self.server.config
+        model = body.get("model", config.history_model)
+        if model not in architecture.MODELS:
+            self._error(400, f"model must be one of {', '.join(architecture.MODELS)}")
+            return
+        with Store.open(config) as store:
+            current = self._diagram_task(store, repo)
+            if current is not None and current["status"] in ("queued", "running"):
+                self._error(409, f"task #{current['id']} is already drawing this repository")
+                return
+            try:
+                request = architecture.diagram_request(config, store, repo)
+            except architecture.ArchitectureError as exc:
+                self._error(409, str(exc))
+                return
+            task = store.create_task(
+                kind="prompt", body=request["body"], title=request["title"], status="queued",
+                source="ui", cwd=request["root"],
+            )
+            try:
+                # Edits only inside the checkout, plus Archify's CLI and read-only git.
+                task = worker.run_task(
+                    store, config, task["id"], permission_mode="acceptEdits", mode="now",
+                    popen=self.server.popen, extra_args=[*request["args"], "--model", model],
+                )
+            except worker.WorkerError as exc:
+                self._error(400, str(exc))
+                return
+            store.set_diagram_task(repo, task["id"])
+        self._send_json(202, {"task": task, "json": request["json"], "html": request["html"]})
+
+    def _route_architecture_open(self, body: dict | None) -> None:
+        repo = self._known_repo(body)
+        if repo is None:
+            return
+        assert isinstance(body, dict)
+        wanted = body.get("path")
+        with Store.open(self.server.config) as store:
+            row = store.architecture(repo) or {}
+        # Only a page the scan found as a diagram's rendering, inside the checkout.
+        known = {d["html"] for d in row.get("diagrams") or [] if d.get("html")}
+        if not isinstance(wanted, str) or wanted not in known or not row.get("root"):
+            self._error(404, "no such diagram")
+            return
+        base = Path(row["root"]).resolve()
+        page = (base / wanted).resolve()
+        if not page.is_relative_to(base) or not page.is_file():
+            self._error(404, "no such diagram")
+            return
+        command = architecture.opener()
+        if command is None:
+            self._error(501, "opening files is not supported on this platform")
+            return
+        self.server.popen(
+            [*command, str(page)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+        self._send_json(200, {"opened": wanted})
 
     @staticmethod
     def _area_fields(body: dict) -> tuple[dict, str | None]:

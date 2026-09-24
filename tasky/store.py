@@ -36,7 +36,7 @@ _ATTEMPT_FIELDS = (
     "task_ids", "commits",
 )
 
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 HISTORY_FTS_REBUILD = """
 DELETE FROM history_fts;
 INSERT INTO history_fts (kind, ref_id, text)
@@ -126,7 +126,8 @@ CREATE TABLE IF NOT EXISTS architecture (
   repo TEXT PRIMARY KEY, root TEXT, scanned_at TEXT, files INTEGER NOT NULL DEFAULT 0,
   sources TEXT NOT NULL DEFAULT '{}', candidates TEXT NOT NULL DEFAULT '[]',
   state TEXT NOT NULL DEFAULT 'idle', started_at TEXT, mapped_at TEXT, error TEXT,
-  model TEXT, last_cost_usd REAL NOT NULL DEFAULT 0, total_cost_usd REAL NOT NULL DEFAULT 0
+  model TEXT, last_cost_usd REAL NOT NULL DEFAULT 0, total_cost_usd REAL NOT NULL DEFAULT 0,
+  diagrams TEXT NOT NULL DEFAULT '[]', diagram_task_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS milestones (
   id INTEGER PRIMARY KEY AUTOINCREMENT, cwd TEXT NOT NULL, topic TEXT, title TEXT NOT NULL,
@@ -407,6 +408,7 @@ class Store:
                         # Not idempotent in cost: it re-reads every transcript.
                         self._migrate_v5_to_v6()
                     self._migrate_v6_to_v7()
+                    self._migrate_v7_to_v8()
                     self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                 self._conn.commit()
                 return
@@ -465,6 +467,16 @@ class Store:
         if "root" not in existing:
             self._conn.execute("ALTER TABLE repos ADD COLUMN root TEXT")
             self._conn.execute("UPDATE repos SET checked_at = ''")  # resolve again, with roots
+
+    def _migrate_v7_to_v8(self) -> None:
+        """Architecture rows remember Archify diagrams and the task drawing one."""
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(architecture)")}
+        if "diagrams" not in existing:
+            self._conn.execute(
+                "ALTER TABLE architecture ADD COLUMN diagrams TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "diagram_task_id" not in existing:
+            self._conn.execute("ALTER TABLE architecture ADD COLUMN diagram_task_id INTEGER")
 
     def repair(self) -> dict[str, int]:
         """Run the 0.8.0 repairs again, e.g. after old transcripts were copied."""
@@ -2171,18 +2183,36 @@ class Store:
         except ValueError:
             item["sources"] = {}
         item["candidates"] = [c for c in _json_list(item["candidates"]) if isinstance(c, dict)]
+        item["diagrams"] = [d for d in _json_list(item["diagrams"]) if isinstance(d, dict)]
         return item
 
     def save_scan(
-        self, repo: str, *, root: str, files: int, sources: dict, candidates: list[dict]
+        self,
+        repo: str,
+        *,
+        root: str,
+        files: int,
+        sources: dict,
+        candidates: list[dict],
+        diagrams: list[dict] | None = None,
     ) -> None:
         self._conn.execute(
-            "INSERT INTO architecture (repo, root, scanned_at, files, sources, candidates) "
-            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(repo) DO UPDATE SET root = excluded.root, "
-            "scanned_at = excluded.scanned_at, files = excluded.files, "
-            "sources = excluded.sources, candidates = excluded.candidates",
+            "INSERT INTO architecture (repo, root, scanned_at, files, sources, candidates, "
+            "diagrams) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(repo) DO UPDATE SET "
+            "root = excluded.root, scanned_at = excluded.scanned_at, files = excluded.files, "
+            "sources = excluded.sources, candidates = excluded.candidates, "
+            "diagrams = excluded.diagrams",
             (repo, root, now_iso(), files, json.dumps(sources),
-             json.dumps(candidates, ensure_ascii=False)),
+             json.dumps(candidates, ensure_ascii=False),
+             json.dumps(diagrams or [], ensure_ascii=False)),
+        )
+        self._conn.commit()
+
+    def set_diagram_task(self, repo: str, task_id: int | None) -> None:
+        self._conn.execute(
+            "INSERT INTO architecture (repo, diagram_task_id) VALUES (?, ?) "
+            "ON CONFLICT(repo) DO UPDATE SET diagram_task_id = excluded.diagram_task_id",
+            (repo, task_id),
         )
         self._conn.commit()
 

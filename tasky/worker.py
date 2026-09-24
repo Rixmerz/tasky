@@ -169,7 +169,9 @@ def run_task(
     permission_mode: str = "default",
     mode: str = "now",
     popen=subprocess.Popen,
+    extra_args: list[str] | None = None,
 ) -> dict:
+    """Claim a queued task and launch it; ``extra_args`` go to ``claude -p`` (e.g. a model)."""
     if mode not in RUN_MODES:
         raise WorkerError(f"invalid run mode: {mode!r}")
     task = store.get_task(task_id)
@@ -194,7 +196,6 @@ def run_task(
             store.update_task(task_id, status="failed", result=f"invalid task cwd: {cwd!r}")
             raise WorkerError(f"invalid task cwd: {cwd!r}")
         claimed = task
-        extra_args: list[str] = []
         launch_cwd = cwd
     else:
         if permission_mode not in PERMISSION_MODES:
@@ -206,7 +207,6 @@ def run_task(
             raise WorkerError(f"invalid task cwd: {cwd!r}")
 
         session_id = str(uuid.uuid4())
-        extra_args = []
         launch_cwd = cwd
         claim_fields: dict[str, object] = {
             "status": "running",
@@ -218,7 +218,7 @@ def run_task(
             source = _resolve_fork_source(store, task)
             claim_fields["fork_of"] = source["id"]
             launch_cwd = source["cwd"]
-            extra_args = ["--resume", source["id"], "--fork-session"]
+            extra_args = ["--resume", source["id"], "--fork-session", *(extra_args or [])]
 
         # The queued check happens inside this atomic claim, not before it: a
         # check-then-act split here is exactly the race two concurrent /run
@@ -234,7 +234,9 @@ def run_task(
     # `failed` with the error and any prompt file written so far is removed.
     prompt_path = config.log_dir / f"task-{task_id}.prompt"
     try:
-        _launch(store, config, task_id, session_id, launch_cwd, permission_mode, extra_args, popen)
+        _launch(
+            store, config, task_id, session_id, launch_cwd, permission_mode, extra_args or [], popen
+        )
     except (OSError, sqlite3.Error) as exc:
         store.update_task(task_id, status="failed", result=str(exc))
         prompt_path.unlink(missing_ok=True)

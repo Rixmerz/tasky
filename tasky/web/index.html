@@ -242,7 +242,20 @@
       <button type="button" id="arch-map" class="btn btn-primary btn-sm">Map areas</button>
       <span class="arch-hint">one model call, ~5–15¢</span>
     </div>
+    <div id="arch-draw" class="arch-action" hidden>
+      <button type="button" id="arch-draw-btn" class="btn btn-sm" aria-describedby="arch-draw-hint">
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="6" rx="1"/><rect x="14" y="15" width="7" height="6" rx="1"/><path d="M6.5 9v3.5a2 2 0 0 0 2 2H14"/><path d="m11.5 12 2.5 2.5-2.5 2.5"/></svg>
+        <span id="arch-draw-label">Draw with Archify</span>
+      </button>
+      <span id="arch-draw-hint" class="arch-hint">full agent session · writes docs/architecture/ in the repo · ~$3–7, 10–20 min with Sonnet</span>
+    </div>
+    <div id="arch-draw-missing" class="arch-action arch-draw-missing" hidden>
+      <span class="arch-hint">Install the Archify skill to draw diagrams:</span>
+      <code id="arch-draw-cmd" class="arch-draw-cmd">npx skills add tt-a1i/archify -g</code>
+      <button type="button" id="arch-draw-copy" class="btn btn-ghost btn-sm arch-draw-copy" aria-label="Copy the Archify install command">Copy</button>
+    </div>
     <p id="arch-status" class="arch-status" role="status" aria-live="polite"></p>
+    <p id="arch-draw-status" class="arch-status arch-draw-status" role="status" aria-live="polite"></p>
   </div>
   <p id="arch-meta" class="arch-meta" hidden></p>
   <div id="arch-empty" class="arch-empty" hidden>
@@ -250,6 +263,11 @@
     <p id="arch-empty-text" class="arch-empty-text"></p>
   </div>
   <div id="arch-body" class="arch-body" hidden>
+    <section id="arch-diagrams" class="arch-diagrams" aria-labelledby="arch-diagrams-heading" hidden>
+      <h3 id="arch-diagrams-heading" class="arch-subheading">Diagrams <span id="arch-diagrams-count" class="col-count"></span></h3>
+      <p id="arch-diagrams-pending" class="arch-hint arch-diagrams-pending" hidden></p>
+      <ul id="arch-diagrams-list" class="arch-diagrams-list"></ul>
+    </section>
     <div class="arch-section-head">
       <h3 class="arch-subheading">Areas <span id="arch-count" class="col-count"></span></h3>
       <button type="button" id="arch-add" class="btn btn-sm arch-add">

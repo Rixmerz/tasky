@@ -28,6 +28,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
@@ -445,8 +446,12 @@ def _top_dirs(rels: list[str], limit: int = 4) -> list[str]:
     return [d for d, _ in counts.most_common(limit)]
 
 
-def _archify(root: str, files: list[str], fileset: set[str], dirs: set[str]) -> list[dict]:
-    found = []
+def _archify(
+    root: str, files: list[str], fileset: set[str], dirs: set[str]
+) -> tuple[list[dict], list[dict]]:
+    """(candidate areas from boundaries, the diagrams themselves with their rendered HTML)."""
+    found: list[dict] = []
+    diagrams: list[dict] = []
     for rel in files:
         if not rel.endswith(".architecture.json"):
             continue
@@ -456,11 +461,29 @@ def _archify(root: str, files: list[str], fileset: set[str], dirs: set[str]) -> 
             continue
         if not isinstance(data, dict) or data.get("diagram_type") != "architecture":
             continue
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        diagrams.append({
+            "file": rel,
+            "title": str(meta.get("title") or PurePosixPath(rel).name)[:120],
+            "html": _diagram_html(rel, meta, fileset),
+        })
         try:
             found += _archify_boundaries(data, rel, fileset, dirs)
         except (TypeError, AttributeError):  # a malformed file must not stop the scan
             continue
-    return found
+    return found, diagrams
+
+
+def _diagram_html(rel: str, meta: dict, fileset: set[str]) -> str | None:
+    """The rendered page of a diagram source: meta.output, or an .html named like it."""
+    folder = PurePosixPath(rel).parent
+    stem = PurePosixPath(rel).name[: -len(".architecture.json")]
+    options = []
+    if isinstance(meta.get("output"), str) and meta["output"].strip():
+        output = area_rules.clean_path(meta["output"])
+        options += [str(folder / output), output]
+    options += [str(folder / f"{stem}.html"), str(folder / f"{stem}.architecture.html")]
+    return next((o for o in options if o in fileset and o.endswith(".html")), None)
 
 
 def _archify_boundaries(data: dict, rel: str, fileset: set[str], dirs: set[str]) -> list[dict]:
@@ -483,10 +506,8 @@ def _archify_boundaries(data: dict, rel: str, fileset: set[str], dirs: set[str])
                 if not isinstance(source, dict):
                     continue
                 path = area_rules.clean_path(str(source.get("path") or ""))
-                if path in dirs:
+                if path in dirs or path in fileset:  # an area path may be a single file
                     paths.append(path)
-                elif path in fileset:
-                    paths.append(str(PurePosixPath(path).parent))
         found.append({
             "name": str(boundary["label"])[:80],
             "source": "archify",
@@ -607,8 +628,9 @@ def scan(config: Config, repo: str) -> dict:
     fileset = set(files)
     dirs = _dirs(files)
     specs = read_specs(root, files)
+    boundaries, diagrams = _archify(root, files, fileset, dirs)
     candidates = [
-        *_archify(root, files, fileset, dirs),
+        *boundaries,
         *_graphify(root, files, fileset),
         *_folder_candidates(files),
     ]
@@ -617,11 +639,98 @@ def scan(config: Config, repo: str) -> dict:
     with Store.open(config) as store:
         store.replace_specs(repo, specs)
         store.save_scan(
-            repo, root=root, files=len(files), sources=dict(sources), candidates=candidates
+            repo, root=root, files=len(files), sources=dict(sources), candidates=candidates,
+            diagrams=diagrams,
         )
         adopted = _adopt(store, repo, candidates)
     return {"root": root, "files": len(files), "specs": len(specs),
-            "candidates": len(candidates), "adopted": adopted, "sources": dict(sources)}
+            "candidates": len(candidates), "adopted": adopted, "sources": dict(sources),
+            "diagrams": len(diagrams)}
+
+
+# -- drawing a diagram with the Archify skill --------------------------------------
+
+DIAGRAM_DIR = "docs/architecture"
+# Allowed in the headless session besides edits: Archify's own CLI and the read-only git calls
+# its repository evidence needs. Anything else is denied, not asked.
+_DIAGRAM_GIT = ("Bash(git rev-parse:*)", "Bash(git remote get-url:*)", "Bash(git log:*)",
+                "Bash(git ls-files:*)", f"Bash(mkdir -p {DIAGRAM_DIR})")
+
+DIAGRAM_PROMPT = """\
+Use the archify skill (installed at {skill}) to draw this repository's runtime architecture \
+as an Archify architecture diagram backed by repository evidence.
+
+- Inspect entrypoints, runtime boundaries, storage, transports and deployment configuration \
+first; record only what you verified.
+- Group components into boundaries that match the product's areas.{areas}
+- Give components `sources` with repository-relative paths (and lines when useful). In \
+`meta.repository` put this checkout's credential-free origin URL (`git remote get-url origin`) \
+and the full `git rev-parse HEAD`; use `"link_mode": "local-only"` unless the origin is GitHub \
+or Gitee.
+- Write the source to `{json}` (create the folder with `mkdir -p {folder}`), then run, from the \
+repository root, exactly: `node {bin} deliver architecture {json} {html} --repo-root .` \
+Fix every validation error and run it again until it passes.
+- Run one command per Bash call, without `cd`, pipes or `&&`. Do not open a browser or a \
+preview, do not commit, and do not change any other file.
+
+End with the two output paths."""
+
+
+def archify_skill(config: Config, root: str | None = None) -> dict | None:
+    """Where the Archify skill is installed for Claude Code, if it is: {dir, bin}."""
+    places = [config.claude_config_dir / "skills" / "archify"]
+    if root:
+        places.append(Path(root) / ".claude" / "skills" / "archify")
+    plugins = config.claude_config_dir / "plugins" / "cache"
+    if plugins.is_dir():
+        places += sorted(plugins.glob("*/*/*/skills/archify"), reverse=True)
+    for place in places:
+        cli = place / "bin" / "archify.mjs"
+        if (place / "SKILL.md").is_file() and cli.is_file():
+            return {"dir": str(place), "bin": str(cli)}
+    return None
+
+
+def diagram_request(config: Config, store: Store, repo: str) -> dict:
+    """The task body, cwd and CLI arguments of a one-shot Archify drawing for ``repo``."""
+    root = scan_root(store, repo)
+    if root is None:
+        raise ArchitectureError(f"no folder of {repo} exists on this machine")
+    skill = archify_skill(config, root)
+    if skill is None:
+        raise ArchitectureError("the Archify skill is not installed for Claude Code")
+    name = area_rules.slug(Path(root).name) or "repository"
+    json_path = f"{DIAGRAM_DIR}/{name}.architecture.json"
+    html_path = f"{DIAGRAM_DIR}/{name}.html"
+    known = [a for a in store.areas(repo) if a["paths"]]
+    areas = ""
+    if known:
+        listed = "; ".join(f"{a['name']} ({', '.join(a['paths'][:3])})" for a in known[:20])
+        areas = f" Tasky names these areas; use them as boundary names when they fit: {listed}."
+    body = DIAGRAM_PROMPT.format(
+        skill=skill["dir"], areas=areas, json=json_path, html=html_path, folder=DIAGRAM_DIR,
+        bin=skill["bin"],
+    )
+    allowed = [f"Bash(node {skill['bin']}:*)", *_DIAGRAM_GIT]
+    return {
+        "root": root,
+        "body": body,
+        "title": f"Archify diagram of {Path(root).name}",
+        # The skill's schemas and examples live outside the checkout: let it read them.
+        # No MCP servers: their tool definitions would ride along on every one of its turns.
+        "args": ["--strict-mcp-config", "--add-dir", skill["dir"], "--allowedTools", *allowed],
+        "json": json_path,
+        "html": html_path,
+    }
+
+
+def opener() -> list[str] | None:
+    """The command that opens a file in the desktop's default browser."""
+    if sys.platform == "darwin":
+        return ["open"]
+    if sys.platform.startswith("linux"):
+        return ["xdg-open"]
+    return None
 
 
 # -- mapping areas with a model ----------------------------------------------------

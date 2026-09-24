@@ -1,6 +1,6 @@
 {
   "name": "tasky",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "A visual task ledger for Claude Code: records prompts, delegated subagents and results through hooks at zero token cost, with a zero-token chat queue, opt-in queue draining, parallel headless workers and a local dashboard.",
   "homepage": "https://github.com/Rixmerz/tasky",
   "repository": "https://github.com/Rixmerz/tasky",

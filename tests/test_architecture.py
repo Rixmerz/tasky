@@ -181,7 +181,7 @@ def test_scan_adopts_archify_boundaries_as_areas_once(config, store, root):
     [area] = store.areas(REPO)
     assert (area["name"], area["source"]) == ("checkout-flow", "archify")
     assert area["aliases"] == ["Checkout Flow"]
-    assert area["paths"] == ["src/checkout", "src/checkout/cart"]
+    assert area["paths"] == ["src/checkout/step0.ts", "src/checkout/cart"]
     candidates = store.architecture(REPO)["candidates"]
     graph = next(c for c in candidates if c["source"] == "graphify")
     assert (graph["name"], graph["paths"], graph["files"]) == ("Sign-in", ["src/auth"], 4)
@@ -358,7 +358,7 @@ def test_v6_database_migrates_without_rereading_transcripts(tmp_path, config):
         store._conn.execute("ALTER TABLE repos DROP COLUMN root")
         store._conn.commit()
     with Store.open(config) as store:
-        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 8
         assert store.transcript_offset("/t.jsonl") == (10, 10)
         row = store.repo_row("/p")
         assert row["root"] is None and row["checked_at"] == ""  # resolved again, with its root
@@ -597,3 +597,81 @@ def test_api_stale_mapping_claim_and_recreated_area(api, store, root, monkeypatc
     status, again = api("POST", "/api/areas", {"repo": REPO, "name": "auth"})
     assert status == 201
     assert (again["kind"], again["description"], again["aliases"]) == ("technical", "", [])
+
+
+# -- drawing with the Archify skill -------------------------------------------------
+
+
+@pytest.fixture
+def skill(config):
+    place = config.claude_config_dir / "skills" / "archify"
+    (place / "bin").mkdir(parents=True)
+    (place / "SKILL.md").write_text("---\nname: archify\n---\n")
+    (place / "bin" / "archify.mjs").write_text("")
+    return place
+
+
+def test_archify_skill_detection(config, root, tmp_path):
+    assert architecture.archify_skill(config, str(root)) is None
+    local = root / ".claude" / "skills" / "archify"
+    (local / "bin").mkdir(parents=True)
+    (local / "SKILL.md").write_text("x")
+    assert architecture.archify_skill(config, str(root)) is None  # no CLI, not usable
+    (local / "bin" / "archify.mjs").write_text("")
+    assert architecture.archify_skill(config, str(root))["dir"] == str(local)
+
+
+def test_diagram_request_names_areas_and_limits_tools(config, store, root, skill):
+    _task(store, str(root), "hi", "p0")
+    store.save_area(REPO, "checkout", paths=["src/checkout"], source="model")
+    request = architecture.diagram_request(config, store, REPO)
+    assert request["root"] == str(root) and request["json"] == \
+        "docs/architecture/shop.architecture.json"
+    assert "checkout (src/checkout)" in request["body"]
+    assert f"node {skill}/bin/archify.mjs deliver architecture" in request["body"]
+    args = request["args"]
+    assert args[:4] == ["--strict-mcp-config", "--add-dir", str(skill), "--allowedTools"]
+    assert f"Bash(node {skill}/bin/archify.mjs:*)" in args
+    assert not any(a in ("Bash", "Bash(*)", "Bash(node:*)") for a in args)
+
+
+def test_scan_lists_diagrams_with_their_page(config, store, root):
+    _write(root, "docs/shop.html", "<html></html>")
+    _task(store, str(root), "hi", "p0")
+    architecture.scan(config, REPO)
+    [diagram] = store.architecture(REPO)["diagrams"]
+    assert diagram == {"file": "docs/shop.architecture.json", "title": "Shop",
+                       "html": "docs/shop.html"}
+
+
+def test_api_draws_rescans_and_opens(api, store, root, skill, monkeypatch):
+    _task(store, str(root), "hi", "p0")
+    launched = []
+    monkeypatch.setattr(api.server, "popen", lambda cmd, **k: launched.append(cmd))
+    status, body = api("GET", "/api/architecture")
+    assert body["archify"]["installed"] is True and body["diagram_task"] is None
+    status, body = api("POST", "/api/architecture/diagram", {"repo": REPO, "model": "opus"})
+    assert status == 202 and body["task"]["status"] == "running"
+    cmd = launched[-1]
+    assert cmd[cmd.index("--model") + 1] == "opus" and "acceptEdits" in cmd
+    assert "--allowedTools" in cmd
+    assert api("POST", "/api/architecture/diagram", {"repo": REPO})[0] == 409  # still drawing
+    task_id = body["task"]["id"]
+    # The session wrote the page and finished: the next read scans for it by itself.
+    _write(root, "docs/shop.html", "<html></html>")
+    store.update_task(task_id, status="done", result="docs/shop.html",
+                      finished_at="2999-01-01T00:00:00.000Z")
+    status, body = api("GET", "/api/architecture")
+    assert body["diagram_task"]["status"] == "done"
+    assert body["view"]["scan"]["diagrams"][0]["html"] == "docs/shop.html"
+    status, _ = api("POST", "/api/architecture/open", {"repo": REPO, "path": "docs/shop.html"})
+    assert status == 200 and launched[-1][-1] == str((root / "docs/shop.html").resolve())
+    for path in ("../../etc/passwd", "src/checkout/step0.ts", 3):
+        assert api("POST", "/api/architecture/open", {"repo": REPO, "path": path})[0] == 404
+
+
+def test_api_diagram_without_the_skill(api, store, root):
+    _task(store, str(root), "hi", "p0")
+    status, body = api("POST", "/api/architecture/diagram", {"repo": REPO})
+    assert status == 409 and "not installed" in body["error"]
+    assert api("POST", "/api/architecture/diagram", {"repo": REPO, "model": "haiku"})[0] == 400

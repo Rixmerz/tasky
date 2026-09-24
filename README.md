@@ -310,6 +310,18 @@ must exist, specs must be ones it was shown, a path belongs to one area only. Yo
 edit and delete areas; an area you edited keeps its name and description when you map again, and
 only gains paths, specs and aliases.
 
+**Draw with Archify** appears when the [Archify](https://github.com/tt-a1i/archify) skill is
+installed for Claude Code (`npx skills add tt-a1i/archify -g`). It starts one headless session, a
+normal task on the board, that uses the skill to draw the repository's runtime architecture from
+code evidence, with Tasky's areas as boundary names, into `docs/architecture/<repo>.architecture.json`
+and `.html` in your checkout (not committed). The session may only edit files in the checkout, run
+Archify's own CLI and a few read-only git commands. When it finishes the repository is scanned
+again, the diagram's boundaries become candidate areas, and **Open** shows the diagram in your
+browser. It is the most expensive button in Tasky: drawing Tasky itself with Sonnet took 15
+minutes and about $6 (90 turns validating and fixing the diagram until Archify accepted it).
+Archify draws one repository per diagram: its code evidence is pinned to one origin and
+commit, so other services can only appear as external components.
+
 The agent reads the same map with the MCP tool `get_architecture`: the areas with their folders,
 aliases and activity, or one area in detail with its specs' requirements, problems and the fixes
 that failed, milestones and recent tasks. The CLI is `tasky architecture [--map]`.
@@ -377,6 +389,7 @@ call. Every hook exits successfully and prints nothing when something goes wrong
 | Smart search | One Haiku call (2–6¢), only when you press Smart search |
 | Architecture scan and view | 0 |
 | Map areas | One model call (Sonnet about 5–15¢), only when you press Map areas |
+| Draw with Archify | One headless agent session (Sonnet about $3–7), only when you press it |
 | `tasky` MCP tools | Their definitions in each session's context; results only when called |
 | Auto-pull | One normal turn per pulled task |
 | Run now and the run queue | One normal headless session per task |

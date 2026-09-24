@@ -91,7 +91,7 @@ def test_migration_adds_columns_and_lanes_table_and_keeps_rows(tmp_path):
         assert "lanes" in tables
 
         version = store._conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 7
+        assert version == 8
 
         task = store.list_tasks()[0]
         assert task["title"] == "old task"
@@ -124,7 +124,7 @@ def test_fresh_database_gets_version_2_directly(tmp_path):
     db_path = tmp_path / "fresh.db"
     with Store(db_path) as store:
         version = store._conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 7
+        assert version == 8
         columns = {row["name"] for row in store._conn.execute("PRAGMA table_info(tasks)")}
         assert {"lane", "run_mode", "permission_mode", "fork_of"} <= columns
         tables = {
@@ -146,4 +146,4 @@ def test_reopening_a_migrated_database_does_not_re_run_migration(tmp_path):
     # constructor's version guard skips _initialize() entirely).
     with Store(db_path) as store:
         version = store._conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 7
+        assert version == 8

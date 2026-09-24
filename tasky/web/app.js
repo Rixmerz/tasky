@@ -232,6 +232,17 @@ const el = {
   archModel: document.getElementById("arch-model"),
   archMap: document.getElementById("arch-map"),
   archStatus: document.getElementById("arch-status"),
+  archDraw: document.getElementById("arch-draw"),
+  archDrawBtn: document.getElementById("arch-draw-btn"),
+  archDrawLabel: document.getElementById("arch-draw-label"),
+  archDrawMissing: document.getElementById("arch-draw-missing"),
+  archDrawCmd: document.getElementById("arch-draw-cmd"),
+  archDrawCopy: document.getElementById("arch-draw-copy"),
+  archDrawStatus: document.getElementById("arch-draw-status"),
+  archDiagrams: document.getElementById("arch-diagrams"),
+  archDiagramsCount: document.getElementById("arch-diagrams-count"),
+  archDiagramsPending: document.getElementById("arch-diagrams-pending"),
+  archDiagramsList: document.getElementById("arch-diagrams-list"),
   archMeta: document.getElementById("arch-meta"),
   archEmpty: document.getElementById("arch-empty"),
   archEmptyTitle: document.getElementById("arch-empty-title"),
@@ -3823,6 +3834,10 @@ el.history.addEventListener("keydown", (evt) => {
 const ARCH_MODEL_KEY = "tasky.archModel";
 const ARCH_POLL_MS = 3000;
 const ARCH_START_GRACE_MS = 4000;
+const ARCH_DRAW_ACTIVE = ["queued", "running"];
+const ARCH_DRAW_TROUBLE = { failed: "Drawing failed", interrupted: "Drawing interrupted", cancelled: "Drawing cancelled" };
+const ARCH_DRAW_RESULT_MAX = 240;
+const ARCH_OPENED_MS = 3000;
 const ARCH_KINDS = ["business", "technical"];
 const ARCH_PATH_CHIPS = 4;
 const ARCH_ALIAS_CHIPS = 6;
@@ -3863,6 +3878,11 @@ const archExpanded = new Set();
 let archEditing = null; // an area id, "new", or null
 let archConfirming = null; // the area id whose Delete waits for "Yes, delete"
 let archNewPrefill = null;
+let archDrawStarting = ""; // repo key a drawing was just asked for, until the server answers
+let archDrawNotice = null; // {text} when the last Draw click could not start one
+let archDrawWasActive = false;
+let archDrawStatusKey = "";
+let archDiagramsKey = "";
 
 function archView() {
   return archData && archData.view ? archData.view : null;
@@ -3871,6 +3891,18 @@ function archView() {
 function archScanRow() {
   const view = archView();
   return view && view.scan ? view.scan : null;
+}
+
+/** The repo's last Archify drawing session, as the server reports it. */
+function archDrawTask() {
+  return archData && archData.repo === archRepo && archData.diagram_task ? archData.diagram_task : null;
+}
+
+function archDrawActive() {
+  if (!archRepo) return false;
+  if (archDrawStarting === archRepo) return true;
+  const task = archDrawTask();
+  return Boolean(task && ARCH_DRAW_ACTIVE.includes(task.status));
 }
 
 function archIsRunning() {
@@ -3917,6 +3949,9 @@ function openArch() {
   archEditing = null;
   archConfirming = null;
   archNotice = null;
+  archDrawNotice = null;
+  archDrawStatusKey = "";
+  archDiagramsKey = "";
   renderArch();
   loadArch();
   el.archHeading.focus();
@@ -3967,6 +4002,13 @@ async function loadArch() {
     else announce(`Mapped ${plural(data.view ? data.view.areas.length : 0, "area")}`);
   }
   archWasRunning = archIsRunning();
+  const drawing = archDrawActive();
+  if (archDrawWasActive && !drawing) {
+    const task = archDrawTask();
+    if (task && task.status === "done") announce("Diagram ready");
+    else if (task) announce(ARCH_DRAW_TROUBLE[task.status] || `Drawing ${task.status}`);
+  }
+  archDrawWasActive = drawing;
   renderArch();
   scheduleArchPoll();
 }
@@ -3974,7 +4016,8 @@ async function loadArch() {
 function scheduleArchPoll() {
   clearTimeout(archPollTimer);
   archPollTimer = null;
-  if (!archOpen || !archIsRunning()) return;
+  // One timer serves both a mapping and an Archify drawing.
+  if (!archOpen || !(archIsRunning() || archDrawActive())) return;
   archPollTimer = setTimeout(() => {
     archPollTimer = null;
     if (document.hidden) {
@@ -4046,6 +4089,93 @@ async function startArchMap() {
   scheduleArchPoll();
 }
 
+/**
+ * Starts a headless Claude Code session (a normal task on the board) that
+ * draws the repo with the Archify skill into docs/architecture/ of the
+ * checkout. The server rescans by itself once it finishes.
+ */
+async function startArchDraw() {
+  const repo = archRepo;
+  if (!repo || archDrawActive()) return;
+  const model = el.archModel.value;
+  archDrawStarting = repo;
+  archDrawNotice = null;
+  renderArchDraw();
+  renderArchDiagrams();
+  let res;
+  try {
+    res = await apiMutate("POST", "/api/architecture/diagram", { repo, model });
+  } catch (err) {
+    if (archDrawStarting === repo) archDrawStarting = "";
+    if (repo !== archRepo) return;
+    const text = archErrorText(err);
+    archDrawNotice = text ? { text } : null;
+    renderArchDraw();
+    renderArchDiagrams();
+    return;
+  }
+  if (archDrawStarting === repo) archDrawStarting = "";
+  if (repo !== archRepo) return;
+  const task = res && res.task;
+  if (task && archData && archData.repo === repo) {
+    // Shown until the next GET confirms it.
+    archData.diagram_task = {
+      id: task.id,
+      status: ARCH_DRAW_ACTIVE.includes(task.status) ? task.status : "queued",
+      started_at: task.started_at || null,
+      finished_at: null,
+      result: "",
+    };
+  }
+  archDrawWasActive = true;
+  if (task) announce(`Drawing with Archify in task #${task.id}`);
+  renderArchDraw();
+  renderArchDiagrams();
+  await loadArch();
+}
+
+async function openArchDiagram(path, button, note) {
+  const repo = archRepo;
+  if (!repo || button.dataset.busy === "1") return;
+  button.dataset.busy = "1";
+  button.setAttribute("aria-busy", "true");
+  clearTimeout(Number(note.dataset.timer) || 0);
+  note.textContent = "";
+  note.classList.remove("arch-attn");
+  try {
+    await apiMutate("POST", "/api/architecture/open", { repo, path });
+    note.textContent = "Opened in your browser";
+    note.dataset.timer = String(
+      setTimeout(() => {
+        note.textContent = "";
+      }, ARCH_OPENED_MS),
+    );
+  } catch (err) {
+    const text = archErrorText(err);
+    if (text) {
+      note.textContent = text;
+      note.classList.add("arch-attn");
+    }
+  } finally {
+    button.dataset.busy = "";
+    button.removeAttribute("aria-busy");
+  }
+}
+
+async function copyArchifyInstall() {
+  const button = el.archDrawCopy;
+  try {
+    await copyText(el.archDrawCmd.textContent.trim());
+    button.textContent = "Copied";
+    announce("Archify install command copied");
+    window.setTimeout(() => {
+      button.textContent = "Copy";
+    }, 2000);
+  } catch {
+    showError("Could not copy the install command");
+  }
+}
+
 // ----- head, actions, meta -----
 
 function renderArchRepoOptions() {
@@ -4093,6 +4223,7 @@ function renderArchActions() {
   el.archActions.hidden = !view;
   if (!view) return;
   renderArchModelOptions();
+  renderArchDraw();
   const running = archIsRunning();
   const scan = view.scan;
   el.archScan.disabled = running || archScanning;
@@ -4128,6 +4259,138 @@ function renderArchActions() {
     err.textContent = `Last mapping stopped: ${scan.error}`;
     status.appendChild(err);
   }
+}
+
+function archTrimResult(text) {
+  const flat = String(text || "").replace(/\s+/g, " ").trim();
+  return flat.length > ARCH_DRAW_RESULT_MAX ? `${flat.slice(0, ARCH_DRAW_RESULT_MAX - 1).trimEnd()}…` : flat;
+}
+
+function archDrawTaskLink(id) {
+  const btn = archButton(`task #${id}`, "history-link arch-draw-task", "draw-task");
+  btn.setAttribute("aria-label", `Open task #${id}`);
+  btn.addEventListener("click", () => openTaskById(id));
+  return btn;
+}
+
+/** The Draw with Archify button, or how to install Archify, and the drawing's status line. */
+function renderArchDraw() {
+  const archify = archData && archData.archify;
+  const installed = Boolean(archify && archify.installed);
+  el.archDraw.hidden = !installed;
+  el.archDrawMissing.hidden = !archify || installed;
+  const active = archDrawActive();
+  const starting = archDrawStarting !== "" && archDrawStarting === archRepo;
+  el.archDrawBtn.disabled = active || !installed;
+  el.archDrawLabel.textContent = starting ? "Starting…" : active ? "Drawing…" : "Draw with Archify";
+
+  const task = starting ? null : archDrawTask();
+  const key = JSON.stringify([archRepo, starting, archDrawNotice, task && [task.id, task.status, task.finished_at, task.result]]);
+  if (key === archDrawStatusKey) return;
+  const focusKey = archFocusKey();
+  archDrawStatusKey = key;
+  const status = el.archDrawStatus;
+  status.textContent = "";
+  if (starting) {
+    status.textContent = "Starting an Archify session…";
+    return;
+  }
+  if (archDrawNotice) {
+    const span = document.createElement("span");
+    span.className = "arch-attn";
+    span.textContent = `Could not start the drawing: ${archDrawNotice.text}`;
+    status.appendChild(span);
+    return;
+  }
+  if (!task) return;
+  if (ARCH_DRAW_ACTIVE.includes(task.status)) {
+    status.append(
+      document.createTextNode(task.status === "queued" ? "Drawing… queued as " : "Drawing… "),
+      archDrawTaskLink(task.id),
+      document.createTextNode(" · a full session, usually 10–20 minutes."),
+    );
+  } else if (task.status === "done") {
+    const when = archWhen(task.finished_at);
+    status.append(document.createTextNode("Diagram ready · "), archDrawTaskLink(task.id));
+    if (when) status.append(document.createTextNode(` · ${when}`));
+  } else {
+    const span = document.createElement("span");
+    span.className = "arch-attn";
+    const result = archTrimResult(task.result);
+    span.append(
+      document.createTextNode(`${ARCH_DRAW_TROUBLE[task.status] || `Drawing ${task.status}`} · `),
+      archDrawTaskLink(task.id),
+      document.createTextNode(result ? `: ${result}` : ""),
+    );
+    status.appendChild(span);
+  }
+  if (focusKey === "draw-task") archRestoreFocus(focusKey);
+}
+
+// ----- diagrams -----
+
+function archBaseName(path) {
+  const parts = String(path || "").split("/");
+  return parts[parts.length - 1] || String(path || "");
+}
+
+function buildArchDiagram(diagram) {
+  const li = document.createElement("li");
+  li.className = "arch-diagram";
+  const title = diagram.title || archBaseName(diagram.file).replace(/\.architecture\.json$/, "") || "Diagram";
+  const text = document.createElement("div");
+  text.className = "arch-diagram-text";
+  const name = document.createElement("span");
+  name.className = "arch-diagram-title";
+  name.textContent = title;
+  const file = document.createElement("span");
+  file.className = "arch-diagram-file";
+  file.textContent = diagram.file || "";
+  file.title = diagram.file || "";
+  text.append(name, file);
+  const side = document.createElement("div");
+  side.className = "arch-diagram-side";
+  if (diagram.html) {
+    const note = document.createElement("span");
+    note.className = "arch-diagram-note";
+    note.setAttribute("role", "status");
+    note.setAttribute("aria-live", "polite");
+    const btn = archButton("Open", "btn btn-sm arch-diagram-open", `diagram-${diagram.html}`);
+    btn.setAttribute("aria-label", `Open ${title} in your browser`);
+    btn.title = diagram.html;
+    btn.addEventListener("click", () => openArchDiagram(diagram.html, btn, note));
+    side.append(note, btn);
+  } else {
+    const none = document.createElement("span");
+    none.className = "arch-hint";
+    none.textContent = "not rendered yet";
+    side.appendChild(none);
+  }
+  li.append(text, side);
+  return li;
+}
+
+/** Archify diagrams found in the repo; shown while one is being drawn, too. */
+function renderArchDiagrams() {
+  const scan = archScanRow();
+  const diagrams = scan && Array.isArray(scan.diagrams) ? scan.diagrams : [];
+  const drawing = archDrawActive();
+  const key = JSON.stringify([archRepo, diagrams, drawing]);
+  if (key === archDiagramsKey) return;
+  const focusKey = archFocusKey();
+  archDiagramsKey = key;
+  el.archDiagrams.hidden = !(diagrams.length || drawing);
+  el.archDiagramsCount.textContent = diagrams.length ? String(diagrams.length) : "";
+  el.archDiagramsPending.hidden = !drawing;
+  el.archDiagramsPending.textContent = !drawing
+    ? ""
+    : diagrams.length
+      ? "Archify is redrawing this repo; the list updates when it finishes."
+      : "Archify is drawing this repo; the diagram shows up here when it finishes.";
+  el.archDiagramsList.textContent = "";
+  el.archDiagramsList.hidden = !diagrams.length;
+  for (const d of diagrams) el.archDiagramsList.appendChild(buildArchDiagram(d));
+  if (focusKey) archRestoreFocus(focusKey);
 }
 
 function renderArchMeta() {
@@ -4187,8 +4450,10 @@ function renderArch() {
   el.archBody.hidden = !view;
   if (!view) {
     archRenderedKey = "";
+    archDiagramsKey = "";
     return;
   }
+  renderArchDiagrams();
   // Polls re-deliver the same view often; rebuilding would drop focus,
   // open details and scroll position for nothing. An open form is never
   // rebuilt under the user's hands; it catches up once closed.
@@ -5038,6 +5303,10 @@ el.archRepo.addEventListener("change", () => {
   archConfirming = null;
   archNotice = null;
   archWasRunning = false;
+  archDrawNotice = null;
+  archDrawWasActive = false;
+  archDrawStatusKey = "";
+  archDiagramsKey = "";
   archExpanded.clear();
   closeArchNew();
   renderArch();
@@ -5050,6 +5319,8 @@ el.archFilter.addEventListener("input", () => {
 el.archModel.addEventListener("change", () => writeLocal(ARCH_MODEL_KEY, el.archModel.value));
 el.archScan.addEventListener("click", startArchScan);
 el.archMap.addEventListener("click", startArchMap);
+el.archDrawBtn.addEventListener("click", startArchDraw);
+el.archDrawCopy.addEventListener("click", copyArchifyInstall);
 el.archAdd.setAttribute("aria-expanded", "false");
 el.archAdd.setAttribute("aria-controls", "arch-new");
 el.archAdd.setAttribute("aria-label", "Add an area");

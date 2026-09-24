@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] - 2026-09-24
+
+### Added
+
+- Draw with Archify: when the Archify skill is installed, one click starts a headless session that
+  draws the repository's architecture from code evidence (Tasky's areas as boundary names) into
+  `docs/architecture/`, limited to edits in the checkout, Archify's CLI and read-only git. The
+  repository is scanned again when it finishes, and Open shows the diagram in the browser.
+- Scans list Archify diagrams and their rendered pages.
+
 ## [0.9.0] - 2026-09-24
 
 ### Added
