@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.1] - 2026-09-24
+
+### Changed
+
+- An embedded diagram names the dashboard's origins in `frame-ancestors` instead of `'self'`,
+  which a sandboxed page's opaque origin does not reliably match in every browser.
+
 ## [0.11.0] - 2026-09-24
 
 ### Added

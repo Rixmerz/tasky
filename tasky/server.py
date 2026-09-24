@@ -48,7 +48,7 @@ _DIAGRAM_CSP = (
     "sandbox allow-scripts allow-downloads allow-popups; default-src 'none'; "
     "script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; "
     "font-src data:; media-src blob:; connect-src data: blob:; worker-src blob:; "
-    "base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+    "base-uri 'none'; form-action 'none'; frame-ancestors {origins}"
 )
 DIAGRAM_LINK_S = 15 * 60
 _DIAGRAM_LINK_RE = re.compile(r"^/diagram/([A-Za-z0-9_-]{32})$")
@@ -627,7 +627,12 @@ class _Handler(BaseHTTPRequestHandler):
         if content is None:
             self._error(404, "this diagram link expired; open the diagram again")
             return
-        self._send(200, content, "text/html; charset=utf-8", csp=_DIAGRAM_CSP)
+        # Named origins, not 'self': a sandboxed page's own origin is opaque and matches nothing.
+        port = self.server.server_port
+        origins = f"http://127.0.0.1:{port} http://localhost:{port}"
+        self._send(
+            200, content, "text/html; charset=utf-8", csp=_DIAGRAM_CSP.format(origins=origins)
+        )
 
     def _route_architecture_open(self, body: dict | None) -> None:
         page = self._diagram_file(body)

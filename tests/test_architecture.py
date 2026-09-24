@@ -775,7 +775,8 @@ def test_api_embeds_a_diagram_in_a_sandbox(api, store, root):
     assert resp.status == 200 and resp.read() == b"<html><script>1</script></html>"
     csp = resp.getheader("Content-Security-Policy")
     assert csp.startswith("sandbox allow-scripts") and "allow-same-origin" not in csp
-    assert "frame-ancestors 'self'" in csp
+    port = api.server.server_port
+    assert f"frame-ancestors http://127.0.0.1:{port} http://localhost:{port}" in csp
     conn.request("GET", "/diagram/" + "x" * 32)
     resp = conn.getresponse()
     assert resp.status == 404
