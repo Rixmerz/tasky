@@ -551,3 +551,34 @@ def test_repair_gives_the_turn_the_reply_its_absorbed_message_took(store, log):
 
     [task] = _prompts(store)
     assert task["id"] == turn["id"] and task["status"] == "done" and task["result"] == "All done."
+
+
+def test_repair_keeps_a_prompt_sent_on_its_own_after_being_typed_mid_turn(store, log):
+    text = "run the whole test suite again please"
+    _append(log, _user("u1", "fix it all", "p1"), _assistant("a1", _edit("/w/a.py")),
+            _line(type="attachment", uuid="q1", sessionId="s1",
+                  attachment={"type": "queued_command", "prompt": text}),
+            _user("u2", text, "p2"), _assistant("a2", _text("green"), message_id="m2"))
+    transcripts.ingest_file(store, log)
+    _old_task(store, "fix it all", "p1", status="done", result="fixed")
+    _old_task(store, text, "p2", status="done", result="green")
+
+    store.repair()
+
+    assert sorted(t["prompt_id"] for t in _prompts(store)) == ["p1", "p2"]
+
+
+def test_repair_folds_a_done_task_whose_text_was_only_absorbed(store, log):
+    text = "and show the recaps big on the board please"
+    _append(log, _user("u1", "fix it all", "p1"), _assistant("a1", _edit("/w/a.py")),
+            _line(type="attachment", uuid="q1", sessionId="s1",
+                  attachment={"type": "queued_command", "prompt": text}),
+            _user("u2", "<agent-message>report</agent-message>", "p2"))
+    transcripts.ingest_file(store, log)
+    turn = _old_task(store, "fix it all", "p1")
+    _old_task(store, text, "p2", status="done", result="Waiting for the suite.")
+
+    store.repair()
+
+    [task] = _prompts(store)
+    assert task["id"] == turn["id"] and task["result"] == "Waiting for the suite."

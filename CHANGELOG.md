@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] - 2026-09-24
+
+### Fixed
+
+- The repair also merges a finished task whose text Claude Code had absorbed into another turn:
+  sessions still running pre-0.8.0 hooks kept giving such messages the turn's reply. A text that was
+  also sent as a prompt of its own stays a task.
+
 ## [0.8.0] - 2026-09-24
 
 ### Fixed

@@ -476,7 +476,7 @@ class Store:
         """
         candidates = self._conn.execute(
             "SELECT * FROM tasks WHERE kind = 'prompt' AND source = 'hook' "
-            "AND parent_id IS NULL AND status IN ('running', 'interrupted') "
+            "AND parent_id IS NULL AND status IN ('running', 'interrupted', 'done') "
             "AND session_id IS NOT NULL ORDER BY id"
         ).fetchall()
         texts: dict[str, list[tuple[str, str]]] = {}
@@ -496,6 +496,8 @@ class Store:
             probe = normalize(task["body"])[:120]
             if len(probe) < 20:
                 continue
+            if any(text == probe and pid == task["prompt_id"] for text, pid in texts[session]):
+                continue  # sent as a prompt of its own: a real task
             owner_prompt = next(
                 (pid for text, pid in texts[session] if text == probe and pid != task["prompt_id"]),
                 None,
