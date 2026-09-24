@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-09-24
+
+### Fixed
+
+- A prompt cancelled with Esc and sent again, as is or lightly edited, is recorded as one task
+  instead of two. The earlier row is dropped only while it has no reply and no delegations, is
+  running or interrupted, and is under 30 minutes old; prompts under 20 characters must match
+  exactly.
+- The test suite no longer launches the real `claude` or writes to the real ledger when a test
+  kicks the run queue.
+
 ## [0.4.0] - 2026-09-24
 
 ### Added

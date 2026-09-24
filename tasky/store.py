@@ -568,6 +568,19 @@ class Store:
         row = self._conn.execute(sql, params).fetchone()
         return self._task_row(row) if row else None
 
+    def latest_prompt_task(self, session_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM tasks WHERE session_id = ? AND kind = 'prompt' ORDER BY id DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        return self._task_row(row) if row else None
+
+    def has_children(self, parent_id: int) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM tasks WHERE parent_id = ? LIMIT 1", (parent_id,)
+        ).fetchone()
+        return row is not None
+
     def running_children(self, parent_id: int) -> list[dict]:
         rows = self._conn.execute(
             "SELECT * FROM tasks WHERE parent_id = ? AND status = 'running' "

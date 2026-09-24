@@ -844,3 +844,71 @@ def test_bin_tasky_hook_subprocess_emits_block_json(tmp_path):
     assert proc.returncode == 0
     result = json.loads(proc.stdout)
     assert result["decision"] == "block"
+
+
+# -- a cancelled prompt sent again ----------------------------------------------
+
+
+def _submit(store, config, prompt_id, prompt):
+    handle(_event("UserPromptSubmit", prompt_id=prompt_id, prompt=prompt), store, config, {})
+
+
+def test_cancelled_prompt_sent_again_is_one_task(store, config):
+    _submit(store, config, "p1", "explain the retry policy")
+    _submit(store, config, "p2", "explain  the retry policy")
+
+    tasks = store.list_tasks(kind="prompt")
+    assert [t["prompt_id"] for t in tasks] == ["p2"]
+
+
+def test_cancelled_prompt_sent_again_after_an_edit_is_one_task(store, config):
+    _submit(store, config, "p1", "explain the retry policy of the payments client")
+    first = store.latest_prompt_task("s1")
+    store.update_task(first["id"], status="interrupted")
+    _submit(store, config, "p2", "explain the retry policy of the payment client, briefly")
+
+    assert [t["prompt_id"] for t in store.list_tasks(kind="prompt")] == ["p2"]
+
+
+def test_answered_prompt_is_kept_when_the_same_text_is_sent_again(store, config):
+    _submit(store, config, "p1", "run the tests")
+    handle(_event("Stop", prompt_id="p1", last_assistant_message="all green"), store, config, {})
+    _submit(store, config, "p2", "run the tests")
+
+    assert len(store.list_tasks(kind="prompt")) == 2
+
+
+def test_different_prompt_keeps_the_interrupted_one(store, config):
+    _submit(store, config, "p1", "migrate the invoices table")
+    _submit(store, config, "p2", "what is the weather like")
+
+    assert len(store.list_tasks(kind="prompt")) == 2
+
+
+def test_short_prompts_must_match_exactly(store, config):
+    _submit(store, config, "p1", "yes")
+    _submit(store, config, "p2", "yes, go")
+
+    assert len(store.list_tasks(kind="prompt")) == 2
+
+
+def test_prompt_with_delegations_is_kept(store, config):
+    _submit(store, config, "p1", "audit the auth module")
+    parent = store.latest_prompt_task("s1")
+    store.create_task(
+        kind="delegation", body="read auth", status="running", source="hook",
+        session_id="s1", parent_id=parent["id"],
+    )
+    _submit(store, config, "p2", "audit the auth module")
+
+    assert len(store.list_tasks(kind="prompt")) == 2
+
+
+def test_old_cancelled_prompt_is_kept(store, config):
+    store.create_task(
+        kind="prompt", body="deploy", status="interrupted", source="hook", session_id="s1",
+        created_at="2020-01-01T00:00:00.000Z",
+    )
+    _submit(store, config, "p2", "deploy")
+
+    assert len(store.list_tasks(kind="prompt")) == 2

@@ -13,6 +13,8 @@ import json
 import os
 import traceback
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from typing import Any, TextIO
 
 from tasky.config import Config, now_iso
@@ -22,6 +24,9 @@ from tasky.store import Store
 _FAILED_NOTIFICATION_STATUSES = ("failed", "killed")
 _REOPENABLE_PARENT_STATUSES = ("running", "done", "interrupted")
 _CLAIM_ATTEMPTS = 5
+_RESEND_WINDOW = timedelta(minutes=30)
+_RESEND_MIN_EDITED_LEN = 20
+_RESEND_SIMILARITY = 0.8
 
 
 def _session_start(
@@ -103,6 +108,40 @@ def _bind_env_task(
     return True
 
 
+def _same_request(before: str, after: str) -> bool:
+    a = " ".join(before.split()).casefold()
+    b = " ".join(after.split()).casefold()
+    if a == b:
+        return True
+    if min(len(a), len(b)) < _RESEND_MIN_EDITED_LEN:
+        return False
+    return SequenceMatcher(None, a, b).ratio() >= _RESEND_SIMILARITY
+
+
+def _drop_cancelled_copy(session_id: str, text: str, store: Store) -> None:
+    """Forget the previous prompt when this one is that prompt sent again.
+
+    Esc on a submitted prompt puts its text back in the input box; sending it
+    again, as is or lightly edited, is one request, not two. The earlier row
+    is only dropped while it has nothing to show for itself: no reply, no
+    delegations, still running or already marked interrupted, and recent.
+    """
+    previous = store.latest_prompt_task(session_id)
+    if (
+        previous is None
+        or previous["source"] != "hook"
+        or previous["status"] not in ("running", "interrupted")
+        or previous["result"]
+        or store.has_children(previous["id"])
+    ):
+        return
+    created = datetime.fromisoformat(previous["created_at"].replace("Z", "+00:00"))
+    if datetime.now(timezone.utc) - created > _RESEND_WINDOW:
+        return
+    if _same_request(previous["body"], text):
+        store.delete_task(previous["id"])
+
+
 def _user_prompt_submit(
     event: dict, store: Store, config: Config, env: Mapping[str, str]
 ) -> dict | None:
@@ -143,6 +182,7 @@ def _user_prompt_submit(
     if task_id_env and _bind_env_task(task_id_env, session_id, prompt_id, store):
         return None
 
+    _drop_cancelled_copy(session_id, classified.text, store)
     store.create_task(
         kind="prompt",
         body=classified.text,
