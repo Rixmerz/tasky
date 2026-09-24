@@ -27,6 +27,7 @@ TOOL_RESULT_CHARS = 4_000
 TOOL_INPUT_CHARS = 1_000
 _FILE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit", "Read")
 _REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
+_RECAP_FOOTER_RE = re.compile(r"\s*\(disable recaps in /config\)\s*$")
 
 # Scrubbed before storing: provider keys, tokens, private keys and obvious
 # `password=`/`secret:` assignments. Deliberately broad; a false positive only
@@ -94,10 +95,90 @@ def _tool_input_summary(name: str, data: Any) -> tuple[str, str | None]:
         return "", path
 
 
+def _queued_prompt(entry: dict) -> str | None:
+    """Text the user typed while Claude was working, delivered inside the running turn."""
+    attachment = entry.get("attachment")
+    if not isinstance(attachment, dict) or attachment.get("type") != "queued_command":
+        return None
+    origin = attachment.get("origin")
+    if isinstance(origin, dict) and origin.get("kind") not in (None, "human"):
+        return None
+    prompt = attachment.get("prompt")
+    return prompt if isinstance(prompt, str) and prompt.strip() else None
+
+
+def _recap_text(entry: dict) -> str | None:
+    """The recap Claude Code writes when you come back to a session after a while."""
+    if entry.get("subtype") != "away_summary" or not isinstance(entry.get("content"), str):
+        return None
+    text = _RECAP_FOOTER_RE.sub("", entry["content"]).strip()
+    return text or None
+
+
+def parse_usage(entry: dict, session_id: str, prompt_id: str | None) -> dict | None:
+    """Token usage of one assistant line, keyed by its API message id."""
+    if entry.get("type") != "assistant":
+        return None
+    message = entry.get("message") or {}
+    usage = message.get("usage")
+    message_id = message.get("id")
+    if not isinstance(usage, dict) or not isinstance(message_id, str):
+        return None
+
+    def count(key: str) -> int:
+        value = usage.get(key)
+        return value if isinstance(value, int) and value > 0 else 0
+
+    return {
+        "message_id": message_id,
+        "session_id": session_id,
+        "prompt_id": prompt_id,
+        "model": message.get("model") if isinstance(message.get("model"), str) else None,
+        "input": count("input_tokens"),
+        "output": count("output_tokens"),
+        "cache_read": count("cache_read_input_tokens"),
+        "cache_write": count("cache_creation_input_tokens"),
+        "ts": entry.get("timestamp") if isinstance(entry.get("timestamp"), str) else None,
+        "sidechain": bool(entry.get("isSidechain")),
+    }
+
+
 def parse_entry(entry: dict, session_id: str) -> list[dict]:
     """The messages one transcript line contributes (none for bookkeeping lines)."""
     etype = entry.get("type")
-    if etype not in ("user", "assistant") or not isinstance(entry.get("uuid"), str):
+    if not isinstance(entry.get("uuid"), str):
+        return []
+    recap = _recap_text(entry) if etype == "system" else None
+    if recap is not None:
+        return [
+            {
+                "session_id": session_id,
+                "cwd": entry.get("cwd") if isinstance(entry.get("cwd"), str) else None,
+                "prompt_id": None,
+                "role": "system",
+                "ts": entry.get("timestamp") if isinstance(entry.get("timestamp"), str) else None,
+                "sidechain": bool(entry.get("isSidechain")),
+                "uuid": f"{entry['uuid']}:0",
+                "kind": "recap",
+                "text": _clip(scrub(recap), TEXT_CHARS),
+            }
+        ]
+    queued = _queued_prompt(entry) if etype == "attachment" else None
+    if queued is not None:
+        return [
+            {
+                "session_id": session_id,
+                "cwd": entry.get("cwd") if isinstance(entry.get("cwd"), str) else None,
+                "prompt_id": None,
+                "role": "user",
+                "ts": entry.get("timestamp") if isinstance(entry.get("timestamp"), str) else None,
+                "sidechain": bool(entry.get("isSidechain")),
+                "uuid": f"{entry['uuid']}:0",
+                "kind": "text",
+                "text": _clip(scrub(queued), TEXT_CHARS),
+            }
+        ]
+    if etype not in ("user", "assistant"):
         return []
     message = entry.get("message") or {}
     content = message.get("content")
@@ -152,7 +233,12 @@ def parse_entry(entry: dict, session_id: str) -> list[dict]:
 
 
 def ingest_file(store: Store, path: str | Path, *, budget: int | None = None) -> int:
-    """Read new complete lines of one transcript; returns messages added."""
+    """Read new complete lines of one transcript; returns messages added.
+
+    Assistant lines carry no prompt id, so each takes the id of the user
+    prompt before it; the id in force is saved with the offset so an
+    incremental read picks up where the last one stopped.
+    """
     path = Path(path)
     try:
         size = path.stat().st_size
@@ -160,13 +246,13 @@ def ingest_file(store: Store, path: str | Path, *, budget: int | None = None) ->
         return 0
     key = str(path)
     offset, known_size = store.transcript_offset(key)
+    prompt_id = store.transcript_prompt(key)
     if size < known_size or offset > size:
-        offset = 0  # rewritten or truncated: uuids keep the re-read idempotent
+        offset, prompt_id = 0, None  # rewritten or truncated: uuids keep the re-read idempotent
     if offset >= size:
         return 0
-    session_id = path.stem
     rows: list[dict] = []
-    read_to = offset
+    usage: list[dict] = []
     with path.open("rb") as handle:
         handle.seek(offset)
         chunk = handle.read(budget if budget is not None else size - offset)
@@ -178,19 +264,54 @@ def ingest_file(store: Store, path: str | Path, *, budget: int | None = None) ->
             entry = json.loads(raw)
         except ValueError:
             continue
-        if isinstance(entry, dict):
-            rows.extend(parse_entry(entry, session_id))
-    read_to = offset + end + 1
+        if not isinstance(entry, dict):
+            continue
+        session_id = entry.get("sessionId")
+        if not isinstance(session_id, str) or not session_id:
+            session_id = path.stem
+        if entry.get("type") == "user" and isinstance(entry.get("promptId"), str):
+            prompt_id = entry["promptId"]
+        for row in parse_entry(entry, session_id):
+            if row["prompt_id"] is None:
+                row["prompt_id"] = prompt_id
+            rows.append(row)
+        used = parse_usage(entry, session_id, prompt_id)
+        if used is not None:
+            usage.append(used)
     added = store.add_messages(rows)
-    store.set_transcript_offset(key, read_to, size)
+    store.add_usage(usage)
+    store.set_transcript_offset(key, offset + end + 1, size, prompt_id)
     return added
+
+
+def subagent_transcripts(path: str | Path) -> list[Path]:
+    """Transcripts of the subagents a session ran: ``<session>/subagents/*.jsonl``."""
+    path = Path(path)
+    return sorted((path.parent / path.stem / "subagents").glob("*.jsonl"))
 
 
 def ingest_session(store: Store, session_id: str, *, budget: int | None = HOOK_BUDGET) -> int:
     session = store.get_session(session_id)
     if not session or not session.get("transcript_path"):
         return 0
-    return ingest_file(store, session["transcript_path"], budget=budget)
+    return ingest_path(store, session["transcript_path"], budget=budget)
+
+
+def ingest_path(store: Store, path: str | Path, *, budget: int | None = HOOK_BUDGET) -> int:
+    """A session transcript, then its subagents' (their tokens count for the turn).
+
+    The byte budget is shared by all of them, so a session with many subagents
+    does not make one hook read many times the budget.
+    """
+    added = 0
+    for each in (Path(path), *subagent_transcripts(path)):
+        if budget is not None and budget <= 0:
+            break
+        before = store.transcript_offset(str(each))[0]
+        added += ingest_file(store, each, budget=budget)
+        if budget is not None:
+            budget -= max(store.transcript_offset(str(each))[0] - before, 0)
+    return added
 
 
 def backfill(store: Store, config: Config) -> dict:
@@ -200,6 +321,9 @@ def backfill(store: Store, config: Config) -> dict:
     if not projects.is_dir():
         return counts
     for path in sorted(projects.glob("*/*.jsonl")):
-        counts["files"] += 1
-        counts["messages"] += ingest_file(store, path)
+        for each in (path, *subagent_transcripts(path)):
+            counts["files"] += 1
+            counts["messages"] += ingest_file(store, each)
+    # With the whole history copied, turns merged or cancelled earlier can be told apart.
+    counts.update(store.repair())
     return counts

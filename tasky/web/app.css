@@ -28,6 +28,11 @@
   --fail: #dc2626;
   --fail-bg: #fee2e2;
   --ok: #15803d;
+  /* Recaps: Claude Code's "while you were away" summaries. Their own hue so
+     they read as a different kind of thing from tasks at a glance. */
+  --recap: #6d28d9;
+  --recap-bg: #f5f3ff;
+  --recap-border: #ddd6fe;
 
   /* Card rails: a repeating 5-colour cycle so neighbours are tellable apart.
      Low chroma on purpose; they carry position, never status. */
@@ -69,6 +74,9 @@
     --fail: #f87171;
     --fail-bg: #3f1212;
     --ok: #4ade80;
+    --recap: #c4b5fd;
+    --recap-bg: #1c1530;
+    --recap-border: #3b2d63;
 
     --tint-0: #7d9be0;
     --tint-1: #ab96de;
@@ -233,9 +241,36 @@ code {
   color: var(--attn);
 }
 
+/* A session still running hooks from an older tasky. */
+.badge-warn,
+.old-hooks-mark {
+  background: var(--attn-bg);
+  border-color: transparent;
+  color: var(--attn);
+}
+
+.old-hooks-mark {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 .badge-danger {
   background: var(--fail-bg);
   border-color: transparent;
+  color: var(--fail);
+}
+
+.tag.tag-mode {
+  max-width: 12ch;
+}
+
+.tag.tag-mode[data-mode="bypassPermissions"] {
+  background: var(--fail-bg);
   color: var(--fail);
 }
 
@@ -331,6 +366,7 @@ code {
 
 .quick-add {
   flex: 1 1 auto;
+  min-width: 0;
   max-width: 720px;
   display: flex;
   align-items: center;
@@ -347,16 +383,15 @@ code {
   border-color: var(--ring);
 }
 
-.quick-add-prefix {
-  font-family: var(--font-mono);
-  font-weight: 600;
+.quick-add-icon {
   color: var(--live);
   flex-shrink: 0;
 }
 
 .quick-add textarea {
   flex: 1;
-  min-width: 0;
+  /* The text keeps room for its placeholder; the session picker shrinks first. */
+  min-width: min(14rem, 100%);
   resize: none;
   border: 0;
   background: transparent;
@@ -400,6 +435,18 @@ code {
   cursor: pointer;
 }
 
+/* The mode picker never truncates ("Accept edits" is its longest label);
+   the session picker beside it gives up the room instead. */
+.mode-select {
+  flex-shrink: 0;
+  max-width: none;
+}
+
+#quick-add-target {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
 .chip-select:hover {
   background: var(--muted-bg);
   color: var(--foreground);
@@ -434,8 +481,8 @@ code {
   padding: 12px;
 }
 
-#mode-select[data-bypass="1"] {
-  border-color: var(--fail);
+.mode-select[data-bypass="1"] {
+  color: var(--fail);
 }
 
 .reconnecting-status {
@@ -451,6 +498,168 @@ code {
 
 .reconnecting-status:empty {
   display: none;
+}
+
+/* ---------- above the board: old-hooks warning, latest recaps ---------- */
+
+.board-top {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px var(--gutter) 0;
+}
+
+.board-top:not(:has(> :not([hidden]))),
+body:has(#board[hidden]) .board-top {
+  display: none;
+}
+
+.hooks-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 6px 6px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--attn-bg);
+  color: var(--attn);
+  font-size: 12.5px;
+}
+
+.hooks-banner-icon {
+  flex-shrink: 0;
+  margin-top: 5px;
+}
+
+.hooks-banner-body {
+  flex: 1;
+  min-width: 0;
+  padding-top: 4px;
+}
+
+.hooks-banner-list {
+  margin: 4px 0 2px;
+  padding-left: 18px;
+  color: var(--foreground);
+}
+
+.hooks-banner-dismiss,
+.hooks-banner-dismiss:hover {
+  color: var(--attn);
+}
+
+.link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.recaps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recaps-heading {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.recaps-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 6px 2px 2px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  color: var(--recap);
+  cursor: pointer;
+}
+
+.recaps-toggle .chevron {
+  transition: transform 120ms;
+}
+
+.recaps-toggle[aria-expanded="true"] .chevron {
+  transform: rotate(90deg);
+}
+
+.recaps-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.recaps-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 10px;
+}
+
+.recap-card-box {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--recap-border);
+  border-left: 3px solid var(--recap);
+  border-radius: var(--radius);
+  background: var(--recap-bg);
+  text-align: start;
+  font: inherit;
+  color: var(--foreground);
+}
+
+button.recap-card-box {
+  cursor: pointer;
+}
+
+button.recap-card-box:hover {
+  border-color: var(--recap);
+}
+
+.recap-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.recap-card-session {
+  font-weight: 600;
+  color: var(--recap);
+}
+
+.recap-card-time {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* The point of a recap is to be read at a glance: bigger than card text. */
+.recap-card-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 /* ---------- tablist (phone only) ---------- */
@@ -525,6 +734,47 @@ code {
 .column.is-empty {
   flex: 0 0 180px;
   min-width: 180px;
+}
+
+/* An empty column (Done aside) folds into a strip that keeps its name and
+   count. Picking a card up unfolds the lanes it could land in, so a strip
+   is never too thin to drop on. Wider screens only: the phone shows one
+   column at a time and says "empty" in words. */
+@media (min-width: 481px) {
+  .column.is-collapsed {
+    flex: 0 0 44px;
+    min-width: 44px;
+    max-width: 44px;
+  }
+  .column.is-collapsed h2 {
+    flex: 1;
+    writing-mode: vertical-rl;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 14px 0;
+    border-bottom: 0;
+    color: var(--muted);
+  }
+  .column.is-collapsed .column-body {
+    display: none;
+  }
+  body.is-dragging .column.is-collapsed[data-lane] {
+    flex: 1 1 0;
+    min-width: 180px;
+    max-width: 640px;
+    border-color: var(--live);
+  }
+  body.is-dragging .column.is-collapsed[data-lane] h2 {
+    flex: 0 0 auto;
+    writing-mode: horizontal-tb;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--foreground);
+  }
+  body.is-dragging .column.is-collapsed[data-lane] .column-body {
+    display: flex;
+  }
 }
 
 .column h2 {
@@ -638,17 +888,39 @@ code {
   }
 }
 
-/* ---------- a task is one line ---------- */
+/* ---------- a task is one short block ---------- */
 
 .card {
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 2px;
   min-height: 40px;
   padding: 0 6px 0 8px;
   border-bottom: 1px solid var(--border);
   background: var(--card);
+}
+
+/* A card can run to four lines; everything beside the title lines up with
+   its first line (centre 16px from the top) instead of floating mid-card. */
+.card > .handle,
+.card-body > .actions,
+.card-body > .action-pair,
+.card-body > .card-menu {
+  margin-top: 3px;
+}
+
+.card > .run-glyph {
+  height: 32px;
+}
+
+.card-body > .badge,
+.card-body > .tag {
+  margin-top: 6px;
+}
+
+.card-body > .time {
+  margin-top: 8px;
 }
 
 .card-list > .card:last-child {
@@ -671,11 +943,113 @@ code {
   background: var(--tint);
 }
 
-.card.tint-0 { --tint: var(--tint-0); }
-.card.tint-1 { --tint: var(--tint-1); }
-.card.tint-2 { --tint: var(--tint-2); }
-.card.tint-3 { --tint: var(--tint-3); }
-.card.tint-4 { --tint: var(--tint-4); }
+.tint-0 { --tint: var(--tint-0); }
+.tint-1 { --tint: var(--tint-1); }
+.tint-2 { --tint: var(--tint-2); }
+.tint-3 { --tint: var(--tint-3); }
+.tint-4 { --tint: var(--tint-4); }
+
+/* ---------- Done: day headers, then one group per session ---------- */
+
+/* Both headers stick while their rows scroll under them: the day on top,
+   the session group just below it (30px is the day header's height). */
+.done-day-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 30px;
+  display: flex;
+  align-items: flex-end;
+  padding: 0 14px 5px;
+  background: var(--card);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.done-group-heading {
+  position: sticky;
+  top: 30px;
+  z-index: 1;
+  background: var(--card);
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.done-group-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 14px 4px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  text-align: start;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.done-group-toggle:hover {
+  background: var(--muted-bg);
+}
+
+.done-group-toggle .chevron {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform 120ms;
+}
+
+.done-group-toggle[aria-expanded="true"] .chevron {
+  transform: rotate(90deg);
+}
+
+.swatch {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--tint, var(--border-strong));
+}
+
+.done-group-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.done-group-facts {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.done-group-list {
+  border-bottom: 1px solid var(--border);
+}
+
+.done-group-list > .card:last-child {
+  border-bottom: 0;
+}
+
+/* A recap inside Done: a low row between the turns it came between. */
+.done-group-list > .recap-row {
+  padding: 4px 8px 4px 30px;
+  border-bottom: 1px solid var(--border);
+}
+
+.done-group-list > .recap-row .recap-box {
+  padding: 4px 8px;
+}
 
 .card.dragging {
   position: fixed;
@@ -752,7 +1126,7 @@ code {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   container-type: inline-size;
   container-name: card;
@@ -762,10 +1136,10 @@ code {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
-  height: 32px;
-  padding: 0 6px;
+  min-height: 32px;
+  padding: 7px 6px;
   border: 0;
   border-radius: 4px;
   background: none;
@@ -777,6 +1151,7 @@ code {
   flex-shrink: 0;
   width: 8px;
   height: 8px;
+  margin-top: 5px;
   border-radius: 50%;
   background: var(--border-strong);
   font-size: 0;
@@ -787,16 +1162,58 @@ code {
 .card[data-status="done"] .status-glyph { background: var(--tint, var(--border-strong)); opacity: 0.6; }
 .card[data-status="cancelled"] .status-glyph { background: transparent; box-shadow: inset 0 0 0 1.5px var(--border-strong); }
 .card[data-status="running"] .status-glyph { display: none; }
+/* In Needs attention a finished card is there because it asked you something. */
+#col-attention .card[data-status="done"] .status-glyph { background: var(--attn); opacity: 1; }
 
-.title {
+.title-stack {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Two lines of title, then one of what came back, then the facts. */
+.title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   font-size: 13.5px;
   font-weight: 500;
   line-height: 1.3;
+}
+
+.card-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.reason {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  color: var(--attn);
+}
+
+.reason[data-reason="failed"] {
+  color: var(--fail);
 }
 
 #col-done .title {
@@ -1072,6 +1489,137 @@ body.drawer-open {
   overflow-wrap: anywhere;
 }
 
+.drawer-followups,
+.drawer-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.followup {
+  display: flex;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.followup-at {
+  flex-shrink: 0;
+  padding-top: 1px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.followup-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.drawer-files {
+  gap: 2px;
+}
+
+.drawer-file {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.drawer-tokens {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 8px;
+}
+
+.token-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--muted-bg);
+}
+
+.token-row dt {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.token-row dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.token-row.is-total {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* ---------- recaps ---------- */
+
+.recap-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recap-box {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 0;
+  border-left: 3px solid var(--recap);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--recap-bg);
+  text-align: start;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+button.recap-box {
+  cursor: pointer;
+}
+
+.recap-head {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.recap-mark {
+  font-weight: 600;
+  color: var(--recap);
+}
+
+.recap-head time {
+  font-family: var(--font-mono);
+}
+
+.recap-text {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.recap-box[aria-expanded="false"] .recap-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+}
+
 /* ---------- result digest ---------- */
 
 .digest {
@@ -1194,6 +1742,30 @@ details.digest-card > .digest-card-title {
   background: var(--fail-bg);
   color: var(--fail);
   font-size: 13px;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  z-index: 40;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 2 * var(--gutter));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 14px;
+  border-radius: var(--radius);
+  background: var(--primary);
+  color: var(--primary-fg);
+  box-shadow: var(--shadow-lg);
+  font-size: 13px;
+}
+
+.toast-action,
+.toast-action:hover {
+  color: var(--primary-fg);
+  background: color-mix(in srgb, var(--primary-fg) 14%, transparent);
 }
 
 .filter-empty {
@@ -1367,6 +1939,87 @@ details.digest-card > .digest-card-title {
   background: var(--attn-bg);
   color: inherit;
   border-radius: 2px;
+}
+
+.search-hit-reason {
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- smart search ---------- */
+
+.smart-search {
+  max-width: 960px;
+  margin: 16px auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.smart-search-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.smart-search-btn {
+  color: var(--recap);
+}
+
+.smart-search-btn.is-busy svg {
+  animation: smart-spin 1.2s linear infinite;
+}
+
+@keyframes smart-spin {
+  to { transform: rotate(360deg); }
+}
+
+.smart-search-hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.smart-search-status {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.smart-search-status:empty {
+  display: none;
+}
+
+.smart-search-status.is-error {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--fail-bg);
+  color: var(--fail);
+}
+
+.smart-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.smart-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.smart-cost {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.smart-empty {
+  padding: 0;
 }
 
 /* ---------- project history ---------- */
@@ -2048,10 +2701,17 @@ details.digest-card > .digest-card-title {
     flex: 1 1 calc(50% - 8px);
     min-width: 280px;
   }
+  .column.is-collapsed {
+    flex: 0 0 44px;
+    min-width: 44px;
+  }
 }
 
 /* Phone: one column at a time. */
 @media (max-width: 480px) {
+  :root {
+    --gutter: 16px;
+  }
   .topbar {
     flex-wrap: wrap;
     gap: 8px;
@@ -2140,6 +2800,16 @@ details.digest-card > .digest-card-title {
   }
   .tablist {
     display: flex;
+  }
+  /* The page scrolls here, not the column: nothing for the headers to stick to. */
+  .done-day-head,
+  .done-group-heading {
+    position: static;
+  }
+  .recap-card-text {
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    font-size: 14px;
   }
   .board {
     display: block;

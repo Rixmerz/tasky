@@ -4,6 +4,53 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-09-24
+
+### Fixed
+
+- A prompt cancelled with Esc before Claude replied no longer stays on the board, whatever you send
+  next: the transcript proves there was no reply and no tool call, so the prompt is dropped. Before,
+  only a resend at least 80% similar was caught, so cancelling to rewrite a prompt left a
+  duplicate. A prompt Claude had started working on is kept and marked interrupted.
+- A message typed while Claude is working no longer becomes a separate task that takes the turn's
+  reply and leaves the real task "interrupted" with none. It is a follow-up of the running task.
+  This is why Needs attention filled up with tasks that had been answered.
+- Prompts a subagent receives, subagents' messages to their parent (`<agent-message>`) and session
+  commands such as `/compact …` are no longer recorded as tasks.
+- Assistant messages carry no prompt id in the transcript, so a turn's files could not be found.
+  They now take the id of the prompt before them.
+- The "needs answer" mark shows only on the newest task of a session: an older reply ending in a
+  question was already answered by the next prompt.
+- Titles of prompts that start with a paste no longer read `<pasted_content …>`.
+- The `last_session` MCP tool skips sessions with no recorded prompt.
+
+### Added
+
+- Smart search: after the plain results, a button asks Haiku which tasks match the question by
+  meaning, with a one-line reason each. About 6¢ the first time and 2–3¢ after, thanks to the
+  prompt cache; it runs only when you press it.
+- Recaps: Claude Code's summaries when you come back to a session are copied, shown large above the
+  board for each open session, placed among the tasks where they happened, and returned by the
+  `last_session` MCP tool.
+- Tokens per task and per session, subagents included, and files edited per task, from the
+  transcripts at no cost.
+- Cards show the start of the reply, duration, files edited, output tokens and follow-ups. Needs
+  attention says why each task is there. Done is grouped by day and session. Empty columns fold
+  into a thin strip.
+- A warning for open sessions still running an older tasky's hooks (Claude Code loads a plugin when
+  a session starts): restart them to get the fixes.
+- The permission mode is chosen in the composer when adding a task and kept on it.
+- Delete hides a task instead of erasing it, with Undo; the history sync still learns from it.
+- Subagent transcripts are copied too.
+
+### Changed
+
+- Schema version 6. The upgrade repairs existing rows: split turns are merged into their first task,
+  prompts proved unanswered are dropped, recorded session commands are removed, and transcripts are
+  read again from the start to fill in tokens and recaps (messages are not copied twice). Import
+  history runs the repair again once old transcripts are copied.
+- The dashboard no longer shows `++`; the chat prefix is unchanged (`TASKY_QUEUE_PREFIX`).
+
 ## [0.7.2] - 2026-09-24
 
 ### Fixed

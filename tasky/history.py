@@ -377,7 +377,13 @@ def git_log(cwd: str, tasks: list[dict]) -> str:
 
 
 def call_model(
-    config: Config, model: str, prompt: str, *, run: Runner = subprocess.run
+    config: Config,
+    model: str,
+    prompt: str,
+    *,
+    run: Runner = subprocess.run,
+    system_prompt: str | None = None,
+    schema: dict | None = None,
 ) -> tuple[dict, float]:
     env = dict(os.environ)
     env["TASKY_HOOKS_OFF"] = "1"
@@ -393,11 +399,11 @@ def call_model(
         "--strict-mcp-config",
         "--no-session-persistence",
         "--system-prompt",
-        SYSTEM_PROMPT,
+        system_prompt or SYSTEM_PROMPT,
         "--output-format",
         "json",
         "--json-schema",
-        json.dumps(OUTPUT_SCHEMA),
+        json.dumps(schema or OUTPUT_SCHEMA),
     ]
     try:
         # Run from Tasky's home, not the project: the project's CLAUDE.md would

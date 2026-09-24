@@ -84,6 +84,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("text", nargs="+")
     p.add_argument("--cwd", default=None, help="project directory (default: current directory)")
     p.add_argument("--session", default=None, help="bind the task to a session id")
+    p.add_argument("--permission-mode", default=None, help="mode its runs will use")
     p.set_defaults(handler=_cmd_add)
 
     p = sub.add_parser("list", help="list tasks")
@@ -103,13 +104,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("run", help="run a queued task as a headless Claude Code session")
     p.add_argument("id", type=int)
-    p.add_argument("--permission-mode", default="default")
+    p.add_argument(
+        "--permission-mode", default=None, help="default: the mode stored on the task"
+    )
     p.add_argument("--mode", default="now", choices=("now", "fork"))
     p.set_defaults(handler=_cmd_run)
 
     p = sub.add_parser("enqueue", help="add a queued task to its project's run queue")
     p.add_argument("id", type=int)
-    p.add_argument("--permission-mode", default="default")
+    p.add_argument(
+        "--permission-mode", default=None, help="default: the mode stored on the task"
+    )
     p.set_defaults(handler=_cmd_enqueue)
 
     p = sub.add_parser("status", help="print task counters")
@@ -195,6 +200,12 @@ def _cmd_import(args: argparse.Namespace, config: Config, out: TextIO) -> int:
     )
     if copied is not None:
         print(f"copied {copied['messages']} new messages from {copied['files']} files", file=out)
+        if copied.get("removed"):
+            print(
+                f"repaired {copied['folded']} turns split in several tasks and dropped "
+                f"{copied['dropped']} prompts cancelled before any reply",
+                file=out,
+            )
     return 0
 
 
@@ -203,6 +214,8 @@ def _cmd_add(args: argparse.Namespace, config: Config, out: TextIO) -> int:
     if not body:
         raise ValueError("task text is empty")
     cwd = str(Path(args.cwd).resolve()) if args.cwd else os.getcwd()
+    if args.permission_mode is not None:
+        _check_permission_mode(args.permission_mode, config)
     with Store.open(config) as store:
         task = store.create_task(
             kind="prompt",
@@ -212,6 +225,8 @@ def _cmd_add(args: argparse.Namespace, config: Config, out: TextIO) -> int:
             cwd=cwd,
             session_id=args.session,
         )
+        if args.permission_mode is not None:
+            task = store.update_task(task["id"], permission_mode=args.permission_mode)
     print(f"queued #{task['id']} {task['title']}", file=out)
     return 0
 
@@ -241,14 +256,30 @@ def _cmd_set_status(args: argparse.Namespace, config: Config, out: TextIO) -> in
     return 0
 
 
+def _check_permission_mode(mode: str, config: Config) -> None:
+    from tasky.worker import PERMISSION_MODES
+
+    if mode not in PERMISSION_MODES:
+        raise ValueError(f"invalid permission mode: {mode!r}")
+    if mode == "bypassPermissions" and not config.allow_bypass:
+        raise ValueError("bypassPermissions requires TASKY_ALLOW_BYPASS=1")
+
+
+def _stored_mode(store: Store, task_id: int, requested: str | None) -> str:
+    """The mode asked for, else the one kept on the task, else ``default``."""
+    if requested:
+        return requested
+    task = store.get_task(task_id)
+    return (task or {}).get("permission_mode") or "default"
+
+
 def _cmd_run(args: argparse.Namespace, config: Config, out: TextIO) -> int:
     from tasky.worker import WorkerError, run_task
 
     with Store.open(config) as store:
         try:
-            task = run_task(
-                store, config, args.id, permission_mode=args.permission_mode, mode=args.mode
-            )
+            mode = _stored_mode(store, args.id, args.permission_mode)
+            task = run_task(store, config, args.id, permission_mode=mode, mode=args.mode)
         except WorkerError as exc:
             print(f"tasky: {exc}", file=sys.stderr)
             return 1
@@ -258,12 +289,6 @@ def _cmd_run(args: argparse.Namespace, config: Config, out: TextIO) -> int:
 
 def _cmd_enqueue(args: argparse.Namespace, config: Config, out: TextIO) -> int:
     from tasky import scheduler
-    from tasky.worker import PERMISSION_MODES
-
-    if args.permission_mode not in PERMISSION_MODES:
-        raise ValueError(f"invalid permission mode: {args.permission_mode!r}")
-    if args.permission_mode == "bypassPermissions" and not config.allow_bypass:
-        raise ValueError("bypassPermissions requires TASKY_ALLOW_BYPASS=1")
 
     with Store.open(config) as store:
         task = store.get_task(args.id)
@@ -271,7 +296,9 @@ def _cmd_enqueue(args: argparse.Namespace, config: Config, out: TextIO) -> int:
             raise KeyError(args.id)
         if not task.get("cwd"):
             raise ValueError(f"task {args.id} has no cwd")
-        enqueued = store.enqueue_task(args.id, args.permission_mode, None)
+        mode = _stored_mode(store, args.id, args.permission_mode)
+        _check_permission_mode(mode, config)
+        enqueued = store.enqueue_task(args.id, mode, None)
         if enqueued is None:
             raise ValueError(f"task {args.id} is not queued")
         scheduler.kick(store, config, enqueued["cwd"])

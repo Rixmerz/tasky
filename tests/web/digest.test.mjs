@@ -306,3 +306,8 @@ test("parseDigest and summarize never throw on empty, huge, or adversarial input
     assert.doesNotThrow(() => summarize(input));
   }
 });
+
+test("a version number at the start is not read as a step number", () => {
+  const { summary } = summarize("**0.8.0 todavía no está publicada.** El backend está listo.");
+  assert.equal(summary.startsWith("0.8.0 todavía"), true, summary);
+});

@@ -33,6 +33,13 @@ const STATUS_WORD = {
   cancelled: "Cancelled",
 };
 
+const PERMISSION_LABELS = {
+  default: "Default",
+  acceptEdits: "Accept edits",
+  plan: "Plan",
+  bypassPermissions: "Bypass",
+};
+
 const PERMISSION_HINTS = {
   default: "Gated tools refused.",
   acceptEdits: "Edits allowed, other tools refused.",
@@ -91,10 +98,12 @@ const el = {
   errorBannerText: document.getElementById("error-banner-text"),
   errorBannerDismiss: document.getElementById("error-banner-dismiss"),
   announcer: document.getElementById("announcer"),
+  toast: document.getElementById("toast"),
+  toastText: document.getElementById("toast-text"),
+  toastAction: document.getElementById("toast-action"),
   projectFilter: document.getElementById("project-filter"),
   topbarExtra: document.getElementById("topbar-extra"),
-  modeSelect: document.getElementById("mode-select"),
-  modeHint: document.getElementById("mode-hint"),
+  modeSelect: document.getElementById("quick-add-mode"),
   bypassChip: document.getElementById("bypass-chip"),
   quickAddForm: document.getElementById("quick-add"),
   quickAddInput: document.getElementById("quick-add-input"),
@@ -103,9 +112,16 @@ const el = {
   filterChip: document.getElementById("filter-chip"),
   filterChipLabel: document.getElementById("filter-chip-label"),
   settingsToggle: document.getElementById("settings-toggle"),
-  quickAddPrefix: document.getElementById("quick-add-prefix"),
-  inboxEmptyPrefix: document.getElementById("inbox-empty-prefix"),
   tablist: document.getElementById("tablist"),
+  hooksBanner: document.getElementById("hooks-banner"),
+  hooksBannerText: document.getElementById("hooks-banner-text"),
+  hooksBannerMore: document.getElementById("hooks-banner-more"),
+  hooksBannerList: document.getElementById("hooks-banner-list"),
+  hooksBannerDismiss: document.getElementById("hooks-banner-dismiss"),
+  recaps: document.getElementById("recaps"),
+  recapsToggle: document.getElementById("recaps-toggle"),
+  recapsTitle: document.getElementById("recaps-title"),
+  recapsList: document.getElementById("recaps-list"),
   inboxCount: document.getElementById("inbox-count"),
   upnextCount: document.getElementById("upnext-count"),
   runningCount: document.getElementById("running-count"),
@@ -145,6 +161,9 @@ const el = {
   drawerEditSave: document.querySelector("#drawer .drawer-edit-save"),
   drawerEditCancel: document.querySelector("#drawer .drawer-edit-cancel"),
   drawerBody: document.querySelector("#drawer .drawer-body"),
+  drawerMode: document.querySelector("#drawer .drawer-mode"),
+  drawerModeSelect: document.querySelector("#drawer .drawer-mode-select"),
+  drawerModeHint: document.querySelector("#drawer .drawer-mode-hint"),
   drawerTaskSection: document.querySelector("#drawer .drawer-task-section"),
   drawerResultWrap: document.querySelector("#drawer .drawer-result-wrap"),
   drawerResultDigest: document.querySelector("#drawer .drawer-result-digest"),
@@ -153,12 +172,33 @@ const el = {
   drawerChildren: document.querySelector("#drawer .drawer-children"),
   drawerChildrenWrap: document.querySelector("#drawer .drawer-children-wrap"),
   drawerSessionLine: document.querySelector("#drawer .drawer-session-line"),
+  drawerRecapsWrap: document.querySelector("#drawer .drawer-recaps-wrap"),
+  drawerRecaps: document.querySelector("#drawer .drawer-recaps"),
+  drawerRecapsAfterWrap: document.querySelector("#drawer .drawer-recaps-after-wrap"),
+  drawerRecapsAfter: document.querySelector("#drawer .drawer-recaps-after"),
+  drawerFollowupsWrap: document.querySelector("#drawer .drawer-followups-wrap"),
+  drawerFollowups: document.querySelector("#drawer .drawer-followups"),
+  drawerFilesWrap: document.querySelector("#drawer .drawer-files-wrap"),
+  drawerFiles: document.querySelector("#drawer .drawer-files"),
+  drawerFilesCount: document.querySelector("#drawer .drawer-files-count"),
+  drawerTokensWrap: document.querySelector("#drawer .drawer-tokens-wrap"),
+  drawerTokens: document.querySelector("#drawer .drawer-tokens"),
+  drawerTools: document.querySelector("#drawer .drawer-tools"),
   searchForm: document.getElementById("search"),
   searchInput: document.getElementById("search-input"),
   searchResults: document.getElementById("search-results"),
   searchHeading: document.getElementById("search-heading"),
   searchList: document.getElementById("search-list"),
   searchClear: document.getElementById("search-clear"),
+  smartSearch: document.getElementById("smart-search"),
+  smartBtn: document.getElementById("smart-search-btn"),
+  smartLabel: document.getElementById("smart-search-label"),
+  smartCancel: document.getElementById("smart-search-cancel"),
+  smartStatus: document.getElementById("smart-search-status"),
+  smartResults: document.getElementById("smart-results"),
+  smartCost: document.getElementById("smart-cost"),
+  smartEmpty: document.getElementById("smart-empty"),
+  smartList: document.getElementById("smart-list"),
   tablist: document.getElementById("tablist"),
   historyToggle: document.getElementById("history-toggle"),
   history: document.getElementById("history"),
@@ -306,6 +346,7 @@ async function doFetch(path, options) {
   try {
     return await fetch(path, options);
   } catch (err) {
+    if (err.name === "AbortError") throw err; // the caller cancelled; the server is fine
     verified = false;
     throw new NetworkError(err.message);
   }
@@ -319,12 +360,13 @@ async function apiGet(path) {
   return res.json();
 }
 
-async function apiMutate(method, path, body) {
+async function apiMutate(method, path, body, signal) {
   if (!(await ensureVerified())) throw new NotVerifiedError();
   const res = await doFetch(path, {
     method,
     headers: { "Content-Type": "application/json", "X-Tasky-Token": token || "" },
     body: JSON.stringify(body ?? {}),
+    signal,
   });
   if (res.status === 401) throw new UnauthorizedError();
   const data = await res.json().catch(() => ({}));
@@ -378,6 +420,34 @@ function showReconnecting() {
 
 function hideReconnecting() {
   el.reconnecting.textContent = "";
+}
+
+// ---------- toast ----------
+//
+// One small, non-blocking note at the bottom with at most one action
+// (Undo). A new toast replaces the old one; each goes away on its own.
+
+const TOAST_MS = 6000;
+let toastTimer = null;
+
+function hideToast() {
+  clearTimeout(toastTimer);
+  toastTimer = null;
+  el.toast.hidden = true;
+  el.toastAction.onclick = null;
+}
+
+function showToast(message, actionLabel, onAction) {
+  clearTimeout(toastTimer);
+  el.toastText.textContent = message;
+  el.toastAction.hidden = !actionLabel;
+  el.toastAction.textContent = actionLabel || "";
+  el.toastAction.onclick = () => {
+    hideToast();
+    if (onAction) onAction();
+  };
+  el.toast.hidden = false;
+  toastTimer = setTimeout(hideToast, TOAST_MS);
 }
 
 function announce(message) {
@@ -444,8 +514,6 @@ function applyState(next) {
   for (const id of resultDigestById.keys()) {
     if (!nextTasksById.has(id)) resultDigestById.delete(id);
   }
-  el.quickAddPrefix.textContent = next.config.queue_prefix;
-  el.inboxEmptyPrefix.textContent = next.config.queue_prefix;
   renderAll();
   if (historyOpen) loadHistory();
 }
@@ -586,6 +654,14 @@ function relativeTime(iso) {
   return `${days}d`;
 }
 
+/** "14:32" in the viewer's locale; "" for a missing or broken stamp. */
+function clockTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function taskTimeLabel(task) {
   if (task.status === "running") return relativeTime(task.started_at);
   if (task.status === "queued") return relativeTime(task.created_at);
@@ -613,6 +689,85 @@ function getResultDigest(task) {
 function isWaiting(task) {
   const digest = getResultDigest(task);
   return !!(digest && digest.waiting);
+}
+
+/**
+ * A reply that ends with a question still wants an answer only while it is
+ * the newest turn of its session: once the user typed the next prompt, the
+ * question was answered, whatever the old reply says.
+ */
+function wantsAnswer(task) {
+  return !!task.latest_in_session && isWaiting(task);
+}
+
+/** A finished turn whose question is still open in a live session: it needs the user. */
+function asksUser(task) {
+  if (task.status !== "done" || !wantsAnswer(task)) return false;
+  const session = task.session_id ? sessionsById.get(task.session_id) : null;
+  return !!session && session.state === "active";
+}
+
+/** Why a card sits in Needs attention, in the words its label shows. */
+function attentionReason(task) {
+  if (task.status === "failed") return "Failed";
+  if (task.status === "interrupted") return "Stopped mid-work";
+  if (asksUser(task)) return "Asked you";
+  return "";
+}
+
+// ---------- number and time formats ----------
+
+/** 950 / 1.2k / 18k / 1.2M: short enough for a card's meta row. */
+function formatCount(n) {
+  if (!Number.isFinite(n) || n < 0) return "";
+  if (n < 1000) return String(Math.round(n));
+  const [div, unit] = n < 1e6 ? [1e3, "k"] : [1e6, "M"];
+  const v = n / div;
+  const text = v < 10 ? v.toFixed(1).replace(/\.0$/, "") : String(Math.round(v));
+  return `${text}${unit}`;
+}
+
+/** Wall time between two ISO stamps: "45s", "4m", "1h 12m"; "" when either is missing. */
+function formatDuration(fromIso, toIso) {
+  if (!fromIso || !toIso) return "";
+  const ms = new Date(toIso).getTime() - new Date(fromIso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const secs = Math.round(ms / 1000);
+  if (secs < 1) return ""; // an instant (slash command, import) says nothing
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const rest = mins % 60;
+  return rest ? `${hours}h ${rest}m` : `${hours}h`;
+}
+
+function tokenTotal(tokens) {
+  if (!tokens) return 0;
+  return (tokens.input || 0) + (tokens.output || 0) + (tokens.cache_read || 0) + (tokens.cache_write || 0);
+}
+
+/** The reply's first sentence, as plain text (the digest summary is already markdown-free). */
+function firstSentence(text) {
+  if (!text) return "";
+  const match = text.match(/^.*?[.!?](?=\s|$)/);
+  return (match ? match[0] : text).trim();
+}
+
+/** The compact facts row under a card title; zero and unknown values are left out. */
+function cardMetaParts(task) {
+  const parts = [];
+  if (isTerminal(task.status)) {
+    const duration = formatDuration(task.started_at, task.finished_at);
+    if (duration) parts.push(duration);
+  }
+  const stats = task.stats;
+  if (stats && stats.files > 0) parts.push(plural(stats.files, "file"));
+  const out = stats && stats.tokens ? stats.tokens.output : 0;
+  if (out > 0) parts.push(`${formatCount(out)} out`);
+  const followups = (task.followups || []).length;
+  if (followups > 0) parts.push(`+${followups} ${followups === 1 ? "msg" : "msgs"}`);
+  return parts;
 }
 
 function childCountLabel(taskId) {
@@ -698,8 +853,10 @@ function applyTints(listEl) {
 
 // ---------- card rendering ----------
 //
-// A task is one line: drag handle or running dot, status dot, title, an
-// optional "Needs answer" badge and project tag, elapsed time, then the
+// A task is one short block: drag handle or running dot, status dot, a title
+// of up to two lines with the reply's first sentence and a facts row
+// (duration, files, tokens, follow-ups) under it, an optional "Needs
+// answer" badge, mode and project tags, elapsed time, then the
 // row's own icon actions (Run / After last / Parallel in Inbox and Up next,
 // Run again in Needs attention) and the "..." menu that repeats them with
 // words plus everything secondary. Full detail (body, digest, delegations,
@@ -755,7 +912,6 @@ function wireOverflowToggle(node) {
 function updateCard(node, task, kind) {
   node.dataset.status = task.status;
   node.dataset.taskId = String(task.id);
-  node.classList.toggle("pinned", kind === "done" && isWaiting(task));
 
   renderHandle(node, task, kind);
 
@@ -771,6 +927,7 @@ function updateCard(node, task, kind) {
   titleBtn.title = task.title;
   // What a screen reader hears for the row: title, status, then how it runs.
   const spoken = [task.title, STATUS_WORD[task.status] || task.status];
+  if (kind === "attention" && asksUser(task)) spoken.push("asked you a question");
   if (kind === "runner") spoken.push("queue runner");
   if (kind === "parallel" && task.run_mode === "fork") spoken.push(`fork of ${forkSourceLabel(task)}`);
   titleBtn.setAttribute("aria-label", `${spoken.join(", ")}. Open details`);
@@ -783,11 +940,27 @@ function updateCard(node, task, kind) {
   projectTag.textContent = showProject ? projectLabel(task.cwd) : "";
   projectTag.title = showProject ? task.cwd : "";
 
+  // A waiting task shows how it will run, unless that is the plain default.
+  const modeTag = node.querySelector(".tag-mode");
+  const mode = task.status === "queued" ? task.permission_mode : null;
+  const showMode = !!mode && mode !== "default";
+  modeTag.hidden = !showMode;
+  modeTag.textContent = showMode ? PERMISSION_LABELS[mode] || mode : "";
+  modeTag.title = showMode ? `Runs in ${mode}: ${PERMISSION_HINTS[mode] || ""}` : "";
+  modeTag.dataset.mode = showMode ? mode : "";
+
   const digestEntry = getResultDigest(task);
-  const waiting = !!(digestEntry && digestEntry.waiting);
+  // In Needs attention the reason label already says "Asked you".
+  const waiting = kind !== "attention" && wantsAnswer(task);
   answerBadge.hidden = !waiting;
   answerBadge.title = waiting ? "The result ends with a question for you" : "";
 
+  const summaryEl = node.querySelector(".card-summary");
+  const summary = digestEntry ? firstSentence(digestEntry.summary) : "";
+  summaryEl.hidden = !summary;
+  summaryEl.textContent = summary;
+
+  renderCardMeta(node.querySelector(".card-meta"), task, kind);
   renderPrimaryActions(node, task, kind);
   renderOverflowMenu(node, task, kind);
 }
@@ -814,6 +987,34 @@ function renderHandle(node, task, kind) {
   } else {
     handle.hidden = true;
     runGlyph.hidden = true;
+  }
+}
+
+/**
+ * The muted row under a card title: in Needs attention it opens with the
+ * reason the card is there, then duration, files, output tokens and
+ * follow-ups, each only when known and non-zero.
+ */
+function renderCardMeta(metaEl, task, kind) {
+  const reason = kind === "attention" ? attentionReason(task) : "";
+  const parts = cardMetaParts(task);
+  const key = `${reason}|${parts.join("|")}`;
+  metaEl.hidden = !reason && parts.length === 0;
+  if (metaEl.dataset.key === key) return;
+  metaEl.dataset.key = key;
+  metaEl.textContent = "";
+  if (reason) {
+    const label = document.createElement("span");
+    label.className = "reason";
+    label.dataset.reason = task.status === "done" ? "asked" : task.status;
+    label.textContent = reason;
+    metaEl.appendChild(label);
+  }
+  for (const part of parts) {
+    const item = document.createElement("span");
+    item.className = "meta-item";
+    item.textContent = part;
+    metaEl.appendChild(item);
   }
 }
 
@@ -846,6 +1047,9 @@ function renderSessionLine(container, task) {
   container.hidden = false;
   container.querySelector(".session-title").textContent = session.title || session.id;
   container.querySelector(".session-state").textContent = session.state === "active" ? "Active" : "Ended";
+  const oldHooks = container.querySelector(".session-old-hooks");
+  oldHooks.hidden = !hasOldHooks(session);
+  oldHooks.title = oldHooks.hidden ? "" : oldHooksText(session);
 
   const toggle = container.querySelector(".auto-pull-toggle");
   toggle.checked = !!session.auto_pull;
@@ -915,7 +1119,7 @@ function renderPrimaryActions(node, task, kind) {
     parallelBtn.setAttribute("aria-describedby", hintId);
     parallelBtn.onclick = canClone ? () => runTask(task.id, "fork") : null;
     hint.textContent = canClone ? "Replays the session's context." : cloneReason;
-  } else if (kind === "attention") {
+  } else if (kind === "attention" && task.status !== "done") {
     group.hidden = true;
     pair.hidden = false;
     const runAgainBtn = pair.querySelector(".pair-a");
@@ -1026,7 +1230,9 @@ function renderOverflowMenu(node, task, kind) {
       closeOverflowMenu();
       moveToInbox(task.id, null);
     };
-  } else if (kind === "attention") {
+  } else if (kind === "attention" && task.status !== "done") {
+    // An "Asked you" card is a finished turn: the answer goes in its session,
+    // so it gets Details and Delete only.
     backInbox.hidden = false;
     backInbox.onclick = () => {
       closeOverflowMenu();
@@ -1051,23 +1257,11 @@ function renderOverflowMenu(node, task, kind) {
   }
 
   if (deleteBtn.hidden) return;
-  if (deleteBtn.dataset.confirming !== "1") {
-    deleteBtn.textContent = "Delete";
-  }
+  // Delete only hides the task (the history sync still reads it), and the
+  // toast that follows offers Undo, so there is nothing to confirm.
   deleteBtn.onclick = () => {
-    if (deleteBtn.dataset.confirming === "1") {
-      closeOverflowMenu();
-      deleteTask(task.id);
-      return;
-    }
-    deleteBtn.dataset.confirming = "1";
-    deleteBtn.textContent = "Delete for good?";
-    window.setTimeout(() => {
-      if (deleteBtn.isConnected) {
-        deleteBtn.dataset.confirming = "";
-        deleteBtn.textContent = "Delete";
-      }
-    }, 4000);
+    closeOverflowMenu();
+    deleteTask(task.id);
   };
 }
 
@@ -1109,7 +1303,7 @@ function isDrawerOpen() {
 
 /** A task from the board, or a search hit older than the slice /api/state ships. */
 function findTask(taskId) {
-  return tasksById.get(taskId) || searchHitsById.get(taskId);
+  return tasksById.get(taskId) || searchHitsById.get(taskId) || smartHitsById.get(taskId);
 }
 
 async function openTaskById(taskId) {
@@ -1181,9 +1375,18 @@ function renderDrawerContent(task, editing) {
   }
 
   const canEdit = task.status === "queued" && task.lane == null;
+  // Any task that has not started yet can still change how it will run.
+  const canMode = task.status === "queued";
+  el.drawerMode.hidden = !canMode;
+  if (canMode) {
+    syncBypassOption(el.drawerModeSelect);
+    el.drawerModeSelect.value = task.permission_mode || "default";
+    el.drawerModeHint.textContent = PERMISSION_HINTS[el.drawerModeSelect.value] || "";
+    el.drawerModeSelect.onchange = () => setTaskPermissionMode(task.id, el.drawerModeSelect.value);
+  }
   // The Task section only exists when it adds to the header: a body longer
-  // than the title, or an edit control.
-  el.drawerTaskSection.hidden = el.drawerBody.hidden && !canEdit;
+  // than the title, or an edit or mode control.
+  el.drawerTaskSection.hidden = el.drawerBody.hidden && !canEdit && !canMode;
   el.drawerEditOpen.hidden = !canEdit;
   el.drawerEditOpen.onclick = () => {
     el.drawerEdit.hidden = false;
@@ -1236,7 +1439,177 @@ function renderDrawerContent(task, editing) {
   const kids = childrenOf(task.id);
   el.drawerChildrenWrap.hidden = kids.length === 0;
   renderChildren(el.drawerChildren, kids);
+  renderDrawerRecaps(task);
+  renderDrawerFollowups(task);
+  renderDrawerTokens(task.stats);
+  renderDrawerFiles(task);
   renderSessionLine(el.drawerSessionLine, task);
+}
+
+function renderDrawerFollowups(task) {
+  const followups = task.followups || [];
+  el.drawerFollowupsWrap.hidden = followups.length === 0;
+  el.drawerFollowups.textContent = "";
+  for (const f of followups) {
+    const li = document.createElement("li");
+    li.className = "followup";
+    const at = document.createElement("time");
+    at.className = "followup-at";
+    at.dateTime = f.at || "";
+    at.textContent = clockTime(f.at);
+    const text = document.createElement("p");
+    text.className = "followup-text";
+    text.textContent = f.text;
+    li.append(at, text);
+    el.drawerFollowups.appendChild(li);
+  }
+}
+
+const TOKEN_ROWS = [
+  ["output", "Output"],
+  ["input", "Input"],
+  ["cache_read", "Cache read"],
+  ["cache_write", "Cache write"],
+];
+
+function renderDrawerTokens(stats) {
+  const tokens = stats && stats.tokens;
+  const tools = stats ? stats.tools || 0 : 0;
+  el.drawerTokensWrap.hidden = !tokens && tools === 0;
+  el.drawerTools.textContent = tools > 0 ? plural(tools, "tool call") : "";
+  el.drawerTokens.textContent = "";
+  el.drawerTokens.hidden = !tokens;
+  if (!tokens) return;
+  const rows = [...TOKEN_ROWS.map(([key, label]) => [label, tokens[key] || 0]), ["Total", tokenTotal(tokens)]];
+  for (const [label, value] of rows) {
+    const row = document.createElement("div");
+    row.className = "token-row";
+    if (label === "Total") row.classList.add("is-total");
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = formatCount(value);
+    dd.title = value.toLocaleString();
+    row.append(dt, dd);
+    el.drawerTokens.appendChild(row);
+  }
+}
+
+/**
+ * Edited files are not in /api/state (they would bloat every poll), so the
+ * drawer asks for them once it is open and fills the list if it is still
+ * showing the same task when the answer lands.
+ */
+async function renderDrawerFiles(task) {
+  const known = task.stats ? task.stats.files : 0;
+  el.drawerFilesWrap.hidden = !(known > 0);
+  el.drawerFiles.textContent = "";
+  el.drawerFilesCount.textContent = known > 0 ? String(known) : "";
+  if (!(known > 0)) return;
+  let detail;
+  try {
+    detail = await apiGet(`/api/tasks/${task.id}`);
+  } catch {
+    return; // the count stays; the list is a nicety
+  }
+  if (drawerTaskId !== task.id || !Array.isArray(detail.files)) return;
+  el.drawerFilesCount.textContent = String(detail.files.length);
+  el.drawerFilesWrap.hidden = detail.files.length === 0;
+  const prefix = task.cwd ? `${task.cwd.replace(/\/$/, "")}/` : "";
+  for (const path of detail.files) {
+    const li = document.createElement("li");
+    li.className = "drawer-file";
+    li.textContent = prefix && path.startsWith(prefix) ? path.slice(prefix.length) : path;
+    li.title = path;
+    el.drawerFiles.appendChild(li);
+  }
+}
+
+// ---------- recaps ----------
+//
+// A recap is the summary Claude Code writes when the user comes back to a
+// session after being away. They are the fastest way back into a thread, so
+// they get a panel of their own above the board, a row in Done between the
+// turns they sit between, and a place in the drawer of the turn they follow.
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** When a task happened, for placing it on a timeline next to recaps. */
+function taskMoment(task) {
+  return task.finished_at || task.started_at || task.created_at;
+}
+
+/**
+ * One recap as a low row: "Recap · 14:32" and the text. Collapsible rows
+ * clamp the text to two lines until clicked; the drawer shows it whole.
+ */
+function createRecapRow(recap, label, collapsible, tag = "li") {
+  const li = document.createElement(tag);
+  li.className = "recap-row";
+  li.dataset.key = `recap-${recap.id}`;
+  const box = document.createElement(collapsible ? "button" : "div");
+  box.className = "recap-box";
+  if (collapsible) {
+    box.type = "button";
+    box.setAttribute("aria-expanded", "false");
+    box.addEventListener("click", () => {
+      box.setAttribute("aria-expanded", String(box.getAttribute("aria-expanded") !== "true"));
+    });
+  }
+  const head = document.createElement("span");
+  head.className = "recap-head";
+  const mark = document.createElement("span");
+  mark.className = "recap-mark";
+  mark.textContent = label;
+  const at = document.createElement("time");
+  at.dateTime = recap.ts;
+  at.title = new Date(recap.ts).toLocaleString();
+  at.textContent = clockTime(recap.ts);
+  head.append(mark, " · ", at);
+  const text = document.createElement("span");
+  text.className = "recap-text";
+  text.textContent = recap.text;
+  box.append(head, text);
+  li.appendChild(box);
+  return li;
+}
+
+/**
+ * The recaps that frame one turn: the one Claude Code filed after it
+ * (same prompt_id), and any written in its session between the previous
+ * turn and this one's start (the user came back, read, then typed this).
+ */
+function recapsAroundTask(task) {
+  if (!task.session_id) return [];
+  const start = task.started_at || task.created_at;
+  let prev = "";
+  for (const t of state.tasks) {
+    if (t.session_id !== task.session_id || t.id === task.id || t.parent_id != null) continue;
+    const when = taskMoment(t);
+    if (when < start && when > prev) prev = when;
+  }
+  const floor = prev || new Date(new Date(start).getTime() - DAY_MS).toISOString();
+  return (state.recaps || [])
+    .filter(
+      (r) =>
+        r.session_id === task.session_id &&
+        ((task.prompt_id && r.prompt_id === task.prompt_id) || (r.ts <= start && r.ts > floor)),
+    )
+    .sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+}
+
+/** Recaps written before the turn go above its result, the ones after it below. */
+function renderDrawerRecaps(task) {
+  const start = task.started_at || task.created_at;
+  const recaps = recapsAroundTask(task);
+  const before = recaps.filter((r) => r.ts <= start);
+  const after = recaps.filter((r) => r.ts > start);
+  el.drawerRecapsWrap.hidden = before.length === 0;
+  el.drawerRecaps.textContent = "";
+  for (const r of before) el.drawerRecaps.appendChild(createRecapRow(r, "Recap before this task", false));
+  el.drawerRecapsAfterWrap.hidden = after.length === 0;
+  el.drawerRecapsAfter.textContent = "";
+  for (const r of after) el.drawerRecapsAfter.appendChild(createRecapRow(r, "Recap after this turn", false));
 }
 
 // ---------- lane banners ----------
@@ -1258,6 +1631,387 @@ function renderLaneBanners() {
     container.appendChild(div);
   }
 }
+
+// ---------- Done, grouped by day and session ----------
+//
+// Done reads as a diary: a header per day, then one collapsible group per
+// session that worked that day, newest first. Each session keeps one rail
+// colour across every day it appears in, and its group header shows the same
+// colour, so the headers double as the legend. Today's groups start open,
+// older ones folded; whatever the user toggles is remembered per group.
+
+const DONE_GROUPS_KEY = "tasky.doneGroups";
+const DONE_GROUPS_KEPT = 300;
+let doneGroupOpen = loadDoneGroupState();
+let doneGroupSeq = 0;
+
+function loadDoneGroupState() {
+  try {
+    const parsed = JSON.parse(readLocal(DONE_GROUPS_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveDoneGroupState() {
+  // Keys start with the day, so the newest sort last; keep only those.
+  const keys = Object.keys(doneGroupOpen).sort();
+  for (const key of keys.slice(0, Math.max(0, keys.length - DONE_GROUPS_KEPT))) delete doneGroupOpen[key];
+  writeLocal(DONE_GROUPS_KEY, JSON.stringify(doneGroupOpen));
+}
+
+/** "2026-09-24" in the viewer's own timezone, so "Today" means their today. */
+function localDayKey(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function dayLabel(dayKey) {
+  const today = localDayKey();
+  if (dayKey === today) return "Today";
+  if (dayKey === localDayKey(new Date(Date.now() - DAY_MS).toISOString())) return "Yesterday";
+  const [y, m, d] = dayKey.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  const opts = { weekday: "short", month: "short", day: "numeric" };
+  if (y !== new Date().getFullYear()) opts.year = "numeric";
+  return date.toLocaleDateString([], opts);
+}
+
+/** What a session is called in a group header: its title, else its project. */
+function sessionLabel(session, cwd) {
+  if (session && session.title) return session.title;
+  return projectLabel((session && session.cwd) || cwd);
+}
+
+/** Days (newest first), each with its session groups in order of their newest task. */
+function buildDoneGroups(tasks) {
+  const days = [];
+  const byDay = new Map();
+  for (const t of tasks) {
+    const dayKey = localDayKey(taskMoment(t));
+    let day = byDay.get(dayKey);
+    if (!day) {
+      day = { key: dayKey, groups: [], byGroup: new Map() };
+      byDay.set(dayKey, day);
+      days.push(day);
+    }
+    const sessionKey = t.session_id || `cwd:${t.cwd || ""}`;
+    let group = day.byGroup.get(sessionKey);
+    if (!group) {
+      group = { key: `${dayKey}|${sessionKey}`, dayKey, sessionKey, sessionId: t.session_id, cwd: t.cwd, tasks: [] };
+      day.byGroup.set(sessionKey, group);
+      day.groups.push(group);
+    }
+    group.tasks.push(t);
+  }
+  return days;
+}
+
+/**
+ * A group's rows: its task cards plus the recaps its session got that day,
+ * newest first by when each happened. `floor` keeps recaps from reaching
+ * past the oldest task on the page while older ones are still paged out.
+ */
+function doneGroupItems(group, floor) {
+  const items = group.tasks.map((t) => ({ task: t, at: taskMoment(t) }));
+  if (group.sessionId) {
+    for (const r of state.recaps || []) {
+      if (r.session_id !== group.sessionId || localDayKey(r.ts) !== group.dayKey) continue;
+      if (floor && r.ts < floor) continue;
+      items.push({ recap: r, at: r.ts });
+    }
+  }
+  // Stable sort: tasks with equal stamps keep Done's own order.
+  return items.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+}
+
+function renderDoneGroups(tasks, hasOlder) {
+  const days = buildDoneGroups(tasks);
+  const tints = new Map();
+  for (const day of days) {
+    for (const g of day.groups) if (!tints.has(g.sessionKey)) tints.set(g.sessionKey, tints.size % TINT_COUNT);
+  }
+  const floor = hasOlder && tasks.length ? taskMoment(tasks[tasks.length - 1]) : "";
+  const today = localDayKey();
+  const update = (node, day) => updateDoneDay(node, day, { tints, floor, today });
+  reconcileList(el.doneList, days, (d) => `day-${d.key}`, (day) => {
+    const node = createDoneDay();
+    update(node, day);
+    return node;
+  }, update);
+}
+
+function createDoneDay() {
+  const section = document.createElement("section");
+  section.className = "done-day";
+  const head = document.createElement("h3");
+  head.className = "done-day-head";
+  const groups = document.createElement("div");
+  groups.className = "done-day-groups";
+  section.append(head, groups);
+  return section;
+}
+
+function updateDoneDay(node, day, ctx) {
+  node.querySelector(".done-day-head").textContent = dayLabel(day.key);
+  const update = (groupNode, g) => updateDoneGroup(groupNode, g, ctx);
+  reconcileList(node.querySelector(".done-day-groups"), day.groups, (g) => `grp-${g.key}`, (g) => {
+    const groupNode = createDoneGroup();
+    update(groupNode, g);
+    return groupNode;
+  }, update);
+}
+
+function createDoneGroup() {
+  const node = document.createElement("div");
+  node.className = "done-group";
+  const listId = `done-group-${++doneGroupSeq}`;
+  const heading = document.createElement("h4");
+  heading.className = "done-group-heading";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "done-group-toggle";
+  btn.setAttribute("aria-controls", listId);
+  btn.innerHTML =
+    '<svg class="chevron" aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>' +
+    '<span class="swatch" aria-hidden="true"></span>' +
+    '<span class="done-group-title"></span>' +
+    '<span class="old-hooks-mark" hidden>older tasky</span>' +
+    '<span class="done-group-facts"></span>';
+  heading.appendChild(btn);
+  const list = document.createElement("div");
+  list.className = "card-list done-group-list";
+  list.id = listId;
+  btn.addEventListener("click", () => {
+    const open = btn.getAttribute("aria-expanded") !== "true";
+    doneGroupOpen[node.dataset.groupKey] = open;
+    saveDoneGroupState();
+    btn.setAttribute("aria-expanded", String(open));
+    list.hidden = !open;
+  });
+  node.append(heading, list);
+  return node;
+}
+
+function updateDoneGroup(node, group, ctx) {
+  node.dataset.groupKey = group.key;
+  const tint = TINT_CLASSES[ctx.tints.get(group.sessionKey) || 0];
+  node.classList.remove(...TINT_CLASSES);
+  node.classList.add(tint);
+
+  const session = group.sessionId ? sessionsById.get(group.sessionId) : null;
+  const btn = node.querySelector(".done-group-toggle");
+  const list = node.querySelector(".done-group-list");
+  const stored = doneGroupOpen[group.key];
+  const open = typeof stored === "boolean" ? stored : group.dayKey === ctx.today;
+  btn.setAttribute("aria-expanded", String(open));
+  list.hidden = !open;
+
+  const title = sessionLabel(session, group.cwd);
+  node.querySelector(".done-group-title").textContent = title;
+  btn.title = session && session.cwd ? `${title} · ${session.cwd}` : group.cwd || title;
+  const facts = [plural(group.tasks.length, "task")];
+  const out = session && session.tokens ? session.tokens.output : 0;
+  if (out > 0) facts.push(`${formatCount(out)} out`);
+  node.querySelector(".done-group-facts").textContent = facts.join(" · ");
+  const oldMark = node.querySelector(".old-hooks-mark");
+  const old = hasOldHooks(session);
+  oldMark.hidden = !old;
+  oldMark.title = old ? oldHooksText(session) : "";
+
+  reconcileList(
+    list,
+    doneGroupItems(group, ctx.floor),
+    (item) => (item.task ? item.task.id : `recap-${item.recap.id}`),
+    (item) => (item.task ? createCard(item.task, "done") : createRecapRow(item.recap, "Recap", true, "div")),
+    (itemNode, item) => {
+      if (item.task) updateCard(itemNode, item.task, "done");
+    },
+  );
+  for (const card of list.querySelectorAll(":scope > .card")) {
+    card.classList.remove(...TINT_CLASSES);
+    card.classList.add("tinted", tint);
+  }
+}
+
+// ---------- old hooks ----------
+
+/** A live session whose hooks predate this server: it still records the old, wrong way. */
+function hasOldHooks(session) {
+  return !!session && session.state === "active" && session.hook_version !== state.version;
+}
+
+function oldHooksText(session) {
+  const ran = session.hook_version ? `v${session.hook_version}` : `before ${state.version}`;
+  return `Running an older tasky (${ran}). Restart this Claude Code session to pick up the fixes.`;
+}
+
+let hooksBannerDismissed = false;
+let hooksBannerKey = "";
+
+/** One slim warning above the board while any live session still runs old hooks. */
+function renderHooksBanner() {
+  const stale = state.version ? state.sessions.filter(hasOldHooks) : [];
+  el.hooksBanner.hidden = hooksBannerDismissed || stale.length === 0;
+  if (el.hooksBanner.hidden) return;
+  const names = stale.map((sess) => sessionLabel(sess, sess.cwd));
+  const key = stale.map((sess) => `${sess.id}:${sess.hook_version}:${sess.title}`).join("|");
+  if (key === hooksBannerKey) return;
+  hooksBannerKey = key;
+  const versions = new Set(stale.map((sess) => (sess.hook_version ? `v${sess.hook_version}` : `before ${state.version}`)));
+  const who = stale.length === 1 ? "1 session is" : `${stale.length} sessions are`;
+  const them = stale.length === 1 ? "it" : "them";
+  el.hooksBannerText.textContent =
+    `${who} running an older tasky (${[...versions].join(" / ")}). Restart ${them} to pick up the fixes.`;
+  el.hooksBanner.title = names.join("\n");
+  el.hooksBannerList.textContent = "";
+  for (const sess of stale) {
+    const li = document.createElement("li");
+    // An untitled session is named by its project already; its id tells it apart.
+    li.textContent = `${sessionLabel(sess, sess.cwd)} · ${sess.title ? projectLabel(sess.cwd) : sess.id.slice(0, 8)}`;
+    li.title = sess.cwd || "";
+    el.hooksBannerList.appendChild(li);
+  }
+}
+
+el.hooksBannerMore.addEventListener("click", () => {
+  const open = el.hooksBannerList.hidden;
+  el.hooksBannerList.hidden = !open;
+  el.hooksBannerMore.setAttribute("aria-expanded", String(open));
+  el.hooksBannerMore.textContent = open ? "Hide" : "Show which";
+});
+
+el.hooksBannerDismiss.addEventListener("click", () => {
+  hooksBannerDismissed = true;
+  el.hooksBanner.hidden = true;
+});
+
+// ---------- latest recap panel ----------
+
+const RECAPS_OPEN_KEY = "tasky.recapsOpen";
+const RECAPS_SHOWN = 3;
+let recapsPanelKey = "";
+
+/** "just now", "12 min ago", "3 h ago", "2 days ago". */
+function relativeAgo(iso) {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const mins = Math.max(0, Math.round((Date.now() - then) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? "yesterday" : `${days} days ago`;
+}
+
+/**
+ * The newest recap of each live session (up to three, newest first); when
+ * no live session has one, the single newest recap there is. Honours the
+ * project filter like the columns do.
+ */
+function latestRecaps() {
+  const recaps = (state.recaps || []).filter((r) => !projectFilter || r.cwd === projectFilter);
+  const seen = new Set();
+  const picked = [];
+  for (const r of recaps) {
+    const session = sessionsById.get(r.session_id);
+    if (!session || session.state !== "active" || seen.has(r.session_id)) continue;
+    seen.add(r.session_id);
+    picked.push(r);
+    if (picked.length === RECAPS_SHOWN) break;
+  }
+  if (picked.length === 0 && recaps.length > 0) picked.push(recaps[0]);
+  return picked;
+}
+
+/** The task a recap leads back to: its session's newest turn on the board. */
+function latestTaskOfSession(sessionId) {
+  let best = null;
+  for (const t of state.tasks) {
+    if (t.session_id !== sessionId || t.parent_id != null) continue;
+    if (t.latest_in_session) return t;
+    if (!best || taskMoment(t) > taskMoment(best)) best = t;
+  }
+  return best;
+}
+
+function recapsOpen() {
+  return readLocal(RECAPS_OPEN_KEY) !== "0";
+}
+
+function renderRecapPanel() {
+  const recaps = latestRecaps();
+  el.recaps.hidden = recaps.length === 0;
+  if (recaps.length === 0) return;
+  const open = recapsOpen();
+  el.recapsToggle.setAttribute("aria-expanded", String(open));
+  el.recapsList.hidden = !open;
+  el.recapsTitle.textContent = recaps.length === 1 ? "Latest recap" : "Latest recaps";
+  const key = recaps.map((r) => r.id).join(",") + (multiProject ? "|m" : "");
+  if (key !== recapsPanelKey) {
+    recapsPanelKey = key;
+    el.recapsList.textContent = "";
+    for (const r of recaps) el.recapsList.appendChild(createRecapCard(r));
+  }
+  // Relative times move on without the recaps changing.
+  for (const at of el.recapsList.querySelectorAll("time")) at.textContent = relativeAgo(at.dateTime);
+}
+
+function createRecapCard(recap) {
+  const session = sessionsById.get(recap.session_id);
+  const li = document.createElement("li");
+  li.className = "recap-card";
+  const target = latestTaskOfSession(recap.session_id);
+  const box = document.createElement(target ? "button" : "div");
+  box.className = "recap-card-box";
+  if (target) {
+    box.type = "button";
+    box.title = "Open this session's latest task";
+    box.addEventListener("click", () => openDrawer(target.id));
+  }
+  const head = document.createElement("span");
+  head.className = "recap-card-head";
+  const title = document.createElement("span");
+  title.className = "recap-card-session";
+  title.textContent = sessionLabel(session, recap.cwd);
+  head.appendChild(title);
+  if (session && session.title) {
+    const project = document.createElement("span");
+    project.className = "recap-card-project";
+    project.textContent = projectLabel(session.cwd || recap.cwd);
+    head.appendChild(project);
+  }
+  if (hasOldHooks(session)) {
+    const mark = document.createElement("span");
+    mark.className = "old-hooks-mark";
+    mark.textContent = "older tasky";
+    mark.title = oldHooksText(session);
+    head.appendChild(mark);
+  }
+  const at = document.createElement("time");
+  at.className = "recap-card-time";
+  at.dateTime = recap.ts;
+  at.title = new Date(recap.ts).toLocaleString();
+  at.textContent = relativeAgo(recap.ts);
+  head.appendChild(at);
+  const text = document.createElement("span");
+  text.className = "recap-card-text";
+  text.textContent = recap.text;
+  box.append(head, text);
+  li.appendChild(box);
+  return li;
+}
+
+el.recapsToggle.addEventListener("click", () => {
+  const open = !recapsOpen();
+  writeLocal(RECAPS_OPEN_KEY, open ? "1" : "0");
+  el.recapsToggle.setAttribute("aria-expanded", String(open));
+  el.recapsList.hidden = !open;
+});
 
 // ---------- board rendering ----------
 
@@ -1286,7 +2040,7 @@ function renderAll() {
   const parallelTasks = runningAll.filter((t) => t.run_mode !== "serial");
 
   const attentionTasks = visible
-    .filter((t) => t.status === "interrupted" || t.status === "failed")
+    .filter((t) => t.status === "interrupted" || t.status === "failed" || asksUser(t))
     .sort((a, b) => {
       const at = a.finished_at || a.created_at;
       const bt = b.finished_at || b.created_at;
@@ -1294,11 +2048,8 @@ function renderAll() {
     });
 
   const doneAll = visible
-    .filter((t) => t.status === "done" || t.status === "cancelled")
+    .filter((t) => (t.status === "done" || t.status === "cancelled") && !asksUser(t))
     .sort((a, b) => {
-      const aw = isWaiting(a);
-      const bw = isWaiting(b);
-      if (aw !== bw) return aw ? -1 : 1;
       const at = a.finished_at || a.created_at;
       const bt = b.finished_at || b.created_at;
       return at < bt ? 1 : at > bt ? -1 : 0;
@@ -1324,6 +2075,10 @@ function renderAll() {
   document.getElementById("col-attention").classList.toggle("is-empty", attentionTasks.length === 0);
   document.getElementById("col-attention").classList.toggle("has-attn", attentionTasks.length > 0);
   document.getElementById("col-done").classList.toggle("is-empty", doneAll.length === 0);
+  for (const key of ["inbox", "upnext", "running", "attention"]) {
+    const col = document.getElementById(`col-${key}`);
+    col.classList.toggle("is-collapsed", col.classList.contains("is-empty"));
+  }
 
   el.inboxEmpty.hidden = inboxTasks.length !== 0;
   reconcileList(el.inboxList, inboxTasks, (t) => t.id, createCardFor("inbox"), updateCardFor("inbox"));
@@ -1353,9 +2108,8 @@ function renderAll() {
 
   const doneVisible = doneAll.slice(0, doneShown);
   el.doneEmpty.hidden = doneAll.length !== 0;
-  reconcileList(el.doneList, doneVisible, (t) => t.id, createCardFor("done"), updateCardFor("done"));
-  applyTints(el.doneList);
   const older = doneAll.length - doneShown;
+  renderDoneGroups(doneVisible, older > 0);
   el.doneShowMore.hidden = older <= 0;
   el.doneShowMore.textContent = older > 0 ? `Show ${older} older` : "Show older";
   el.doneShowMore.onclick = () => {
@@ -1364,6 +2118,8 @@ function renderAll() {
   };
 
   renderLaneBanners();
+  renderHooksBanner();
+  renderRecapPanel();
 
   const noTasksAtAll = state.tasks.length > 0 && visible.length === 0 && projectFilter;
   el.filterEmpty.hidden = !noTasksAtAll;
@@ -1480,24 +2236,20 @@ function quickAddTarget() {
   return { cwd: "", sessionId: "" };
 }
 
-// ---------- permission mode (top bar) ----------
+// ---------- permission mode (composer) ----------
+//
+// Picked when a task is written, stored on the task, and used by every run
+// of it: the run buttons never ask again. The last pick is remembered for
+// the next task.
 
 function loadPermissionMode() {
-  try {
-    const stored = window.sessionStorage.getItem(MODE_STORAGE_KEY);
-    if (stored) permissionMode = stored;
-  } catch {
-    // sessionStorage unavailable; default stands
-  }
+  const stored = readLocal(MODE_STORAGE_KEY);
+  if (stored && PERMISSION_LABELS[stored]) permissionMode = stored;
 }
 
 function savePermissionMode(value) {
   permissionMode = value;
-  try {
-    window.sessionStorage.setItem(MODE_STORAGE_KEY, value);
-  } catch {
-    // best effort only
-  }
+  writeLocal(MODE_STORAGE_KEY, value);
 }
 
 function currentPermissionMode() {
@@ -1505,17 +2257,20 @@ function currentPermissionMode() {
   return permissionMode;
 }
 
-function updateModeUI() {
-  const bypassOption = el.modeSelect.querySelector('option[value="bypassPermissions"]');
+/** Bypass is offered only when the server allows it (TASKY_ALLOW_BYPASS=1). */
+function syncBypassOption(select) {
+  const bypassOption = select.querySelector('option[value="bypassPermissions"]');
+  bypassOption.hidden = !state.config.allow_bypass;
   bypassOption.disabled = !state.config.allow_bypass;
-  bypassOption.textContent = state.config.allow_bypass
-    ? "bypassPermissions"
-    : "bypassPermissions (set TASKY_ALLOW_BYPASS=1)";
+}
+
+function updateModeUI() {
+  syncBypassOption(el.modeSelect);
   el.modeSelect.value = currentPermissionMode();
   const isBypass = el.modeSelect.value === "bypassPermissions";
   el.modeSelect.dataset.bypass = isBypass ? "1" : "0";
+  el.modeSelect.title = `Permission mode for new tasks: ${PERMISSION_HINTS[el.modeSelect.value] || ""}`;
   el.bypassChip.hidden = !isBypass;
-  el.modeHint.textContent = PERMISSION_HINTS[el.modeSelect.value] || "";
 }
 
 el.modeSelect.addEventListener("change", () => {
@@ -1531,6 +2286,18 @@ async function updateTaskStatus(id, status) {
     await refresh();
   } catch (err) {
     handleApiError(err);
+  }
+}
+
+async function setTaskPermissionMode(id, mode) {
+  try {
+    await apiMutate("PATCH", `/api/tasks/${id}`, { permission_mode: mode });
+    announce(`Permission mode set to ${PERMISSION_LABELS[mode] || mode}`);
+    await refresh();
+    refreshDrawerIfOpen();
+  } catch (err) {
+    handleApiError(err);
+    refreshDrawerIfOpen();
   }
 }
 
@@ -1568,6 +2335,18 @@ async function reorderUpNext(id, beforeId) {
 async function deleteTask(id) {
   try {
     await apiMutate("DELETE", `/api/tasks/${id}`);
+    if (drawerTaskId === id) closeDrawer();
+    showToast("Task deleted", "Undo", () => restoreTask(id));
+    await refresh();
+  } catch (err) {
+    handleApiError(err);
+  }
+}
+
+async function restoreTask(id) {
+  try {
+    await apiMutate("POST", `/api/tasks/${id}/restore`, {});
+    announce("Task restored");
     await refresh();
   } catch (err) {
     handleApiError(err);
@@ -1576,7 +2355,7 @@ async function deleteTask(id) {
 
 async function runTask(id, mode) {
   try {
-    await apiMutate("POST", `/api/tasks/${id}/run`, { permission_mode: currentPermissionMode(), mode });
+    await apiMutate("POST", `/api/tasks/${id}/run`, { mode });
     await refresh();
   } catch (err) {
     handleApiError(err);
@@ -1585,7 +2364,7 @@ async function runTask(id, mode) {
 
 async function enqueueTask(id, beforeId) {
   try {
-    await apiMutate("POST", `/api/tasks/${id}/enqueue`, { permission_mode: currentPermissionMode(), before_id: beforeId });
+    await apiMutate("POST", `/api/tasks/${id}/enqueue`, { before_id: beforeId });
     await refresh();
   } catch (err) {
     handleApiError(err);
@@ -1728,8 +2507,14 @@ function showDropIndicator(target) {
   drag.dropColumnBody = columnBody;
 }
 
+/** While a card is up, folded Inbox / Up next strips open to take it. */
+function setDraggingClass(on) {
+  document.body.classList.toggle("is-dragging", on);
+}
+
 function beginLift() {
   drag.moved = true;
+  setDraggingClass(true);
   const originSlot = document.createElement("div");
   originSlot.className = "card drag-origin drag-origin-placeholder";
   originSlot.style.minHeight = `${drag.height}px`;
@@ -1777,12 +2562,11 @@ function onPointerUp(evt) {
 }
 
 async function commitDrop(taskId, sourceKind, targetKind, beforeId) {
-  const permissionModeValue = currentPermissionMode();
   const task = tasksById.get(taskId);
   if (sourceKind === "inbox" && targetKind === "inbox") {
     await apiMutate("PATCH", `/api/tasks/${taskId}`, { before_id: beforeId });
   } else if (sourceKind === "inbox" && targetKind === "upnext") {
-    await apiMutate("POST", `/api/tasks/${taskId}/enqueue`, { permission_mode: permissionModeValue, before_id: beforeId });
+    await apiMutate("POST", `/api/tasks/${taskId}/enqueue`, { before_id: beforeId });
   } else if (sourceKind === "upnext" && targetKind === "upnext") {
     await apiMutate("PATCH", `/api/tasks/${taskId}`, { before_id: beforeId });
   } else if (sourceKind === "upnext" && targetKind === "inbox") {
@@ -1792,6 +2576,7 @@ async function commitDrop(taskId, sourceKind, targetKind, beforeId) {
 }
 
 function finishPointerDrag(d, target) {
+  setDraggingClass(false);
   d.node.classList.remove("dragging");
   d.node.style.position = "";
   d.node.style.left = "";
@@ -1886,6 +2671,7 @@ function kbPickUp(taskId, kind, handle) {
   if (!task) return;
   const ids = kind === "inbox" ? [...inboxOrderIds] : [...idsForCwdInUpNext(task.cwd)];
   drag = { keyboard: true, taskId, kind, cwd: task.cwd, handle, ids };
+  setDraggingClass(true);
   handle.classList.add("picked");
   announce(`${task.title} picked up`);
 }
@@ -1919,6 +2705,7 @@ function kbSwitchLane(newKind) {
 async function kbCommit() {
   const d = drag;
   drag = null;
+  setDraggingClass(false);
   d.handle.classList.remove("picked");
   const task = tasksById.get(d.taskId);
   const idx = d.ids.indexOf(d.taskId);
@@ -1933,10 +2720,7 @@ async function kbCommit() {
     } else if (task && task.lane === "serial") {
       await apiMutate("PATCH", `/api/tasks/${d.taskId}`, { before_id: beforeId });
     } else {
-      await apiMutate("POST", `/api/tasks/${d.taskId}/enqueue`, {
-        permission_mode: currentPermissionMode(),
-        before_id: beforeId,
-      });
+      await apiMutate("POST", `/api/tasks/${d.taskId}/enqueue`, { before_id: beforeId });
     }
     announce(`${task ? task.title : "Task"} dropped`);
     await refresh();
@@ -1951,6 +2735,7 @@ function kbCancel() {
   if (!drag) return;
   drag.handle.classList.remove("picked");
   drag = null;
+  setDraggingClass(false);
   renderAll();
   announce("Move cancelled");
   resolvePendingState();
@@ -2990,6 +3775,7 @@ function setSearchMode(on) {
 function scheduleSearch() {
   clearTimeout(searchTimer);
   const query = searchQuery();
+  if (query !== smartQuery) resetSmartSearch();
   if (query.length < SEARCH_MIN_CHARS) {
     searchSeq += 1;
     searchHitsById = new Map();
@@ -3031,7 +3817,103 @@ function renderSearchResults(query, tasks, more) {
   const words = searchWords(query);
   el.searchList.textContent = "";
   for (const task of tasks) el.searchList.appendChild(createSearchHit(task, words));
+  el.smartSearch.hidden = false;
 }
+
+// ---------- smart search ----------
+//
+// Word search finds what was said; smart search asks Haiku which tasks are
+// about what was meant. It costs money and takes seconds, so it only runs
+// when asked, can be cancelled, and never reuses an old answer.
+
+let smartHitsById = new Map();
+let smartAbort = null;
+let smartQuery = "";
+
+function setSmartBusy(busy) {
+  el.smartBtn.disabled = busy;
+  el.smartBtn.classList.toggle("is-busy", busy);
+  el.smartLabel.textContent = busy ? "Searching with Haiku…" : "Smart search";
+  el.smartCancel.hidden = !busy;
+}
+
+/** Back to a fresh button: whatever was asking stops, whatever came back goes. */
+function resetSmartSearch() {
+  if (smartAbort) smartAbort.abort();
+  smartAbort = null;
+  smartQuery = "";
+  smartHitsById = new Map();
+  setSmartBusy(false);
+  el.smartStatus.textContent = "";
+  el.smartStatus.classList.remove("is-error");
+  el.smartResults.hidden = true;
+  el.smartList.textContent = "";
+}
+
+async function runSmartSearch() {
+  const query = searchQuery();
+  if (query.length < SEARCH_MIN_CHARS) return;
+  resetSmartSearch();
+  const ctrl = new AbortController();
+  smartAbort = ctrl;
+  smartQuery = query;
+  setSmartBusy(true);
+  el.smartStatus.textContent = "Haiku is reading your past tasks…";
+  const body = { q: query };
+  if (projectFilter) body.cwd = projectFilter;
+  let data;
+  try {
+    data = await apiMutate("POST", "/api/search/smart", body, ctrl.signal);
+  } catch (err) {
+    if (smartAbort !== ctrl) return; // cancelled, or a newer ask took over
+    smartAbort = null;
+    setSmartBusy(false);
+    if (err instanceof UnauthorizedError || err instanceof NotVerifiedError) {
+      el.smartStatus.textContent = "";
+      handleApiError(err);
+      return;
+    }
+    const reason = err instanceof NetworkError ? "tasky is not reachable" : err.message.replace(/[\s:]+$/, "");
+    el.smartStatus.textContent = `Smart search failed: ${reason}`;
+    el.smartStatus.classList.add("is-error");
+    return;
+  }
+  if (smartAbort !== ctrl) return;
+  smartAbort = null;
+  setSmartBusy(false);
+  renderSmartResults(query, data);
+}
+
+function renderSmartResults(query, data) {
+  const results = Array.isArray(data.results) ? data.results.filter((r) => r && r.task) : [];
+  smartHitsById = new Map(results.map((r) => [r.task.id, r.task]));
+  const cost = typeof data.cost_usd === "number" ? `$${data.cost_usd.toFixed(3)}` : "";
+  el.smartCost.textContent = cost;
+  el.smartCost.title = typeof data.scanned === "number" ? `${plural(data.scanned, "task")} read` : "";
+  el.smartStatus.textContent = "";
+  el.smartResults.hidden = false;
+  el.smartEmpty.hidden = results.length !== 0;
+  el.smartList.textContent = "";
+  const words = searchWords(query);
+  for (const r of results) {
+    const li = createSearchHit(r.task, words);
+    if (r.reason) {
+      const why = document.createElement("span");
+      why.className = "search-hit-reason";
+      why.textContent = r.reason;
+      li.firstElementChild.appendChild(why);
+    }
+    el.smartList.appendChild(li);
+  }
+  announce(results.length === 0 ? "Smart search: no matches" : `Smart search: ${results.length} ${results.length === 1 ? "match" : "matches"}`);
+}
+
+el.smartBtn.addEventListener("click", runSmartSearch);
+el.smartCancel.addEventListener("click", () => {
+  resetSmartSearch();
+  el.smartStatus.textContent = "Cancelled.";
+  el.smartBtn.focus();
+});
 
 function createSearchHit(task, words) {
   const li = document.createElement("li");
@@ -3252,6 +4134,7 @@ el.quickAddForm.addEventListener("submit", async (evt) => {
       body,
       cwd,
       session_id: sessionId || undefined,
+      permission_mode: currentPermissionMode(),
     });
     el.quickAddInput.value = "";
     await refresh();

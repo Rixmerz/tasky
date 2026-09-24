@@ -109,3 +109,48 @@ transcript file is deleted and SHALL be searchable without spending tokens.
 - **WHEN** the SessionEnd hook copies the last lines of a transcript
 - **THEN** the session is still shown as ended
 
+
+### Requirement: One task per turn
+A message the user types while Claude is working reaches the running turn (Claude Code gives it
+that turn's prompt id). It SHALL be stored as a follow-up of that turn's task, not as a task of its
+own; an edited resend of a follow-up SHALL replace its earlier copy. The turn's reply SHALL go to
+the turn's task. A prompt a subagent receives and a subagent's message to its parent SHALL NOT be
+recorded as tasks.
+
+#### Scenario: Message typed mid-turn
+- **WHEN** the user sends "also update the changelog" while the turn for "build the favicon" runs, and the turn then ends
+- **THEN** there is one task, "build the favicon", done, with the reply and one follow-up
+
+#### Scenario: Subagent prompt
+- **WHEN** a UserPromptSubmit event carries an `agent_id` or a transcript path under `subagents/`
+- **THEN** no task is created and the session's transcript path is unchanged
+
+### Requirement: Prompts cancelled before a reply are dropped
+When a new prompt arrives, the previous prompt of the session SHALL be deleted if the transcript
+shows no reply and no tool call for it (thinking alone is not a reply), whatever the new text is.
+It SHALL be kept, and later marked interrupted, when Claude had started working. Only a transcript
+copied up to its end counts as proof; without it, the previous prompt SHALL be dropped only when
+the new text is the same request (equal, extended or at least 80% similar, within 30 minutes). A
+prompt cancelled right before the session ends SHALL be dropped the same way at SessionEnd.
+
+#### Scenario: Cancel, then send something longer
+- **WHEN** the user sends a short prompt, presses Esc before any reply, and sends a much longer, different prompt
+- **THEN** only the second prompt is a task
+
+#### Scenario: Cancel after work started
+- **WHEN** Claude had edited a file for the first prompt before Esc
+- **THEN** both prompts are tasks and the first is marked interrupted when the next turn ends
+
+### Requirement: Tokens, files and recaps per turn
+Copying a transcript SHALL give every assistant message the prompt id of the user prompt before
+it, SHALL record token usage once per API message (input, output, cache read, cache write), SHALL
+read the session's subagent transcripts too, crediting their tokens and files to the parent turn,
+and SHALL store Claude Code's recaps (away summaries) and messages typed mid-turn as messages.
+
+#### Scenario: Usage repeated on split lines
+- **WHEN** one API message is written as two transcript lines carrying the same usage
+- **THEN** its tokens are counted once
+
+### Requirement: Hooks report their version
+Every UserPromptSubmit and SessionStart SHALL record the tasky version of the hook on the session,
+so the dashboard can tell which open sessions still run an older release.

@@ -539,8 +539,57 @@ def test_delete_task(store, conn, auth_headers, tmp_path):
         conn, "DELETE", f"/api/tasks/{task['id']}", headers=auth_headers
     )
     assert resp.status == 200
-    assert parsed == {"deleted": True}
-    assert store.get_task(task["id"]) is None
+    assert parsed == {"deleted": True, "hidden": True}
+    # Soft delete: off the board and the search, kept for the history sync.
+    kept = store.get_task(task["id"])
+    assert kept["deleted_at"] and kept["status"] == "cancelled"
+    _, state = _request(conn, "GET", "/api/state", headers=auth_headers)
+    assert task["id"] not in {t["id"] for t in state["tasks"]}
+    _, found = _request(conn, "GET", "/api/search?q=x", headers=auth_headers)
+    assert found["tasks"] == []
+    assert store.search_tasks("x", include_hidden=True)[0]["id"] == task["id"]
+
+
+def test_deleted_task_can_be_restored(store, conn, auth_headers, tmp_path):
+    task = store.create_task(kind="prompt", body="x", status="done", source="hook")
+    child = store.create_task(kind="delegation", body="c", status="done", source="hook",
+                              parent_id=task["id"])
+    _request(conn, "DELETE", f"/api/tasks/{task['id']}", headers=auth_headers)
+    assert store.get_task(child["id"])["deleted_at"]
+    resp, parsed = _request(conn, "POST", f"/api/tasks/{task['id']}/restore",
+                            headers=auth_headers)
+    assert resp.status == 200 and parsed["deleted_at"] is None
+    assert store.get_task(child["id"])["deleted_at"] is None
+    resp, _ = _request(conn, "POST", "/api/tasks/999999/restore", headers=auth_headers)
+    assert resp.status == 404
+
+
+def test_new_task_keeps_its_permission_mode(store, conn, auth_headers, tmp_path):
+    resp, parsed = _request(conn, "POST", "/api/tasks", headers=auth_headers,
+                            body={"body": "plan it", "cwd": str(tmp_path),
+                                  "permission_mode": "plan"})
+    assert resp.status == 201 and parsed["permission_mode"] == "plan"
+    resp, _ = _request(conn, "POST", "/api/tasks", headers=auth_headers,
+                       body={"body": "x", "cwd": str(tmp_path), "permission_mode": "yolo"})
+    assert resp.status == 400
+    resp, _ = _request(conn, "POST", "/api/tasks", headers=auth_headers,
+                       body={"body": "x", "cwd": str(tmp_path),
+                             "permission_mode": "bypassPermissions"})
+    assert resp.status == 400
+    resp, patched = _request(conn, "PATCH", f"/api/tasks/{parsed['id']}", headers=auth_headers,
+                             body={"permission_mode": "acceptEdits"})
+    assert resp.status == 200 and patched["permission_mode"] == "acceptEdits"
+
+
+def test_enqueue_uses_the_task_permission_mode_when_none_is_given(store, conn, auth_headers,
+                                                                   tmp_path):
+    _, task = _request(conn, "POST", "/api/tasks", headers=auth_headers,
+                       body={"body": "edit it", "cwd": str(tmp_path),
+                             "permission_mode": "acceptEdits"})
+    resp, parsed = _request(conn, "POST", f"/api/tasks/{task['id']}/enqueue", body={},
+                            headers=auth_headers)
+    assert resp.status == 200
+    assert store.get_task(task["id"])["permission_mode"] == "acceptEdits"
 
 
 def test_delete_task_not_found(conn, auth_headers):
@@ -1438,3 +1487,62 @@ def test_get_task_route(store, conn, auth_headers):
     assert parsed["body"] == "hello"
     resp, _ = _request(conn, "GET", "/api/tasks/999999", headers=auth_headers)
     assert resp.status == 404
+
+
+# -- 0.8.0: smart search, version, task files ---------------------------------------------
+
+
+def test_smart_search_needs_a_question(conn, auth_headers):
+    resp, parsed = _request(conn, "POST", "/api/search/smart", body={"q": "  "},
+                            headers=auth_headers)
+    assert resp.status == 400
+    resp, _ = _request(conn, "POST", "/api/search/smart", body={"q": "x" * 201},
+                       headers=auth_headers)
+    assert resp.status == 400
+
+
+def test_smart_search_reports_a_failed_model_call_as_502(store, conn, auth_headers):
+    store.create_task(kind="prompt", body="fix the login", status="done", source="hook")
+    resp, parsed = _request(conn, "POST", "/api/search/smart", body={"q": "login bug"},
+                            headers=auth_headers)
+    assert resp.status == 502
+    assert "error" in parsed
+
+
+def test_smart_search_returns_the_model_matches(store, conn, auth_headers, monkeypatch):
+    hit = store.create_task(kind="prompt", body="fix the login", status="done", source="hook")
+
+    def fake(config, store_, query, *, cwd=None, run=None):
+        return {"results": [{"task": store_.get_task(hit["id"]), "reason": "login"}],
+                "cost_usd": 0.001, "model": "haiku", "scanned": 1}
+
+    monkeypatch.setattr(server_mod.smart_search, "search", fake)
+    resp, parsed = _request(conn, "POST", "/api/search/smart", body={"q": "login bug"},
+                            headers=auth_headers)
+    assert resp.status == 200
+    assert parsed["results"][0]["task"]["id"] == hit["id"]
+
+
+def test_smart_search_requires_the_token(conn):
+    resp, _ = _request(conn, "POST", "/api/search/smart", body={"q": "login"})
+    assert resp.status == 401
+
+
+def test_state_carries_the_server_version(conn, auth_headers):
+    resp, parsed = _request(conn, "GET", "/api/state", headers=auth_headers)
+    assert parsed["version"] == server_mod.__version__
+    assert parsed["recaps"] == []
+
+
+def test_task_detail_lists_edited_files(store, conn, auth_headers):
+    task = store.create_task(kind="prompt", body="edit", status="done", source="hook",
+                             prompt_id="p1", session_id="s1")
+    store.add_messages([
+        {"uuid": "a:0", "session_id": "s1", "prompt_id": "p1", "role": "assistant",
+         "kind": "tool_use", "tool_name": "Edit", "file_path": "/w/a.py", "text": ""},
+        {"uuid": "a:1", "session_id": "s1", "prompt_id": "p1", "role": "assistant",
+         "kind": "tool_use", "tool_name": "Read", "file_path": "/w/b.py", "text": ""},
+    ])
+    resp, parsed = _request(conn, "GET", f"/api/tasks/{task['id']}", headers=auth_headers)
+    assert parsed["files"] == ["/w/a.py"]
+    assert parsed["stats"]["files"] == 1 and parsed["stats"]["tools"] == 2

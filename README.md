@@ -14,8 +14,10 @@ anyone whose attention is the scarcest resource in the room.
 
 - **Captures automatically.** Real prompts become tasks; `Agent` calls become child tasks; the
   final assistant message becomes the result. Background subagents are matched to their parent and
-  closed when they report back. A prompt you interrupt with Esc moves to "needs attention" when
-  the session finishes its next turn or is resumed.
+  closed when they report back. A message you type while Claude is working joins the running task
+  instead of becoming a new one. A prompt you cancel with Esc before Claude replies is dropped, so
+  cancelling to rewrite a prompt leaves one task; one Claude had started working on moves to "needs
+  attention" when the session finishes its next turn or is resumed.
 - **Queues from the chat for free.** Start a prompt with `++` and it is stored as a queued task
   and blocked before it reaches the model: zero turns, zero cost.
 - **Drains the queue when you want it to.** Turn on auto-pull for a session and, each time it
@@ -27,9 +29,14 @@ anyone whose attention is the scarcest resource in the room.
   the context.
 - **Remembers the past.** Import your existing Claude Code transcripts so the board is not empty
   on day one.
-- **Keeps every conversation.** Every message, tool call and tool result is copied into the ledger
-  at the end of each turn, before each compaction and at session end, so it stays searchable after
-  Claude Code deletes its transcripts (30 days by default).
+- **Keeps every conversation.** Every message, tool call and tool result, subagents' included, is
+  copied into the ledger at the end of each turn, before each compaction and at session end, so it
+  stays searchable after Claude Code deletes its transcripts (30 days by default). Tokens and files
+  edited are counted per task, for free.
+- **Keeps you oriented.** Claude Code's recaps (the summary it writes when you come back to a
+  session) are shown large above the board, and among the tasks where they happened.
+- **Finds old answers.** Plain search by words at no cost, and Smart search, which asks Haiku to
+  match by meaning when the words differ.
 - **Keeps a history of problems and what was tried.** Per repository: problems with the ordered
   chain of fixes attempted and why each failed, milestones, a map, and an MCP server so the agent
   can check what already failed before trying it again.
@@ -82,19 +89,29 @@ The board uses the full width of the screen, one column per stage:
 | **Inbox** | Tasks you created that are not scheduled yet |
 | **Up next** | Each project's run queue. Top to bottom is the order they will run in |
 | **Running** | **Queue runner** (the task started from Up next) above **Parallel** (everything else running) |
-| **Needs attention** | Interrupted or failed tasks, with Run again and Back to Inbox |
-| **Done** | Finished tasks, newest first |
+| **Needs attention** | What needs you, each with its reason: **Failed**, **Stopped mid-work** (interrupted after Claude started), or **Asked you** (the newest reply of an open session ends with a question) |
+| **Done** | Finished tasks, grouped by day and then by session, newest first |
 
-A task is one line: a status dot, its title and how long ago. Click the title for the full text, the
-result and the session it ran in. Inbox and Up next rows carry three small buttons, Run now, After
-last and Parallel with context; the "..." menu on every row repeats them with words and holds the rest
-(edit, move, back to Inbox, mark done, cancel, delete). A row whose result ends with a question shows
-a "Needs answer" mark. Empty columns shrink so the ones with work get the width.
+A card shows its title on up to two lines, the first sentence of the reply, and a facts row: how
+long it took, files edited, output tokens and messages you added while it ran. Click it for the full
+text, the result, those messages, the files edited, the token breakdown, the session and the recaps
+around it. Inbox and Up next rows carry three small buttons, Run now, After last and Parallel with
+context; the "..." menu on every row repeats them with words and holds the rest (edit, move, back to
+Inbox, mark done, cancel, delete). Delete hides the task, with Undo for a few seconds; the row stays
+for the history sync. The "needs answer" mark only shows on the newest task of a session. Empty
+columns fold into a thin strip, which opens again when you drag a card over it.
+
+Done groups are headed by the session's name and colour, the same colour as its cards' left bar,
+with its task count and output tokens; today's groups start open. Above the columns, **Latest
+recaps** shows the summary Claude Code wrote when you last came back to each open session, and
+recaps also appear in Done among the tasks where they happened. A yellow bar names open sessions
+that still run an older tasky's hooks: restart them.
 
 Create tasks from the bar at the top. Its "to" picker lists your active sessions first (sending a
 task to one ties it to that session), then each active project, and everything else under "Other".
-The sliders button on the right holds the project filter and the permission mode the row buttons use;
-an active filter shows as a chip you can click to clear. Drag rows to reorder Up next or to move them
+Next to it, pick the permission mode the task will run with; it is kept on the task, so its run
+buttons use it. The sliders button on the right holds the project filter; an active filter shows as
+a chip you can click to clear. Drag rows to reorder Up next or to move them
 between Inbox and Up next; with the keyboard, focus a row's handle, press Space, move with the arrow
 keys and press Enter. Rows cycle through five colour rails so neighbours are easy to tell apart. On a
 phone, one column shows at a time.
@@ -103,6 +120,13 @@ The search box next to the bar (press `/`) finds past tasks by any word in their
 reply, across everything Tasky has recorded, not just what the board shows. Every word must match,
 the newest 50 hits come first, the project filter applies, and clicking a hit opens it in the side
 panel: read an old answer again instead of asking Claude, at no token cost. Esc clears it.
+
+When the words you remember are not the ones used back then, press **Smart search** under the
+results. It sends your search text and a compact index of the ledger (start of each prompt, messages
+added during it, start of the reply, date, project) to Haiku, with no tools, and lists the tasks it
+names with one line on why each matches. It costs about 6¢ the first time and 2–3¢ on the next
+searches (the index is cached for a few minutes) and takes 10–30 seconds. Ids Haiku names that were
+not in the index are dropped.
 
 ### Queue a task
 
@@ -181,11 +205,13 @@ tasky import --dry-run
 tasky import
 ```
 
-Reads `~/.claude/projects/*/*.jsonl`. It is idempotent, tolerates damaged lines, skips subagent
-transcripts, and skips any session that hooks or workers have already recorded. Imported sessions
+Reads `~/.claude/projects/*/*.jsonl`. It is idempotent, tolerates damaged lines, does not turn
+subagent transcripts into tasks, and skips any session that hooks or workers have already recorded. Imported sessions
 are shown as ended. It also copies every message of every transcript into the ledger (in the
-background when started from the dashboard), which is what keeps them after Claude Code's 30-day
-cleanup.
+background when started from the dashboard), subagent transcripts included, which is what keeps
+them after Claude Code's 30-day cleanup. Once copied, it repairs rows earlier versions recorded
+wrongly: turns split into several tasks are merged, and prompts cancelled before any reply are
+dropped.
 
 ### Readable results and the Focus Cards style
 
@@ -241,7 +267,7 @@ Reading the history is free. It also reaches the agent in two ways:
   `search_tasks` and `record_attempt`. The last one lets the agent write an attempt and its outcome
   the moment it knows, with no sync and no extra model call; those attempts are tagged "agent".
   `search_conversations` searches every stored message (with the turns around each hit) and
-  `last_session` says what the latest sessions in the repository did.
+  `last_session` says what the latest sessions in the repository did, with their latest recap.
 
 After a sync, every session that is still open and had tasks in it gets suggested instructions for
 Claude Code's `/compact`: what the summary must keep (the goal in progress, decisions and why, open
@@ -266,15 +292,16 @@ claude plugin marketplace update tasky
 claude plugin update tasky@tasky
 ```
 
-Then restart Claude Code or run `/reload-plugins`, and recreate the `~/.local/bin/tasky` link if you
-made one, because it points into the versioned plugin directory.
+Then restart Claude Code or run `/reload-plugins`: a session keeps the hooks of the version it
+started with, and the dashboard flags open sessions still running older ones. Recreate the
+`~/.local/bin/tasky` link if you made one, because it points into the versioned plugin directory.
 
 ### Command reference
 
 ```text
 tasky ui [--port N] [--open]        start the dashboard in the background if needed, print the URL
 tasky serve [--port N] [--open]     run the dashboard in the foreground
-tasky add TEXT [--cwd DIR] [--session ID]
+tasky add TEXT [--cwd DIR] [--session ID] [--permission-mode MODE]
 tasky list [--status S] [--cwd DIR] [--limit N] [--json]
 tasky done ID | tasky cancel ID
 tasky run ID [--mode now|fork] [--permission-mode MODE]
@@ -291,7 +318,7 @@ tasky status [--short]
 | Hook | What Tasky does | Output |
 | --- | --- | --- |
 | `SessionStart` | Registers the session. On resume, marks tasks left running by the old process as interrupted. On resume or compaction, lists unfinished tasks | Context, only when there is something unfinished |
-| `UserPromptSubmit` | Records the prompt, handles `++`, closes subagents on task notifications | Blocks `++` prompts only |
+| `UserPromptSubmit` | Records the prompt, or adds it to the running task when typed mid-turn; drops the previous prompt if it was cancelled before any reply; handles `++`; closes subagents on task notifications | Blocks `++` prompts only |
 | `PreToolUse` / `PostToolUse` (`Agent`) | Records delegations | None |
 | `SubagentStop` | Stores the subagent's final message | None |
 | `Stop` | Stores the turn's final message, marks earlier interrupted prompts, pulls the next task when auto-pull is on | Continues the session only with auto-pull |
@@ -311,6 +338,7 @@ call. Every hook exits successfully and prints nothing when something goes wrong
 | Context reminder after resume or compaction | A few lines, only when tasks are unfinished |
 | Dead ends reminder at session start | A few lines, only in repositories with failed attempts |
 | History sync | One model call per batch of up to 40 tasks, only when you press Sync |
+| Smart search | One Haiku call (2–6¢), only when you press Smart search |
 | `tasky` MCP tools | Their definitions in each session's context; results only when called |
 | Auto-pull | One normal turn per pulled task |
 | Run now and the run queue | One normal headless session per task |
@@ -330,8 +358,10 @@ your sessions: text, tool calls and tool results (capped at 8000, 1000 and 4000 
 Before a message is stored, strings that look like secrets are replaced with `[redacted]`: private
 keys, provider API keys and tokens (Anthropic, OpenAI-style, GitHub, Slack, AWS, Google), JWTs,
 bearer tokens and `password=`/`api_key:`-style assignments. That filter is pattern-based; a secret
-in another shape is stored as typed. It never modifies your Claude Code settings or transcripts.
-Delete the directory to erase everything.
+in another shape is stored as typed. Token counts per API message, recaps and messages typed
+mid-turn are stored too. Deleting a task in the dashboard hides it; the row stays so the history
+sync can still use it. It never modifies your Claude Code settings or transcripts. Delete the
+directory to erase everything.
 
 ## Security
 

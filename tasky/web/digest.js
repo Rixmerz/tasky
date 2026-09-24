@@ -12,7 +12,7 @@
 
 const STEP_MARKER_RE = /^(\d+)\s*→\s*/;
 const ARROW_MARKER_RE = /^→\s*/;
-const DOT_MARKER_RE = /^(\d+)\.\s*/;
+const DOT_MARKER_RE = /^(\d+)\.\s+/;
 const FENCE_RE = /^```/;
 const TABLE_ROW_RE = /^\s*\|/;
 const UNORDERED_RE = /^[-*]\s+/;

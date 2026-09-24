@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from tasky.config import Config, now_iso
-from tasky.prompts import make_title
+from tasky.prompts import SESSION_COMMANDS, classify, make_title, normalize, same_request
 
 TASK_STATUSES = ("queued", "running", "done", "failed", "interrupted", "cancelled")
 TERMINAL = ("done", "failed", "interrupted", "cancelled")
@@ -31,7 +31,7 @@ _ATTEMPT_FIELDS = (
     "task_ids", "commits",
 )
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 HISTORY_FTS_REBUILD = """
 DELETE FROM history_fts;
 INSERT INTO history_fts (kind, ref_id, text)
@@ -43,7 +43,13 @@ INSERT INTO history_fts (kind, ref_id, text)
   SELECT 'milestone', id, title || ' ' || detail || ' ' || COALESCE(topic, '') FROM milestones;
 """
 _INIT_TIMEOUT_S = 10.0
-_SESSION_FIELDS = ("title", "auto_pull", "pull_chain", "state", "compact_prompt", "compact_at")
+_EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+_AGENT_TOOLS = ("Agent", "Task")
+# Enough of a prompt to recognise it inside an Agent call's input.
+_SUBAGENT_PROBE_CHARS = 60
+_SESSION_FIELDS = (
+    "title", "auto_pull", "pull_chain", "state", "compact_prompt", "compact_at", "hook_version",
+)
 _SESSION_STATES = ("active", "ended")
 _LIST_TASKS_ORDER = (
     "ORDER BY CASE WHEN status = 'queued' THEN 0 ELSE 1 END, "
@@ -67,6 +73,7 @@ _TASK_UPDATE_FIELDS = (
     "run_mode",
     "permission_mode",
     "fork_of",
+    "followups",
 )
 
 _SCHEMA = """
@@ -76,7 +83,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'active',
   auto_pull INTEGER NOT NULL DEFAULT 0, pull_chain INTEGER NOT NULL DEFAULT 0,
-  source TEXT NOT NULL DEFAULT 'hook', compact_prompt TEXT, compact_at TEXT
+  source TEXT NOT NULL DEFAULT 'hook', compact_prompt TEXT, compact_at TEXT,
+  hook_version TEXT
 );
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,7 +94,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   result TEXT, cwd TEXT, prompt_id TEXT, external_id TEXT UNIQUE, agent_id TEXT,
   source TEXT NOT NULL,
   position REAL, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
-  lane TEXT, run_mode TEXT, permission_mode TEXT, fork_of TEXT
+  lane TEXT, run_mode TEXT, permission_mode TEXT, fork_of TEXT, followups TEXT,
+  deleted_at TEXT
 );
 CREATE TABLE IF NOT EXISTS lanes (
   cwd TEXT PRIMARY KEY, paused INTEGER NOT NULL DEFAULT 0, reason TEXT
@@ -133,8 +142,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
   text, tokenize = 'unicode61 remove_diacritics 2'
 );
 CREATE TABLE IF NOT EXISTS transcript_offsets (
-  path TEXT PRIMARY KEY, offset INTEGER NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0
+  path TEXT PRIMARY KEY, offset INTEGER NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0,
+  prompt_id TEXT
 );
+CREATE TABLE IF NOT EXISTS usage (
+  message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, prompt_id TEXT, model TEXT,
+  input INTEGER NOT NULL DEFAULT 0, output INTEGER NOT NULL DEFAULT 0,
+  cache_read INTEGER NOT NULL DEFAULT 0, cache_write INTEGER NOT NULL DEFAULT 0,
+  ts TEXT, sidechain INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_usage_prompt ON usage(prompt_id);
+CREATE INDEX IF NOT EXISTS idx_usage_session ON usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_prompt ON messages(prompt_id);
 CREATE INDEX IF NOT EXISTS idx_messages_file ON messages(file_path);
@@ -211,6 +229,35 @@ CREATE TRIGGER IF NOT EXISTS trg_lanes_rev_del AFTER DELETE ON lanes BEGIN
   UPDATE meta SET value = value + 1 WHERE key = 'rev';
 END;
 """
+
+
+def _json_list(value: Any) -> list:
+    if isinstance(value, list):
+        return value
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _merge_followup(followups: list[dict], text: str, at: str) -> None:
+    """Append a message sent during a turn; an edited resend replaces its earlier copy."""
+    if followups and same_request(followups[-1]["text"], text):
+        followups[-1] = {"text": text, "at": at}
+    else:
+        followups.append({"text": text, "at": at})
+
+
+def _usage_totals(row: sqlite3.Row) -> dict[str, int]:
+    return {
+        "input": int(row["input"] or 0),
+        "output": int(row["output"] or 0),
+        "cache_read": int(row["cache_read"] or 0),
+        "cache_write": int(row["cache_write"] or 0),
+    }
 
 
 def _split_script(script: str) -> list[str]:
@@ -297,6 +344,7 @@ class Store:
                     self._migrate_v1_to_v2()
                     self._migrate_v3_to_v4()
                     self._migrate_v4_to_v5()
+                    self._migrate_v5_to_v6()
                     self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                 self._conn.commit()
                 return
@@ -325,6 +373,214 @@ class Store:
         for column in ("compact_prompt", "compact_at"):
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE sessions ADD COLUMN {column} TEXT")  # noqa: S608
+
+    def _migrate_v5_to_v6(self) -> None:
+        """Add the 0.8.0 columns, then repair what earlier hooks recorded wrongly.
+
+        Earlier versions left three kinds of wrong rows: a message typed while
+        Claude was working became its own task and stole the turn's reply
+        (leaving the real task "interrupted"); a prompt cancelled before any
+        reply stayed as a task; and assistant messages had no prompt id, so a
+        turn's files and tokens could not be found. Transcripts are read again
+        from the start so token usage, which was not kept before, fills in;
+        messages are keyed by uuid, so none is copied twice.
+        """
+        for table, column in (
+            ("sessions", "hook_version"),
+            ("tasks", "followups"),
+            ("tasks", "deleted_at"),
+            ("transcript_offsets", "prompt_id"),
+        ):
+            existing = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")  # noqa: S608
+        self._repair()
+        self._conn.execute("DELETE FROM transcript_offsets")
+
+    def repair(self) -> dict[str, int]:
+        """Run the 0.8.0 repairs again, e.g. after old transcripts were copied."""
+        with self._conn:
+            counts = self._repair()
+        return counts
+
+    def _repair(self) -> dict[str, int]:
+        before = self._conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        self._repair_message_prompts()
+        folded = self._fold_turn_followups() + self._fold_absorbed_messages()
+        dropped = self._drop_unanswered_prompts()
+        self._clean_command_tasks()
+        after = self._conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        return {"folded": folded, "dropped": dropped, "removed": before - after}
+
+    def _repair_message_prompts(self) -> None:
+        """Give each assistant message the prompt id of the user message before it."""
+        current: dict[str, str] = {}
+        updates = []
+        for row in self._conn.execute(
+            "SELECT id, session_id, prompt_id, role FROM messages ORDER BY session_id, id"
+        ):
+            if row["prompt_id"]:
+                current[row["session_id"]] = row["prompt_id"]
+            elif row["role"] == "assistant" and row["session_id"] in current:
+                updates.append((current[row["session_id"]], row["id"]))
+        self._conn.executemany("UPDATE messages SET prompt_id = ? WHERE id = ?", updates)
+
+    def _fold_turn_followups(self) -> int:
+        """Merge the tasks of one turn into its first task, as the hook now does."""
+        groups = self._conn.execute(
+            "SELECT session_id, prompt_id FROM tasks WHERE kind = 'prompt' AND source = 'hook' "
+            "AND prompt_id IS NOT NULL AND parent_id IS NULL "
+            "GROUP BY session_id, prompt_id HAVING COUNT(*) > 1"
+        ).fetchall()
+        for group in groups:
+            rows = self._conn.execute(
+                "SELECT * FROM tasks WHERE kind = 'prompt' AND source = 'hook' "
+                "AND parent_id IS NULL AND session_id = ? AND prompt_id = ? ORDER BY id",
+                (group["session_id"], group["prompt_id"]),
+            ).fetchall()
+            keep, rest = rows[0], rows[1:]
+            followups: list[dict] = []
+            answered = next((r for r in reversed(rows) if r["result"]), None)
+            for row in rest:
+                self._conn.execute(
+                    "UPDATE tasks SET parent_id = ? WHERE parent_id = ?", (keep["id"], row["id"])
+                )
+                self._conn.execute("DELETE FROM tasks WHERE id = ?", (row["id"],))
+                if classify(row["body"]).kind != "task" or self.is_subagent_prompt(
+                    row["session_id"], row["body"]
+                ):
+                    continue
+                _merge_followup(followups, row["body"], row["created_at"])
+            fields: dict[str, Any] = {
+                "followups": json.dumps(followups, ensure_ascii=False) if followups else None
+            }
+            if answered is not None and not keep["result"]:
+                fields.update(
+                    result=answered["result"],
+                    status=answered["status"],
+                    finished_at=answered["finished_at"],
+                )
+            columns = ", ".join(f"{key} = ?" for key in fields)
+            self._conn.execute(
+                f"UPDATE tasks SET {columns} WHERE id = ?",  # noqa: S608 -- fixed keys above
+                (*fields.values(), keep["id"]),
+            )
+        return len(groups)
+
+    def _fold_absorbed_messages(self) -> int:
+        """Merge tasks whose text Claude Code handed to another task's running turn.
+
+        A message typed mid-turn is copied from the transcript with the id of
+        the turn that absorbed it; if a task was recorded for it under another
+        id, it belongs to that turn's task.
+        """
+        candidates = self._conn.execute(
+            "SELECT * FROM tasks WHERE kind = 'prompt' AND source = 'hook' "
+            "AND parent_id IS NULL AND status IN ('running', 'interrupted') "
+            "AND session_id IS NOT NULL ORDER BY id"
+        ).fetchall()
+        texts: dict[str, list[tuple[str, str]]] = {}
+        folded = 0
+        for task in candidates:
+            session = task["session_id"]
+            if session not in texts:
+                texts[session] = [
+                    (normalize(r["text"])[:120], r["prompt_id"])
+                    for r in self._conn.execute(
+                        "SELECT text, prompt_id FROM messages WHERE session_id = ? "
+                        "AND role = 'user' AND kind = 'text' AND sidechain = 0 "
+                        "AND prompt_id IS NOT NULL",
+                        (session,),
+                    )
+                ]
+            probe = normalize(task["body"])[:120]
+            if len(probe) < 20:
+                continue
+            owner_prompt = next(
+                (pid for text, pid in texts[session] if text == probe and pid != task["prompt_id"]),
+                None,
+            )
+            if owner_prompt is None:
+                continue
+            owner = self._conn.execute(
+                "SELECT * FROM tasks WHERE session_id = ? AND prompt_id = ? AND kind = 'prompt' "
+                "AND parent_id IS NULL AND id != ? ORDER BY id LIMIT 1",
+                (session, owner_prompt, task["id"]),
+            ).fetchone()
+            if owner is None:
+                continue
+            followups = _json_list(owner["followups"])
+            _merge_followup(followups, task["body"], task["created_at"])
+            self._conn.execute(
+                "UPDATE tasks SET followups = ? WHERE id = ?",
+                (json.dumps(followups, ensure_ascii=False), owner["id"]),
+            )
+            if task["result"] and not owner["result"]:
+                # Earlier hooks gave the turn's reply to the absorbed message's task.
+                self._conn.execute(
+                    "UPDATE tasks SET result = ?, finished_at = COALESCE(?, finished_at), "
+                    "status = CASE WHEN status IN ('running', 'interrupted') THEN 'done' "
+                    "ELSE status END WHERE id = ?",
+                    (task["result"], task["finished_at"], owner["id"]),
+                )
+            self._conn.execute(
+                "UPDATE tasks SET parent_id = ? WHERE parent_id = ?", (owner["id"], task["id"])
+            )
+            self._conn.execute("DELETE FROM tasks WHERE id = ?", (task["id"],))
+            folded += 1
+        return folded
+
+    def _clean_command_tasks(self) -> None:
+        """Drop recorded session commands (/compact …) and retitle tasks named after a paste."""
+        rows = self._conn.execute(
+            "SELECT id, body, title FROM tasks WHERE kind = 'prompt' "
+            "AND (body LIKE '/%' OR body LIKE '<%' OR title LIKE '<pasted_content%')"
+        ).fetchall()
+        for row in rows:
+            if row["body"].startswith("<") and not row["body"].startswith("<pasted_content"):
+                classified = classify(row["body"])
+                if classified.kind != "task":
+                    self._conn.execute("DELETE FROM tasks WHERE id = ?", (row["id"],))
+                    continue
+                self._conn.execute(
+                    "UPDATE tasks SET body = ?, title = ? WHERE id = ?",
+                    (classified.text, make_title(classified.text), row["id"]),
+                )
+                row = {"id": row["id"], "body": classified.text, "title": ""}
+            command = row["body"].split(None, 1)[0].lstrip("/") if row["body"] else ""
+            if row["body"].startswith("/") and command in SESSION_COMMANDS:
+                self._conn.execute("DELETE FROM tasks WHERE id = ?", (row["id"],))
+            elif row["title"].startswith("<pasted_content"):
+                self._conn.execute(
+                    "UPDATE tasks SET title = ? WHERE id = ?", (make_title(row["body"]), row["id"])
+                )
+
+    def _drop_unanswered_prompts(self) -> int:
+        """Delete prompts cancelled before any reply, where the transcript proves it."""
+        rows = self._conn.execute(
+            "SELECT t.id, t.session_id, t.prompt_id FROM tasks t WHERE t.kind = 'prompt' "
+            "AND t.source = 'hook' AND t.status IN ('running', 'interrupted') "
+            "AND (t.result IS NULL OR t.result = '') AND t.prompt_id IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id) "
+            "AND EXISTS (SELECT 1 FROM tasks n WHERE n.session_id = t.session_id "
+            "AND n.kind = 'prompt' AND n.id > t.id)"
+        ).fetchall()
+        dropped = 0
+        for row in rows:
+            if self.turn_activity(row["prompt_id"]) != "unanswered":
+                continue
+            # Only trust "no reply" when a later prompt was copied too: copying
+            # may have stopped right after this prompt, before its reply.
+            later = self._conn.execute(
+                "SELECT 1 FROM messages WHERE session_id = ? AND role = 'user' "
+                "AND prompt_id IS NOT NULL AND prompt_id != ? AND id > "
+                "(SELECT MAX(id) FROM messages WHERE prompt_id = ?) LIMIT 1",
+                (row["session_id"], row["prompt_id"], row["prompt_id"]),
+            ).fetchone()
+            if later is not None:
+                self._conn.execute("DELETE FROM tasks WHERE id = ?", (row["id"],))
+                dropped += 1
+        return dropped
 
     def _migrate_v3_to_v4(self) -> None:
         """Move 0.5.0 history records into problems, attempts and milestones.
@@ -410,6 +666,7 @@ class Store:
         task = cls._row(row)
         cwd = task.get("cwd") or ""
         task["project"] = Path(cwd).name if cwd else ""
+        task["followups"] = _json_list(task.get("followups"))
         return task
 
     def _next_position(self) -> float:
@@ -427,6 +684,7 @@ class Store:
         transcript_path: str | None = None,
         source: str = "hook",
         at: str | None = None,
+        hook_version: str | None = None,
     ) -> dict:
         at = at or now_iso()
         existing = self._conn.execute(
@@ -449,6 +707,10 @@ class Store:
                 "UPDATE sessions SET cwd = ?, transcript_path = ?, last_seen_at = ?, "
                 "state = 'active' WHERE id = ?",
                 (new_cwd, new_transcript, at, session_id),
+            )
+        if hook_version is not None:
+            self._conn.execute(
+                "UPDATE sessions SET hook_version = ? WHERE id = ?", (hook_version, session_id)
             )
         self._conn.commit()
         session = self.get_session(session_id)
@@ -661,6 +923,28 @@ class Store:
         assert task is not None
         return task
 
+    def hide_task(self, task_id: int) -> bool:
+        """Take a task (and its delegations) off the board, keeping the row.
+
+        A hidden queued task is cancelled too, so nothing ever runs it.
+        """
+        at = now_iso()
+        cursor = self._conn.execute(
+            "UPDATE tasks SET deleted_at = COALESCE(deleted_at, ?), "
+            "status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END "
+            "WHERE id = ? OR parent_id = ?",
+            (at, task_id, task_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def restore_task(self, task_id: int) -> dict | None:
+        self._conn.execute(
+            "UPDATE tasks SET deleted_at = NULL WHERE id = ? OR parent_id = ?", (task_id, task_id)
+        )
+        self._conn.commit()
+        return self.get_task(task_id)
+
     def delete_task(self, task_id: int) -> bool:
         cursor = self._conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         self._conn.commit()
@@ -674,8 +958,9 @@ class Store:
         cwd: str | None = None,
         kind: str | None = None,
         limit: int | None = None,
+        include_hidden: bool = False,
     ) -> list[dict]:
-        clauses = []
+        clauses = [] if include_hidden else ["deleted_at IS NULL"]
         params: list[Any] = []
         if status is not None:
             statuses = [status] if isinstance(status, str) else list(status)
@@ -702,7 +987,12 @@ class Store:
         return [self._task_row(r) for r in rows]
 
     def search_tasks(
-        self, query: str, *, cwd: str | None = None, limit: int = SEARCH_LIMIT
+        self,
+        query: str,
+        *,
+        cwd: str | None = None,
+        limit: int = SEARCH_LIMIT,
+        include_hidden: bool = False,
     ) -> list[dict]:
         """Tasks whose title, prompt or reply holds every word of ``query``.
 
@@ -719,12 +1009,15 @@ class Store:
             pattern = "%" + _LIKE_SPECIALS.sub(r"\\\g<0>", word) + "%"
             clauses.append(
                 "(title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\' "
-                "OR COALESCE(result, '') LIKE ? ESCAPE '\\')"
+                "OR COALESCE(result, '') LIKE ? ESCAPE '\\' "
+                "OR COALESCE(followups, '') LIKE ? ESCAPE '\\')"
             )
-            params.extend((pattern, pattern, pattern))
+            params.extend((pattern, pattern, pattern, pattern))
         if cwd is not None:
             clauses.append("cwd = ?")
             params.append(cwd)
+        if not include_hidden:
+            clauses.append("deleted_at IS NULL")
         # clauses are fixed LIKE comparisons, one per word; every value is bound
         sql = (
             "SELECT * FROM tasks WHERE "  # noqa: S608
@@ -805,7 +1098,9 @@ class Store:
         """Mark running tasks of a session ``interrupted`` unless a delegation still runs."""
         excluded = set(exclude_ids)
         count = 0
-        for task in self.list_tasks(status="running", session_id=session_id, kind=kind):
+        for task in self.list_tasks(
+            status="running", session_id=session_id, kind=kind, include_hidden=True
+        ):
             if task["id"] in excluded or self.running_children(task["id"]):
                 continue
             self.update_task(task["id"], status="interrupted")
@@ -1050,13 +1345,149 @@ class Store:
         ).fetchone()
         return (int(row[0]), int(row[1])) if row else (0, 0)
 
-    def set_transcript_offset(self, path: str, offset: int, size: int) -> None:
+    def transcript_offset_count(self) -> int:
+        return int(self._conn.execute("SELECT COUNT(*) FROM transcript_offsets").fetchone()[0])
+
+    def transcript_prompt(self, path: str) -> str | None:
+        """The prompt id in force where reading of ``path`` stopped."""
+        row = self._conn.execute(
+            "SELECT prompt_id FROM transcript_offsets WHERE path = ?", (path,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_transcript_offset(
+        self, path: str, offset: int, size: int, prompt_id: str | None = None
+    ) -> None:
         self._conn.execute(
-            "INSERT INTO transcript_offsets (path, offset, size) VALUES (?, ?, ?) "
-            "ON CONFLICT(path) DO UPDATE SET offset = excluded.offset, size = excluded.size",
-            (path, offset, size),
+            "INSERT INTO transcript_offsets (path, offset, size, prompt_id) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(path) DO UPDATE SET offset = excluded.offset, size = excluded.size, "
+            "prompt_id = excluded.prompt_id",
+            (path, offset, size, prompt_id),
         )
         self._conn.commit()
+
+    def add_usage(self, rows: list[dict]) -> None:
+        """Record token usage per API message; a message split over several
+        transcript lines repeats its usage, so each id is kept once (the largest)."""
+        for row in rows:
+            self._conn.execute(
+                "INSERT INTO usage (message_id, session_id, prompt_id, model, input, output, "
+                "cache_read, cache_write, ts, sidechain) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(message_id) DO UPDATE SET "
+                "prompt_id = COALESCE(usage.prompt_id, excluded.prompt_id), "
+                "input = MAX(usage.input, excluded.input), "
+                "output = MAX(usage.output, excluded.output), "
+                "cache_read = MAX(usage.cache_read, excluded.cache_read), "
+                "cache_write = MAX(usage.cache_write, excluded.cache_write)",
+                (
+                    row["message_id"], row["session_id"], row.get("prompt_id"), row.get("model"),
+                    row.get("input", 0), row.get("output", 0), row.get("cache_read", 0),
+                    row.get("cache_write", 0), row.get("ts"), 1 if row.get("sidechain") else 0,
+                ),
+            )
+        self._conn.commit()
+
+    def turn_activity(self, prompt_id: str) -> str:
+        """How a turn went, from its copied messages.
+
+        ``unknown`` (not copied), ``unanswered`` (no reply, no tool call),
+        ``interrupted`` (Esc after Claude started: Claude Code writes a
+        "[Request interrupted by user…]" message) or ``worked``.
+        """
+        row = self._conn.execute(
+            "SELECT SUM(role = 'user') AS asked, "
+            "SUM(role = 'assistant' AND kind IN ('text', 'tool_use')) AS worked, "
+            "SUM(role = 'user' AND kind = 'text' AND text LIKE '[Request interrupted%') "
+            "AS stopped FROM messages WHERE prompt_id = ? AND sidechain = 0",
+            (prompt_id,),
+        ).fetchone()
+        if not row["asked"] and not row["worked"]:
+            return "unknown"
+        if not row["worked"]:
+            return "unanswered"
+        return "interrupted" if row["stopped"] else "worked"
+
+    def is_subagent_prompt(self, session_id: str, text: str) -> bool:
+        """Whether ``text`` is the prompt of an Agent call made in this session."""
+        probe = normalize(text.split("\n", 1)[0])[:_SUBAGENT_PROBE_CHARS]
+        if len(probe) < 20:
+            return False
+        placeholders = ", ".join("?" for _ in _AGENT_TOOLS)
+        rows = self._conn.execute(
+            "SELECT text FROM messages WHERE session_id = ? AND kind = 'tool_use' "  # noqa: S608
+            f"AND tool_name IN ({placeholders}) ORDER BY id DESC LIMIT 200",
+            (session_id, *_AGENT_TOOLS),
+        ).fetchall()
+        return any(probe in normalize(r[0]) for r in rows)
+
+    def add_followup(self, task_id: int, text: str, at: str | None = None) -> dict:
+        task = self.get_task(task_id)
+        if task is None:
+            raise KeyError(task_id)
+        followups = list(task["followups"])
+        _merge_followup(followups, text, at or now_iso())
+        return self.update_task(task_id, followups=json.dumps(followups, ensure_ascii=False))
+
+    def edited_files(self, prompt_id: str) -> list[str]:
+        placeholders = ", ".join("?" for _ in _EDIT_TOOLS)
+        rows = self._conn.execute(
+            "SELECT file_path FROM messages WHERE prompt_id = ? "  # noqa: S608
+            f"AND file_path IS NOT NULL AND tool_name IN ({placeholders}) "
+            "GROUP BY file_path ORDER BY MIN(id)",
+            (prompt_id, *_EDIT_TOOLS),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def task_stats(self, prompt_ids: Iterable[str]) -> dict[str, dict]:
+        """Per prompt id: files edited, tool calls and tokens (subagents included)."""
+        ids = sorted({p for p in prompt_ids if p})
+        stats: dict[str, dict] = {}
+        edit_marks = ", ".join("?" for _ in _EDIT_TOOLS)
+        for start in range(0, len(ids), 500):
+            chunk = ids[start : start + 500]
+            marks = ", ".join("?" for _ in chunk)
+            for row in self._conn.execute(
+                "SELECT prompt_id, SUM(kind = 'tool_use') AS tools, "  # noqa: S608
+                f"COUNT(DISTINCT CASE WHEN tool_name IN ({edit_marks}) THEN file_path END) "
+                f"AS files FROM messages WHERE prompt_id IN ({marks}) GROUP BY prompt_id",
+                (*_EDIT_TOOLS, *chunk),
+            ):
+                stats[row["prompt_id"]] = {
+                    "files": int(row["files"] or 0),
+                    "tools": int(row["tools"] or 0),
+                }
+            for row in self._conn.execute(
+                "SELECT prompt_id, SUM(input) AS input, SUM(output) AS output, "  # noqa: S608
+                "SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write "
+                f"FROM usage WHERE prompt_id IN ({marks}) GROUP BY prompt_id",
+                chunk,
+            ):
+                entry = stats.setdefault(row["prompt_id"], {"files": 0, "tools": 0})
+                entry["tokens"] = _usage_totals(row)
+        return stats
+
+    def recaps(self, *, session_id: str | None = None, limit: int = 100) -> list[dict]:
+        """Recaps Claude Code wrote on coming back to a session, newest first."""
+        where, params = "kind = 'recap'", []
+        if session_id is not None:
+            where += " AND session_id = ?"
+            params.append(session_id)
+        rows = self._conn.execute(
+            "SELECT id, session_id, cwd, prompt_id, text, ts FROM messages "  # noqa: S608
+            f"WHERE {where} ORDER BY ts DESC, id DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        return [self._row(r) for r in rows]
+
+    def session_tokens(self) -> dict[str, dict[str, int]]:
+        return {
+            row["session_id"]: _usage_totals(row)
+            for row in self._conn.execute(
+                "SELECT session_id, SUM(input) AS input, SUM(output) AS output, "
+                "SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write "
+                "FROM usage GROUP BY session_id"
+            )
+        }
 
     def add_messages(self, rows: list[dict]) -> int:
         """Insert messages not stored yet (by uuid); returns how many were new."""
@@ -1078,6 +1509,9 @@ class Store:
                     "INSERT INTO messages_fts (rowid, text) VALUES (?, ?)",
                     (cursor.lastrowid, _message_search_text(row)),
                 )
+                if row["kind"] == "recap":
+                    # The dashboard shows the latest recap: tell it something changed.
+                    self._conn.execute("UPDATE meta SET value = value + 1 WHERE key = 'rev'")
         self._conn.commit()
         return added
 
@@ -1131,18 +1565,19 @@ class Store:
         return hits
 
     def last_sessions(self, cwds: list[str] | None, limit: int = 1) -> list[dict]:
-        scope = ""
+        # A session with no prompt recorded has nothing to tell.
+        sql = (
+            "SELECT * FROM sessions WHERE EXISTS (SELECT 1 FROM tasks t "
+            "WHERE t.session_id = sessions.id AND t.kind = 'prompt')"
+        )
         params: list[Any] = []
         if cwds is not None:
             if not cwds:
                 return []
-            scope = f" WHERE cwd IN ({', '.join('?' for _ in cwds)})"
+            sql += f" AND cwd IN ({', '.join('?' for _ in cwds)})"  # placeholders only
             params = list(cwds)
-        rows = self._conn.execute(
-            "SELECT * FROM sessions" + scope  # noqa: S608 - placeholders only
-            + " ORDER BY last_seen_at DESC LIMIT ?",
-            [*params, limit],
-        ).fetchall()
+        sql += " ORDER BY last_seen_at DESC LIMIT ?"
+        rows = self._conn.execute(sql, [*params, limit]).fetchall()
         return [self._row(r) for r in rows]
 
     def files_touched(self, prompt_id: str) -> list[str]:
@@ -1527,17 +1962,37 @@ class Store:
     def state(self, done_limit: int = 500) -> dict:
         terminal_placeholders = ", ".join("?" for _ in TERMINAL)
         # placeholder count comes from the fixed TERMINAL tuple; values are bound
-        not_in_sql = f"SELECT * FROM tasks WHERE status NOT IN ({terminal_placeholders})"  # noqa: S608
+        not_in_sql = (
+            f"SELECT * FROM tasks WHERE status NOT IN ({terminal_placeholders}) "  # noqa: S608
+            "AND deleted_at IS NULL"
+        )
         non_terminal = self._conn.execute(not_in_sql, list(TERMINAL)).fetchall()
         in_sql = (
             f"SELECT * FROM tasks WHERE status IN ({terminal_placeholders}) "  # noqa: S608
+            "AND deleted_at IS NULL "
             "ORDER BY COALESCE(finished_at, started_at, created_at) DESC LIMIT ?"
         )
         terminal = self._conn.execute(in_sql, (*TERMINAL, done_limit)).fetchall()
         tasks = [self._task_row(r) for r in (*non_terminal, *terminal)]
+        latest = {
+            row[0]: row[1]
+            for row in self._conn.execute(
+                "SELECT session_id, MAX(id) FROM tasks WHERE kind = 'prompt' "
+                "AND parent_id IS NULL AND session_id IS NOT NULL GROUP BY session_id"
+            )
+        }
+        stats = self.task_stats(t["prompt_id"] for t in tasks if t["kind"] == "prompt")
+        for task in tasks:
+            task["latest_in_session"] = latest.get(task["session_id"]) == task["id"]
+            task["stats"] = stats.get(task["prompt_id"]) if task["kind"] == "prompt" else None
+        tokens = self.session_tokens()
+        sessions = self.list_sessions()
+        for session in sessions:
+            session["tokens"] = tokens.get(session["id"])
         return {
             "rev": self.rev(),
-            "sessions": self.list_sessions(),
+            "sessions": sessions,
+            "recaps": self.recaps(limit=200),
             "tasks": tasks,
             "lanes": self.list_lanes(),
         }

@@ -13,6 +13,10 @@
   <button type="button" id="error-banner-dismiss" class="btn btn-sm">Dismiss</button>
 </div>
 <div id="announcer" class="visually-hidden" role="status" aria-live="polite"></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden>
+  <span id="toast-text" class="toast-text"></span>
+  <button type="button" id="toast-action" class="btn btn-ghost btn-sm toast-action"></button>
+</div>
 
 <div id="access-state" class="access-state" hidden>
   <div class="access-card">
@@ -28,12 +32,19 @@
 
   <form id="quick-add" class="quick-add">
     <label for="quick-add-input" class="visually-hidden">New task</label>
-    <span class="quick-add-prefix" aria-hidden="true" id="quick-add-prefix">++</span>
+    <svg class="quick-add-icon" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v8"/><path d="M8 12h8"/></svg>
     <textarea id="quick-add-input" rows="1" placeholder="What should Claude do next?"></textarea>
     <span id="quick-add-chips" class="quick-add-chips">
       <span class="chip-label" aria-hidden="true">to</span>
       <label for="quick-add-target" class="visually-hidden">Send to session or project</label>
       <select id="quick-add-target" class="chip-select"></select>
+      <label for="quick-add-mode" class="visually-hidden">Permission mode for new tasks</label>
+      <select id="quick-add-mode" class="chip-select mode-select">
+        <option value="default">Default</option>
+        <option value="acceptEdits">Accept edits</option>
+        <option value="plan">Plan</option>
+        <option value="bypassPermissions">Bypass</option>
+      </select>
     </span>
     <button type="submit" class="btn btn-primary btn-sm quick-add-submit">Add</button>
   </form>
@@ -53,7 +64,7 @@
       <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
       <span class="history-toggle-label">History</span>
     </button>
-    <button type="button" id="settings-toggle" class="btn btn-icon btn-ghost" aria-expanded="false" aria-controls="topbar-extra" aria-label="Filter and permission mode">
+    <button type="button" id="settings-toggle" class="btn btn-icon btn-ghost" aria-expanded="false" aria-controls="topbar-extra" aria-label="Project filter">
       <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
     </button>
     <div id="topbar-extra" class="topbar-extra popover" hidden>
@@ -63,21 +74,36 @@
           <option value="">All projects</option>
         </select>
       </label>
-      <label class="field">
-        <span class="field-label">Permission mode</span>
-        <select id="mode-select" class="select">
-          <option value="acceptEdits">acceptEdits</option>
-          <option value="default">default</option>
-          <option value="plan">plan</option>
-          <option value="bypassPermissions">bypassPermissions</option>
-        </select>
-        <span id="mode-hint" class="field-hint"></span>
-      </label>
     </div>
   </div>
 
   <p id="reconnecting-status" class="reconnecting-status" role="status" aria-live="polite"></p>
 </header>
+
+<div id="board-top" class="board-top">
+  <div id="hooks-banner" class="hooks-banner" role="status" hidden>
+    <svg class="hooks-banner-icon" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+    <div class="hooks-banner-body">
+      <p><span id="hooks-banner-text"></span>
+        <button type="button" id="hooks-banner-more" class="link-btn" aria-expanded="false" aria-controls="hooks-banner-list">Show which</button></p>
+      <ul id="hooks-banner-list" class="hooks-banner-list" hidden></ul>
+    </div>
+    <button type="button" id="hooks-banner-dismiss" class="btn btn-icon btn-ghost hooks-banner-dismiss" aria-label="Dismiss this warning">
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+    </button>
+  </div>
+
+  <section id="recaps" class="recaps" aria-labelledby="recaps-heading" hidden>
+    <h2 id="recaps-heading" class="recaps-heading">
+      <button type="button" id="recaps-toggle" class="recaps-toggle" aria-expanded="true" aria-controls="recaps-list">
+        <svg class="chevron" aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>
+        <span id="recaps-title">Latest recap</span>
+        <span class="recaps-hint">where you left off</span>
+      </button>
+    </h2>
+    <ol id="recaps-list" class="recaps-list"></ol>
+  </section>
+</div>
 
 <nav id="tablist" class="tablist" role="tablist" aria-label="Board column">
   <button type="button" role="tab" id="tab-inbox" aria-controls="col-inbox" data-column="inbox">
@@ -103,6 +129,22 @@
     <button type="button" id="search-clear" class="btn btn-ghost btn-sm">Back to board</button>
   </div>
   <ol id="search-list" class="search-list"></ol>
+  <div id="smart-search" class="smart-search" hidden>
+    <div class="smart-search-bar">
+      <button type="button" id="smart-search-btn" class="btn btn-sm smart-search-btn">
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><path d="m6.3 6.3 2.1 2.1"/><path d="m15.6 15.6 2.1 2.1"/><path d="m6.3 17.7 2.1-2.1"/><path d="m15.6 8.4 2.1-2.1"/></svg>
+        <span id="smart-search-label">Smart search</span>
+      </button>
+      <button type="button" id="smart-search-cancel" class="btn btn-ghost btn-sm" hidden>Cancel</button>
+      <span class="smart-search-hint">asks Haiku · 2–6¢ · up to 30 s</span>
+    </div>
+    <p id="smart-search-status" class="smart-search-status" role="status" aria-live="polite"></p>
+    <section id="smart-results" class="smart-results" aria-labelledby="smart-heading" hidden>
+      <h3 id="smart-heading" class="smart-heading">Smart results <span id="smart-cost" class="smart-cost"></span></h3>
+      <p id="smart-empty" class="empty-state smart-empty" hidden>No matches</p>
+      <ol id="smart-list" class="search-list"></ol>
+    </section>
+  </div>
 </section>
 
 <section id="history" class="history" aria-labelledby="history-heading" hidden>
@@ -177,7 +219,7 @@
   <section id="col-inbox" class="column" data-lane="inbox" aria-labelledby="inbox-heading">
     <h2 id="inbox-heading" tabindex="-1"><span>Inbox</span><span class="col-count" id="inbox-count">0</span></h2>
     <div class="column-body">
-      <p id="inbox-empty" class="empty-state" hidden>Type after <code id="inbox-empty-prefix">++</code> above.</p>
+      <p id="inbox-empty" class="empty-state" hidden>Add a task above.</p>
       <div id="inbox-list" class="card-list" data-lane="inbox"></div>
     </div>
   </section>
@@ -246,6 +288,16 @@
         <button type="button" class="btn btn-ghost btn-sm drawer-edit-open" hidden>Edit</button>
       </div>
       <p class="drawer-body"></p>
+      <label class="field drawer-mode" hidden>
+        <span class="field-label">Permission mode</span>
+        <select class="select drawer-mode-select">
+          <option value="default">Default</option>
+          <option value="acceptEdits">Accept edits</option>
+          <option value="plan">Plan</option>
+          <option value="bypassPermissions">Bypass</option>
+        </select>
+        <span class="field-hint drawer-mode-hint"></span>
+      </label>
       <div class="drawer-edit" hidden>
         <label class="visually-hidden">Edit task text
           <textarea class="drawer-edit-textarea textarea" rows="4"></textarea>
@@ -256,6 +308,10 @@
         </div>
       </div>
     </section>
+    <section class="drawer-section drawer-recaps-wrap" hidden>
+      <div class="drawer-section-head"><h3>Recap</h3></div>
+      <ol class="drawer-recaps recap-list"></ol>
+    </section>
     <section class="drawer-section drawer-result-wrap" hidden>
       <div class="drawer-section-head">
         <h3>Result</h3>
@@ -263,6 +319,22 @@
       </div>
       <div class="drawer-result-digest"></div>
       <pre class="drawer-result-text" hidden></pre>
+    </section>
+    <section class="drawer-section drawer-recaps-after-wrap" hidden>
+      <div class="drawer-section-head"><h3>Recap</h3></div>
+      <ol class="drawer-recaps-after recap-list"></ol>
+    </section>
+    <section class="drawer-section drawer-followups-wrap" hidden>
+      <div class="drawer-section-head"><h3>Sent during this turn</h3></div>
+      <ol class="drawer-followups"></ol>
+    </section>
+    <section class="drawer-section drawer-files-wrap" hidden>
+      <div class="drawer-section-head"><h3>Files edited</h3><span class="drawer-files-count col-count"></span></div>
+      <ul class="drawer-files"></ul>
+    </section>
+    <section class="drawer-section drawer-tokens-wrap" hidden>
+      <div class="drawer-section-head"><h3>Tokens</h3><span class="drawer-tools col-count"></span></div>
+      <dl class="drawer-tokens"></dl>
     </section>
     <section class="drawer-section drawer-children-wrap" hidden>
       <div class="drawer-section-head"><h3>Delegations</h3></div>
@@ -273,6 +345,7 @@
       <p class="drawer-session-row">
         <span class="session-title"></span>
         <span class="session-state badge"></span>
+        <span class="session-old-hooks badge badge-warn" hidden>Older tasky</span>
       </p>
       <label class="switch-row auto-pull-wrap">
         <input type="checkbox" role="switch" class="auto-pull-toggle">
@@ -292,9 +365,14 @@
     <div class="card-body">
       <button type="button" class="title-btn">
         <span class="status-glyph" aria-hidden="true"></span>
-        <span class="title"></span>
+        <span class="title-stack">
+          <span class="title"></span>
+          <span class="card-summary" hidden></span>
+          <span class="card-meta" hidden></span>
+        </span>
       </button>
       <span class="badge badge-answer" hidden>Needs answer</span>
+      <span class="tag tag-mode" hidden></span>
       <span class="tag tag-project" hidden></span>
       <span class="time"></span>
       <div class="actions" hidden role="group" aria-label="Start this task">

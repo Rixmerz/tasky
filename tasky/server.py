@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from tasky import history, repos, scheduler, transcripts, worker
+from tasky import __version__, history, repos, scheduler, smart_search, transcripts, worker
 from tasky.config import Config, load_token, token_proof
 from tasky.store import SEARCH_LIMIT, TASK_STATUSES, Store
 from tasky.titles import TitleWatcher
@@ -41,8 +41,9 @@ _STATIC_FILES = {
 _TASK_ID_RE = re.compile(r"^/api/tasks/(\d{1,18})$")
 _TASK_RUN_RE = re.compile(r"^/api/tasks/(\d{1,18})/run$")
 _TASK_ENQUEUE_RE = re.compile(r"^/api/tasks/(\d{1,18})/enqueue$")
+_TASK_RESTORE_RE = re.compile(r"^/api/tasks/(\d{1,18})/restore$")
 _SESSION_ID_RE = re.compile(r"^/api/sessions/([^/]+)$")
-_TASK_PATCH_FIELDS = ("status", "title", "body", "before_id", "lane")
+_TASK_PATCH_FIELDS = ("status", "title", "body", "before_id", "lane", "permission_mode")
 _SESSION_PATCH_FIELDS = ("auto_pull", "title")
 
 
@@ -207,6 +208,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._route_state()
         elif method == "GET" and path == "/api/search":
             self._route_search()
+        elif method == "POST" and path == "/api/search/smart":
+            self._route_smart_search(body)
         elif method == "GET" and path == "/api/history":
             self._route_history()
         elif method == "POST" and path == "/api/history/sync":
@@ -223,6 +226,10 @@ class _Handler(BaseHTTPRequestHandler):
             match = _TASK_RUN_RE.match(path)
             if method == "POST" and match:
                 self._route_run_task(int(match.group(1)), body)
+                return
+            match = _TASK_RESTORE_RE.match(path)
+            if match and method == "POST":
+                self._route_restore_task(int(match.group(1)))
                 return
             match = _TASK_ENQUEUE_RE.match(path)
             if method == "POST" and match:
@@ -281,6 +288,7 @@ class _Handler(BaseHTTPRequestHandler):
         config = self.server.config
         with Store.open(config) as store:
             state = store.state()
+        state["version"] = __version__
         state["config"] = {
             "queue_prefix": config.queue_prefix,
             "max_chain": config.max_chain,
@@ -288,6 +296,24 @@ class _Handler(BaseHTTPRequestHandler):
             "allow_bypass": config.allow_bypass,
         }
         self._send_json(200, state)
+
+    def _route_smart_search(self, body: dict | None) -> None:
+        query = body.get("q") if isinstance(body, dict) else None
+        if not isinstance(query, str) or not query.strip():
+            self._error(400, "q is required")
+            return
+        if len(query) > _SEARCH_MAX_QUERY:
+            self._error(400, f"q is longer than {_SEARCH_MAX_QUERY} characters")
+            return
+        cwd = body.get("cwd") if isinstance(body.get("cwd"), str) and body.get("cwd") else None
+        config = self.server.config
+        try:
+            with Store.open(config) as store:
+                found = smart_search.search(config, store, query, cwd=cwd)
+        except smart_search.SmartSearchError as exc:
+            self._error(502, str(exc))
+            return
+        self._send_json(200, found)
 
     def _route_search(self) -> None:
         params = parse_qs(urlsplit(self.path).query)
@@ -306,9 +332,14 @@ class _Handler(BaseHTTPRequestHandler):
     def _route_get_task(self, task_id: int) -> None:
         with Store.open(self.server.config) as store:
             task = store.get_task(task_id)
+            if task is not None and task["prompt_id"] and task["kind"] == "prompt":
+                task["files"] = store.edited_files(task["prompt_id"])
+                task["stats"] = store.task_stats([task["prompt_id"]]).get(task["prompt_id"])
         if task is None:
             self._error(404, "task not found")
             return
+        task.setdefault("files", [])
+        task.setdefault("stats", None)
         self._send_json(200, task)
 
     def _route_history(self) -> None:
@@ -387,6 +418,11 @@ class _Handler(BaseHTTPRequestHandler):
         if session_id is not None and not isinstance(session_id, str):
             self._error(400, "session_id must be a string")
             return
+        permission_mode = body.get("permission_mode")
+        problem = self._permission_problem(permission_mode) if permission_mode else None
+        if problem:
+            self._error(400, problem)
+            return
 
         with Store.open(self.server.config) as store:
             task = store.create_task(
@@ -398,7 +434,19 @@ class _Handler(BaseHTTPRequestHandler):
                 title=title,
                 session_id=session_id,
             )
+            if permission_mode:
+                task = store.update_task(task["id"], permission_mode=permission_mode)
         self._send_json(201, task)
+
+    def _permission_problem(self, permission_mode: object) -> str | None:
+        """Why a requested permission mode cannot be used, or None when it can."""
+        if not isinstance(permission_mode, str):
+            return "permission_mode must be a string"
+        if permission_mode not in worker.PERMISSION_MODES:
+            return f"invalid permission mode: {permission_mode!r}"
+        if permission_mode == "bypassPermissions" and not self.server.config.allow_bypass:
+            return "bypassPermissions requires TASKY_ALLOW_BYPASS=1"
+        return None
 
     def _route_patch_task(self, task_id: int, body: dict) -> None:
         unknown = set(body) - set(_TASK_PATCH_FIELDS)
@@ -438,6 +486,12 @@ class _Handler(BaseHTTPRequestHandler):
                 return
 
             fields = {}
+            if "permission_mode" in body:
+                problem = self._permission_problem(body["permission_mode"])
+                if problem:
+                    self._error(400, problem)
+                    return
+                fields["permission_mode"] = body["permission_mode"]
             for key in ("status", "title", "body"):
                 if key not in body:
                     continue
@@ -458,16 +512,26 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, task)
 
     def _route_delete_task(self, task_id: int) -> None:
+        # Deleting only hides the task: people delete to clear the board, while
+        # the history sync and the MCP tools still learn from what it recorded.
         with Store.open(self.server.config) as store:
-            deleted = store.delete_task(task_id)
-        if not deleted:
+            hidden = store.hide_task(task_id)
+        if not hidden:
             self._error(404, "task not found")
             return
-        self._send_json(200, {"deleted": True})
+        self._send_json(200, {"deleted": True, "hidden": True})
+
+    def _route_restore_task(self, task_id: int) -> None:
+        with Store.open(self.server.config) as store:
+            task = store.restore_task(task_id)
+        if task is None:
+            self._error(404, "task not found")
+            return
+        self._send_json(200, task)
 
     def _route_run_task(self, task_id: int, body: dict) -> None:
-        permission_mode = body.get("permission_mode", "default")
-        if not isinstance(permission_mode, str):
+        permission_mode = body.get("permission_mode")
+        if permission_mode is not None and not isinstance(permission_mode, str):
             self._error(400, "permission_mode must be a string")
             return
         mode = body.get("mode", "now")
@@ -477,9 +541,12 @@ class _Handler(BaseHTTPRequestHandler):
 
         config = self.server.config
         with Store.open(config) as store:
-            if store.get_task(task_id) is None:
+            stored = store.get_task(task_id)
+            if stored is None:
                 self._error(404, "task not found")
                 return
+            # No mode in the request: run with the one chosen when the task was added.
+            permission_mode = permission_mode or stored["permission_mode"] or "default"
             # The queued check happens inside run_task's atomic claim, not here:
             # a check-then-act split here is exactly the race two concurrent
             # /run calls would win together (CWE-367).
@@ -501,17 +568,12 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, task)
 
     def _route_enqueue_task(self, task_id: int, body: dict) -> None:
-        permission_mode = body.get("permission_mode", "default")
-        if not isinstance(permission_mode, str):
-            self._error(400, "permission_mode must be a string")
-            return
-        if permission_mode not in worker.PERMISSION_MODES:
-            self._error(400, f"invalid permission mode: {permission_mode!r}")
+        permission_mode = body.get("permission_mode")
+        problem = self._permission_problem(permission_mode) if permission_mode is not None else None
+        if problem:
+            self._error(400, problem)
             return
         config = self.server.config
-        if permission_mode == "bypassPermissions" and not config.allow_bypass:
-            self._error(400, "bypassPermissions requires TASKY_ALLOW_BYPASS=1")
-            return
         before_id = body.get("before_id")
         if before_id is not None and not (
             isinstance(before_id, int) and not isinstance(before_id, bool)
@@ -526,6 +588,11 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if not task.get("cwd"):
                 self._error(400, "task has no cwd")
+                return
+            permission_mode = permission_mode or task["permission_mode"] or "default"
+            problem = self._permission_problem(permission_mode)
+            if problem:
+                self._error(400, problem)
                 return
             try:
                 enqueued = store.enqueue_task(task_id, permission_mode, before_id)
@@ -729,6 +796,12 @@ def serve(config: Config, port: int | None = None, open_browser: bool = False) -
     # private, not to whatever the caller's umask happens to be (CWE-276).
     os.umask(0o077)
     server = make_server(config, port=port)
+    with Store.open(config) as store:
+        # Right after an upgrade that reset the copy offsets, read every
+        # transcript again (and repair) in the background.
+        fresh = store.transcript_offset_count() == 0 and store.count_messages() > 0
+    if fresh:
+        threading.Thread(target=_backfill_messages, args=(config,), daemon=True).start()
     url = f"http://127.0.0.1:{server.server_port}/#token={server.token}"
     print(f"Tasky dashboard: {url}")
     if open_browser:

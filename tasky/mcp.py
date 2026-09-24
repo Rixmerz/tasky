@@ -165,12 +165,24 @@ def _format_hit(store: Store, hit: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_task(t: dict) -> str:
+    lines = [
+        f"task #{t['id']} {(t['finished_at'] or t['created_at'])[:10]} [{t['status']}] {t['title']}"
+    ]
+    lines += [f"  also asked: {f['text'][:300]}" for f in t.get("followups") or []]
+    lines.append(f"  reply: {(t['result'] or '').strip()[:500]}")
+    return "\n".join(lines)
+
+
 def _format_session(store: Store, session: dict) -> str:
     title = session.get("title") or session["id"][:8]
     lines = [
         f"session {title} ({session['state']}, {session['started_at'][:10]} → "
         f"{session['last_seen_at'][:10]}, {session.get('cwd') or '?'})"
     ]
+    recap = store.recaps(session_id=session["id"], limit=1)
+    if recap:
+        lines.append(f"  latest recap ({(recap[0]['ts'] or '')[:16]}): {recap[0]['text']}")
     for t in store.list_tasks(session_id=session["id"], kind="prompt", limit=15):
         reply = " ".join((t.get("result") or "").split())[:200]
         line = f"  #{t['id']} [{t['status']}] {t['title']}"
@@ -213,15 +225,13 @@ def call_tool(store: Store, name: str, args: dict) -> str:
         repo = _scope_repo(store, args)
         cwds = None if repo is None else set(store.repo_cwds(repo))
         tasks = [
-            t for t in store.search_tasks(query, limit=60) if cwds is None or t["cwd"] in cwds
+            t
+            for t in store.search_tasks(query, limit=60, include_hidden=True)
+            if cwds is None or t["cwd"] in cwds
         ][:15]
         if not tasks:
             return "No matching tasks."
-        return "\n\n".join(
-            f"task #{t['id']} {(t['finished_at'] or t['created_at'])[:10]} [{t['status']}] "
-            f"{t['title']}\n  reply: {(t['result'] or '').strip()[:500]}"
-            for t in tasks
-        )
+        return "\n\n".join(_format_task(t) for t in tasks)
     if name == "record_attempt":
         return _record_attempt(store, args)
     if name == "search_conversations":

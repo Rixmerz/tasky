@@ -140,3 +140,20 @@ def test_make_title_truncates_with_ellipsis():
 
 def test_make_title_returns_empty_for_blank_text():
     assert make_title("   \n  \n") == ""
+
+
+def test_session_commands_with_arguments_are_not_tasks():
+    text = "<command-message>compact</command-message><command-name>/compact</command-name>" \
+           "<command-args>Keep: the roadmap</command-args>"
+    assert classify(text).kind == "ignore"
+    review = "<command-message>review</command-message><command-name>/review</command-name>" \
+             "<command-args>123</command-args>"
+    assert classify(review).text == "/review 123"
+
+
+def test_title_skips_the_paste_wrapper():
+    pasted = '<pasted_content id="54d7">\nlong log line\n</pasted_content>\nwhy does this fail?'
+    assert make_title(pasted) == "why does this fail?"
+    assert make_title('<pasted_content id="1">\nonly the paste\n</pasted_content>') == (
+        "only the paste"
+    )

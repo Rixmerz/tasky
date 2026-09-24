@@ -14,20 +14,17 @@ import os
 import traceback
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
-from difflib import SequenceMatcher
 from typing import Any, TextIO
 
-from tasky import repos, transcripts
+from tasky import __version__, repos, transcripts
 from tasky.config import Config, now_iso
-from tasky.prompts import classify, parse_notifications, queue_request
+from tasky.prompts import classify, parse_notifications, queue_request, same_request
 from tasky.store import Store
 
 _FAILED_NOTIFICATION_STATUSES = ("failed", "killed")
 _REOPENABLE_PARENT_STATUSES = ("running", "done", "interrupted")
 _CLAIM_ATTEMPTS = 5
 _RESEND_WINDOW = timedelta(minutes=30)
-_RESEND_MIN_EDITED_LEN = 20
-_RESEND_SIMILARITY = 0.8
 
 
 def _session_start(
@@ -37,7 +34,10 @@ def _session_start(
     if not session_id:
         return None
     store.upsert_session(
-        session_id, cwd=event.get("cwd"), transcript_path=event.get("transcript_path")
+        session_id,
+        cwd=event.get("cwd"),
+        transcript_path=event.get("transcript_path"),
+        hook_version=__version__,
     )
     source = event.get("source")
     blocks = []
@@ -136,24 +136,67 @@ def _bind_env_task(
     return True
 
 
-def _same_request(before: str, after: str) -> bool:
-    a = " ".join(before.split()).casefold()
-    b = " ".join(after.split()).casefold()
-    if a == b:
+def _from_subagent(event: dict) -> bool:
+    """A prompt a subagent received, not one the user typed."""
+    if event.get("agent_id"):
         return True
-    if min(len(a), len(b)) < _RESEND_MIN_EDITED_LEN:
+    path = event.get("transcript_path")
+    return isinstance(path, str) and "/subagents/" in path
+
+
+def _caught_up(event: dict, store: Store, config: Config) -> bool:
+    """Copy the transcript's new lines; True when everything written so far is copied."""
+    path = event.get("transcript_path")
+    if not isinstance(path, str) or not path:
+        session = store.get_session(event.get("session_id") or "")
+        path = session.get("transcript_path") if session else None
+    if not path:
         return False
-    return SequenceMatcher(None, a, b).ratio() >= _RESEND_SIMILARITY
+    try:
+        transcripts.ingest_path(store, path)
+    except Exception:  # noqa: BLE001 - without the transcript the caller falls back
+        _log_error(config)
+        return False
+    offset, size = store.transcript_offset(str(path))
+    return size > 0 and offset >= size
 
 
-def _drop_cancelled_copy(session_id: str, text: str, store: Store) -> None:
-    """Forget the previous prompt when this one is that prompt sent again.
+def _unanswered(task: dict, event: dict, store: Store, config: Config) -> bool | None:
+    """Whether Claude never replied to ``task``: True, False, or None when unknown."""
+    if not task["prompt_id"] or not _caught_up(event, store, config):
+        return None
+    activity = store.turn_activity(task["prompt_id"])
+    return None if activity == "unknown" else activity == "unanswered"
 
-    Esc on a submitted prompt puts its text back in the input box; sending it
-    again, as is or lightly edited, is one request, not two. The earlier row
-    is only dropped while it has nothing to show for itself: no reply, no
-    delegations, still running or already marked interrupted, and recent.
+
+def _turn_in_progress(event: dict, store: Store, config: Config) -> dict | None:
+    """The running task whose turn is still going, when the event's prompt id differs.
+
+    Claude Code sometimes hands a message typed mid-turn the id of the next
+    turn. The transcript tells: the running turn has replies or tool calls and
+    no "[Request interrupted by user]" after them, so it has not ended.
     """
+    running = store.latest_running_task(event["session_id"])
+    if running is None or running["source"] != "hook" or not running["prompt_id"]:
+        return None
+    if not _caught_up(event, store, config):
+        return None
+    return running if store.turn_activity(running["prompt_id"]) == "worked" else None
+
+
+def _drop_cancelled_copy(
+    event: dict, text: str, store: Store, config: Config
+) -> None:
+    """Forget the previous prompt when it was cancelled before Claude replied.
+
+    Esc on a submitted prompt puts its text back in the input box. Whatever
+    is sent next (the same text, an edited one or something else) the
+    cancelled prompt was never a task: the transcript shows no reply and no
+    tool call for it. When the transcript cannot tell, fall back to comparing
+    the texts within a short window. A prompt Claude had started working on
+    stays, and is marked interrupted when the next turn ends.
+    """
+    session_id = event["session_id"]
     previous = store.latest_prompt_task(session_id)
     if (
         previous is None
@@ -163,10 +206,13 @@ def _drop_cancelled_copy(session_id: str, text: str, store: Store) -> None:
         or store.has_children(previous["id"])
     ):
         return
-    created = datetime.fromisoformat(previous["created_at"].replace("Z", "+00:00"))
-    if datetime.now(timezone.utc) - created > _RESEND_WINDOW:
-        return
-    if _same_request(previous["body"], text):
+    unanswered = _unanswered(previous, event, store, config)
+    if unanswered is None:
+        created = datetime.fromisoformat(previous["created_at"].replace("Z", "+00:00"))
+        unanswered = datetime.now(timezone.utc) - created <= _RESEND_WINDOW and same_request(
+            previous["body"], text
+        )
+    if unanswered:
         store.delete_task(previous["id"])
 
 
@@ -180,7 +226,14 @@ def _user_prompt_submit(
     prompt_id = event.get("prompt_id")
     text = event.get("prompt") or ""
 
-    store.upsert_session(session_id, cwd=cwd, transcript_path=event.get("transcript_path"))
+    if _from_subagent(event):
+        return None
+    store.upsert_session(
+        session_id,
+        cwd=cwd,
+        transcript_path=event.get("transcript_path"),
+        hook_version=__version__,
+    )
 
     queued_body = queue_request(text, config.queue_prefix)
     if queued_body is not None:
@@ -210,7 +263,18 @@ def _user_prompt_submit(
     if task_id_env and _bind_env_task(task_id_env, session_id, prompt_id, store):
         return None
 
-    _drop_cancelled_copy(session_id, classified.text, store)
+    # Typed while Claude was working: Claude Code hands it to the running turn
+    # (same prompt id), so it belongs to that turn's task, not a task of its own.
+    turn = store.latest_running_task(session_id, prompt_id) if prompt_id else None
+    if turn is None:
+        turn = _turn_in_progress(event, store, config)
+    if turn is not None:
+        _caught_up(event, store, config)
+        if not store.is_subagent_prompt(session_id, classified.text):
+            store.add_followup(turn["id"], classified.text)
+        return None
+
+    _drop_cancelled_copy(event, classified.text, store, config)
     store.create_task(
         kind="prompt",
         body=classified.text,
@@ -294,7 +358,9 @@ def _subagent_stop(
     session_id = event.get("session_id")
     task = store.find_task_by_agent_id(agent_id) if agent_id else None
     if task is None and session_id:
-        candidates = store.list_tasks(status="running", session_id=session_id, kind="delegation")
+        candidates = store.list_tasks(
+            status="running", session_id=session_id, kind="delegation", include_hidden=True
+        )
         task = next((t for t in candidates if not t.get("agent_id")), None)
     if task is None:
         return None
@@ -410,6 +476,17 @@ def _stop_failure(event: dict, store: Store, config: Config, env: Mapping[str, s
 def _session_end(event: dict, store: Store, config: Config, env: Mapping[str, str]) -> dict | None:
     session_id = event.get("session_id")
     if session_id:
+        # A prompt cancelled right before the session closed never gets a next
+        # prompt to clear it; drop it here if Claude never replied.
+        last = store.latest_running_task(session_id)
+        if (
+            last is not None
+            and last["source"] == "hook"
+            and not last["result"]
+            and not store.has_children(last["id"])
+            and _unanswered(last, event, store, config)
+        ):
+            store.delete_task(last["id"])
         store.end_session(session_id)
     return None
 
@@ -452,7 +529,7 @@ def _ingest(event: dict, store: Store, config: Config) -> None:
         # Read the path from the event, never through upsert_session: that would
         # mark a session SessionEnd just ended as active again.
         if isinstance(path, str) and path:
-            transcripts.ingest_file(store, path, budget=transcripts.HOOK_BUDGET)
+            transcripts.ingest_path(store, path)
         else:
             transcripts.ingest_session(store, session_id)
     except Exception:  # noqa: BLE001 - the ledger update above already happened

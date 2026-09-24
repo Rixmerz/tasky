@@ -251,3 +251,36 @@ be zero. The history SHALL be searchable and writable by the agent through MCP t
 #### Scenario: One bank across repositories
 - **WHEN** the user picks "All repos" in the History panel
 - **THEN** problems, attempts and milestones of every repository are listed together, each labelled with its repository
+
+### Requirement: Smart search
+After the plain search results, the dashboard SHALL offer a Smart search button that sends the
+search text to Haiku with a compact index of the ledger (prompt start, follow-ups, reply start,
+date, project) and lists the tasks it names with a one-line reason each, and the call's cost. The
+recent-task index SHALL be the same for every question so the prompt cache serves it. Ids not in
+the index SHALL be dropped. The model call SHALL run with no tools, no MCP servers, no saved
+session and Tasky's hooks off, and only when the user presses the button.
+
+#### Scenario: Words that do not match
+- **WHEN** the user searches "icon for the browser tab" and the task says "create a favicon"
+- **THEN** the plain search finds nothing and Smart search lists the favicon task with its reason
+
+### Requirement: Soft delete
+Deleting a task from the dashboard SHALL hide it and its delegations from the board and the
+dashboard search, keeping the row for the history sync and the MCP tools. A hidden queued task SHALL
+be cancelled so it never runs. A hidden task SHALL be restorable.
+
+#### Scenario: Undo
+- **WHEN** the user deletes a task and presses Undo
+- **THEN** the task is back on the board as it was
+
+### Requirement: Permission mode chosen when adding
+The composer SHALL let the user pick the permission mode a task will run with, stored on the task;
+running or queueing it without naming a mode SHALL use the stored one.
+
+### Requirement: Board shows what needs the user
+Needs attention SHALL hold failed tasks, interrupted tasks, and the newest task of an open session
+whose reply ends with a question, each with its reason. The "needs answer" mark SHALL only appear on
+the newest task of its session. Cards SHALL show the start of the reply, duration, files edited,
+output tokens and follow-ups; Done SHALL be grouped by day and session; the latest recap of each
+open session SHALL be shown above the columns and recaps SHALL appear among the tasks where they
+happened; open sessions running hooks older than the dashboard SHALL be flagged.
