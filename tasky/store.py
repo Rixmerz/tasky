@@ -13,9 +13,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from tasky import areas as area_rules
 from tasky.config import Config, now_iso
 from tasky.prompts import SESSION_COMMANDS, classify, make_title, normalize, same_request
 
+# Store.task_areas results for finished turns, per database: (areas signature, prompt → areas).
+_TASK_AREAS_CACHE: dict[str, tuple[tuple, dict[str, list[dict]]]] = {}
+_TASK_AREAS_CACHE_MAX = 50_000
+_SETTLE_S = 600
 TASK_STATUSES = ("queued", "running", "done", "failed", "interrupted", "cancelled")
 TERMINAL = ("done", "failed", "interrupted", "cancelled")
 TASK_KINDS = ("prompt", "delegation")
@@ -31,7 +36,7 @@ _ATTEMPT_FIELDS = (
     "task_ids", "commits",
 )
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 HISTORY_FTS_REBUILD = """
 DELETE FROM history_fts;
 INSERT INTO history_fts (kind, ref_id, text)
@@ -101,7 +106,27 @@ CREATE TABLE IF NOT EXISTS lanes (
   cwd TEXT PRIMARY KEY, paused INTEGER NOT NULL DEFAULT 0, reason TEXT
 );
 CREATE TABLE IF NOT EXISTS repos (
-  cwd TEXT PRIMARY KEY, repo TEXT NOT NULL, name TEXT NOT NULL, checked_at TEXT NOT NULL
+  cwd TEXT PRIMARY KEY, repo TEXT NOT NULL, name TEXT NOT NULL, checked_at TEXT NOT NULL,
+  root TEXT
+);
+CREATE TABLE IF NOT EXISTS areas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'technical', description TEXT NOT NULL DEFAULT '',
+  aliases TEXT NOT NULL DEFAULT '[]', paths TEXT NOT NULL DEFAULT '[]',
+  specs TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT,
+  UNIQUE (repo, name)
+);
+CREATE TABLE IF NOT EXISTS specs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, path TEXT NOT NULL,
+  kind TEXT NOT NULL, title TEXT NOT NULL, status TEXT, summary TEXT NOT NULL DEFAULT '',
+  items TEXT NOT NULL DEFAULT '[]', dated TEXT, UNIQUE (repo, path)
+);
+CREATE TABLE IF NOT EXISTS architecture (
+  repo TEXT PRIMARY KEY, root TEXT, scanned_at TEXT, files INTEGER NOT NULL DEFAULT 0,
+  sources TEXT NOT NULL DEFAULT '{}', candidates TEXT NOT NULL DEFAULT '[]',
+  state TEXT NOT NULL DEFAULT 'idle', started_at TEXT, mapped_at TEXT, error TEXT,
+  model TEXT, last_cost_usd REAL NOT NULL DEFAULT 0, total_cost_usd REAL NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS milestones (
   id INTEGER PRIMARY KEY AUTOINCREMENT, cwd TEXT NOT NULL, topic TEXT, title TEXT NOT NULL,
@@ -228,7 +253,40 @@ END;
 CREATE TRIGGER IF NOT EXISTS trg_lanes_rev_del AFTER DELETE ON lanes BEGIN
   UPDATE meta SET value = value + 1 WHERE key = 'rev';
 END;
+CREATE TRIGGER IF NOT EXISTS trg_areas_rev_ins AFTER INSERT ON areas BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_areas_rev_upd AFTER UPDATE ON areas BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_areas_rev_del AFTER DELETE ON areas BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_specs_rev_ins AFTER INSERT ON specs BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_specs_rev_upd AFTER UPDATE ON specs BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_specs_rev_del AFTER DELETE ON specs BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_architecture_rev_ins AFTER INSERT ON architecture BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_architecture_rev_upd AFTER UPDATE ON architecture BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_architecture_rev_del AFTER DELETE ON architecture BEGIN
+  UPDATE meta SET value = value + 1 WHERE key = 'rev';
+END;
 """
+
+
+def _settled(task: dict) -> bool:
+    """Finished long enough ago that its transcript has been copied (hooks copy after Stop)."""
+    finished = _parse_iso(task.get("finished_at") or "")
+    return finished is not None and time.time() - finished > _SETTLE_S
 
 
 def _json_list(value: Any) -> list:
@@ -335,7 +393,8 @@ class Store:
             try:
                 self._conn.execute("PRAGMA journal_mode = WAL")
                 self._conn.execute("BEGIN IMMEDIATE")
-                if self._conn.execute("PRAGMA user_version").fetchone()[0] < _SCHEMA_VERSION:
+                version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+                if version < _SCHEMA_VERSION:
                     for statement in _split_script(_SCHEMA):
                         self._conn.execute(statement)
                     self._conn.execute(
@@ -344,7 +403,10 @@ class Store:
                     self._migrate_v1_to_v2()
                     self._migrate_v3_to_v4()
                     self._migrate_v4_to_v5()
-                    self._migrate_v5_to_v6()
+                    if version < 6:
+                        # Not idempotent in cost: it re-reads every transcript.
+                        self._migrate_v5_to_v6()
+                    self._migrate_v6_to_v7()
                     self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                 self._conn.commit()
                 return
@@ -396,6 +458,13 @@ class Store:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")  # noqa: S608
         self._repair()
         self._conn.execute("DELETE FROM transcript_offsets")
+
+    def _migrate_v6_to_v7(self) -> None:
+        """Repos remember their checkout root, so edited files map to area paths."""
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(repos)")}
+        if "root" not in existing:
+            self._conn.execute("ALTER TABLE repos ADD COLUMN root TEXT")
+            self._conn.execute("UPDATE repos SET checked_at = ''")  # resolve again, with roots
 
     def repair(self) -> dict[str, int]:
         """Run the 0.8.0 repairs again, e.g. after old transcripts were copied."""
@@ -1598,12 +1667,14 @@ class Store:
         row = self._conn.execute("SELECT * FROM repos WHERE cwd = ?", (cwd,)).fetchone()
         return self._row(row) if row else None
 
-    def set_repo(self, cwd: str, repo: str, name: str, checked_at: str) -> None:
+    def set_repo(
+        self, cwd: str, repo: str, name: str, checked_at: str, root: str | None = None
+    ) -> None:
         self._conn.execute(
-            "INSERT INTO repos (cwd, repo, name, checked_at) VALUES (?, ?, ?, ?) "
+            "INSERT INTO repos (cwd, repo, name, checked_at, root) VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(cwd) DO UPDATE SET repo = excluded.repo, name = excluded.name, "
-            "checked_at = excluded.checked_at",
-            (cwd, repo, name, checked_at),
+            "checked_at = excluded.checked_at, root = COALESCE(excluded.root, repos.root)",
+            (cwd, repo, name, checked_at, root),
         )
         self._conn.commit()
 
@@ -1954,6 +2025,313 @@ class Store:
         )
         self._conn.commit()
 
+    # -- architecture: areas and specs ---------------------------------------
+    #
+    # Areas and specs belong to a repository key, not a folder: every checkout
+    # and worktree of the repo shares one vocabulary.
+
+    def repo_roots(self, repo: str) -> list[str]:
+        """Checkout roots of the repo's folders (the folders themselves when unknown)."""
+        rows = self._conn.execute(
+            "SELECT cwd, root FROM repos WHERE repo = ?", (repo,)
+        ).fetchall()
+        roots: list[str] = []
+        for r in rows:
+            root = r["root"] or r["cwd"]
+            # Both spellings: edits are recorded as the folder was opened, symlinks included.
+            roots += [root, os.path.realpath(root)]
+        return list(dict.fromkeys(roots))
+
+    def _area_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        item = self._row(row)
+        for key in ("aliases", "paths", "specs"):
+            item[key] = [v for v in _json_list(item.get(key)) if isinstance(v, str)]
+        return item
+
+    def areas(self, repo: str, *, include_hidden: bool = False) -> list[dict]:
+        hidden = "" if include_hidden else " AND deleted_at IS NULL"
+        rows = self._conn.execute(
+            f"SELECT * FROM areas WHERE repo = ?{hidden} ORDER BY name",  # noqa: S608
+            (repo,),
+        ).fetchall()
+        return [self._area_row(r) for r in rows]
+
+    def get_area(self, area_id: int) -> dict | None:
+        row = self._conn.execute("SELECT * FROM areas WHERE id = ?", (area_id,)).fetchone()
+        return self._area_row(row) if row else None
+
+    def save_area(self, repo: str, name: str, **fields: Any) -> dict:
+        """Create an area, or update the one with this name (restoring it if it was hidden)."""
+        allowed = ("kind", "description", "aliases", "paths", "specs", "source")
+        fields = {k: v for k, v in fields.items() if k in allowed}
+        for key in ("aliases", "paths", "specs"):
+            if key in fields:
+                fields[key] = json.dumps(list(dict.fromkeys(fields[key])), ensure_ascii=False)
+        now = now_iso()
+        row = self._conn.execute(
+            "SELECT id FROM areas WHERE repo = ? AND name = ?", (repo, name)
+        ).fetchone()
+        if row is None:
+            fields = {"source": "user", **fields, "repo": repo, "name": name,
+                      "created_at": now, "updated_at": now}
+            cols = ", ".join(fields)
+            marks = ", ".join("?" for _ in fields)
+            cursor = self._conn.execute(
+                f"INSERT INTO areas ({cols}) VALUES ({marks})",  # noqa: S608 - keys from allowed
+                list(fields.values()),
+            )
+            area_id = int(cursor.lastrowid)
+        else:
+            area_id = row["id"]
+            fields = {**fields, "updated_at": now, "deleted_at": None}
+            assignments = ", ".join(f"{k} = ?" for k in fields)
+            self._conn.execute(
+                f"UPDATE areas SET {assignments} WHERE id = ?",  # noqa: S608 - keys from allowed
+                (*fields.values(), area_id),
+            )
+        self._conn.commit()
+        area = self.get_area(area_id)
+        assert area is not None
+        return area
+
+    def rename_area(self, area_id: int, name: str) -> dict | None:
+        """None when another visible area of the repo already has the name."""
+        area = self.get_area(area_id)
+        if area is None:
+            return None
+        clash = self._conn.execute(
+            "SELECT id, deleted_at FROM areas WHERE repo = ? AND name = ? AND id != ?",
+            (area["repo"], name, area_id),
+        ).fetchone()
+        if clash is not None and clash["deleted_at"] is None:
+            return None
+        with self._conn:
+            if clash is not None:
+                self._conn.execute("DELETE FROM areas WHERE id = ?", (clash["id"],))
+            self._conn.execute(
+                "UPDATE areas SET name = ?, updated_at = ? WHERE id = ?",
+                (name, now_iso(), area_id),
+            )
+        return self.get_area(area_id)
+
+    def hide_area(self, area_id: int, *, by_user: bool = False) -> bool:
+        """Hide an area; one the user deleted is marked theirs, so a mapping never revives it."""
+        source = ", source = 'user'" if by_user else ""
+        cursor = self._conn.execute(
+            f"UPDATE areas SET deleted_at = ?{source} WHERE id = ? AND deleted_at IS NULL",  # noqa: S608
+            (now_iso(), area_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def replace_specs(self, repo: str, specs: list[dict]) -> None:
+        """Keep exactly these specs for the repo (keyed by path; ids of kept paths survive)."""
+        with self._conn:
+            paths = [s["path"] for s in specs]
+            if paths:
+                marks = ", ".join("?" for _ in paths)
+                self._conn.execute(
+                    f"DELETE FROM specs WHERE repo = ? AND path NOT IN ({marks})",  # noqa: S608
+                    (repo, *paths),
+                )
+            else:
+                self._conn.execute("DELETE FROM specs WHERE repo = ?", (repo,))
+            for spec in specs:
+                self._conn.execute(
+                    "INSERT INTO specs (repo, path, kind, title, status, summary, items, dated) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(repo, path) DO UPDATE SET "
+                    "kind = excluded.kind, title = excluded.title, status = excluded.status, "
+                    "summary = excluded.summary, items = excluded.items, dated = excluded.dated",
+                    (
+                        repo, spec["path"], spec["kind"], spec["title"], spec.get("status"),
+                        spec.get("summary") or "",
+                        json.dumps(spec.get("items") or [], ensure_ascii=False),
+                        spec.get("dated"),
+                    ),
+                )
+
+    def specs(self, repo: str) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM specs WHERE repo = ? ORDER BY kind, path", (repo,)
+        ).fetchall()
+        result = []
+        for r in rows:
+            item = self._row(r)
+            item["items"] = [v for v in _json_list(item["items"]) if isinstance(v, str)]
+            result.append(item)
+        return result
+
+    def architecture(self, repo: str) -> dict | None:
+        row = self._conn.execute("SELECT * FROM architecture WHERE repo = ?", (repo,)).fetchone()
+        if row is None:
+            return None
+        item = self._row(row)
+        try:
+            item["sources"] = json.loads(item["sources"] or "{}")
+        except ValueError:
+            item["sources"] = {}
+        item["candidates"] = [c for c in _json_list(item["candidates"]) if isinstance(c, dict)]
+        return item
+
+    def save_scan(
+        self, repo: str, *, root: str, files: int, sources: dict, candidates: list[dict]
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO architecture (repo, root, scanned_at, files, sources, candidates) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(repo) DO UPDATE SET root = excluded.root, "
+            "scanned_at = excluded.scanned_at, files = excluded.files, "
+            "sources = excluded.sources, candidates = excluded.candidates",
+            (repo, root, now_iso(), files, json.dumps(sources),
+             json.dumps(candidates, ensure_ascii=False)),
+        )
+        self._conn.commit()
+
+    def begin_area_mapping(self, repo: str, model: str, *, stale_after_s: float) -> bool:
+        """Mark a repo's area mapping running; False if one already is (stale claims expire)."""
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT state, started_at FROM architecture WHERE repo = ?", (repo,)
+            ).fetchone()
+            if row is not None and row["state"] == "running" and row["started_at"]:
+                started = _parse_iso(row["started_at"])
+                if started is not None and time.time() - started < stale_after_s:
+                    self._conn.rollback()
+                    return False
+            self._conn.execute(
+                "INSERT INTO architecture (repo, state, started_at, model) "
+                "VALUES (?, 'running', ?, ?) ON CONFLICT(repo) DO UPDATE SET "
+                "state = 'running', started_at = excluded.started_at, error = NULL, "
+                "model = excluded.model",
+                (repo, now_iso(), model),
+            )
+            self._conn.commit()
+            return True
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def finish_area_mapping(self, repo: str, *, cost_usd: float, error: str | None) -> None:
+        mapped = None if error else now_iso()
+        self._conn.execute(
+            "UPDATE architecture SET state = 'idle', error = ?, "
+            "mapped_at = COALESCE(?, mapped_at), last_cost_usd = ?, "
+            "total_cost_usd = total_cost_usd + ? WHERE repo = ?",
+            (error, mapped, cost_usd, cost_usd, repo),
+        )
+        self._conn.commit()
+
+    def edited_files_by_prompt(self, prompt_ids: Iterable[str]) -> dict[str, list[str]]:
+        ids = sorted({p for p in prompt_ids if p})
+        result: dict[str, list[str]] = {}
+        tools = ", ".join("?" for _ in _EDIT_TOOLS)
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            marks = ", ".join("?" for _ in chunk)
+            for row in self._conn.execute(
+                f"SELECT prompt_id, file_path FROM messages WHERE prompt_id IN ({marks}) "  # noqa: S608
+                f"AND file_path IS NOT NULL AND tool_name IN ({tools}) "
+                "GROUP BY prompt_id, file_path",
+                (*chunk, *_EDIT_TOOLS),
+            ):
+                result.setdefault(row[0], []).append(row[1])
+        return result
+
+    def edits_under(self, roots: Iterable[str], limit: int = 20_000) -> list[dict]:
+        """File edits recorded under these folders, from any session: prompt, path, time."""
+        tools = ", ".join("?" for _ in _EDIT_TOOLS)
+        rows: list[dict] = []
+        seen: set[tuple] = set()
+        for root in {r.rstrip("/") for r in roots if r}:
+            # A range instead of LIKE: uses the file_path index and is not fooled by % or _.
+            for r in self._conn.execute(
+                "SELECT prompt_id, file_path, MAX(ts) AS ts FROM messages "  # noqa: S608
+                f"WHERE file_path >= ? AND file_path < ? AND tool_name IN ({tools}) "
+                "GROUP BY prompt_id, file_path ORDER BY ts DESC LIMIT ?",
+                (root + "/", root + "0", *_EDIT_TOOLS, limit),
+            ):
+                key = (r["prompt_id"], r["file_path"])
+                if key not in seen:  # a worktree inside the checkout is under both roots
+                    seen.add(key)
+                    rows.append(dict(r))
+        return rows
+
+    def repo_tasks(self, repo: str, limit: int = 2000) -> list[dict]:
+        """The repo's visible prompt tasks, newest first."""
+        rows = self._conn.execute(
+            "SELECT * FROM tasks WHERE kind = 'prompt' AND deleted_at IS NULL "
+            "AND cwd IN (SELECT cwd FROM repos WHERE repo = ?) "
+            "ORDER BY COALESCE(finished_at, started_at, created_at) DESC LIMIT ?",
+            (repo, limit),
+        ).fetchall()
+        return [self._task_row(r) for r in rows]
+
+    def task_areas(self, tasks: list[dict]) -> dict[int, list[dict]]:
+        """Task id → the areas (id, name) of the files it edited, most files first."""
+        prompt_tasks = [t for t in tasks if t.get("prompt_id") and t.get("cwd")]
+        if not prompt_tasks:
+            return {}
+        repo_of = {
+            r["cwd"]: r["repo"]
+            for r in self._conn.execute("SELECT cwd, repo FROM repos").fetchall()
+        }
+        with_areas = {
+            r[0]
+            for r in self._conn.execute(
+                "SELECT DISTINCT repo FROM areas WHERE deleted_at IS NULL"
+            )
+        }
+        by_repo: dict[str, list[dict]] = {}
+        for task in prompt_tasks:
+            repo = repo_of.get(task["cwd"])
+            if repo in with_areas:
+                by_repo.setdefault(repo, []).append(task)
+        if not by_repo:
+            return {}
+        # A finished turn's files do not change: its areas are kept until the areas or the
+        # checkout roots change, so the board's frequent state reads stay cheap.
+        signature = tuple(self._conn.execute(
+            "SELECT (SELECT GROUP_CONCAT(id || ':' || name || ':' || paths || ':' "
+            "|| COALESCE(deleted_at, ''), '|') FROM areas), "
+            "(SELECT GROUP_CONCAT(cwd || '=' || COALESCE(root, ''), '|') FROM repos)"
+        ).fetchone())
+        cached = _TASK_AREAS_CACHE.get(str(self.db_path))
+        if cached is None or cached[0] != signature or len(cached[1]) > _TASK_AREAS_CACHE_MAX:
+            cached = (signature, {})
+            _TASK_AREAS_CACHE[str(self.db_path)] = cached
+        known = cached[1]
+        result: dict[int, list[dict]] = {}
+        todo: dict[str, list[dict]] = {}
+        for repo, group in by_repo.items():
+            for task in group:
+                if task["status"] in TERMINAL and task["prompt_id"] in known:
+                    if known[task["prompt_id"]]:
+                        result[task["id"]] = known[task["prompt_id"]]
+                else:
+                    todo.setdefault(repo, []).append(task)
+        if not todo:
+            return result
+        files = self.edited_files_by_prompt(t["prompt_id"] for g in todo.values() for t in g)
+        for repo, group in todo.items():
+            repo_areas = self.areas(repo)
+            names = {a["id"]: a["name"] for a in repo_areas}
+            roots = self.repo_roots(repo)
+            for task in group:
+                rels = [
+                    rel
+                    for f in files.get(task["prompt_id"], [])
+                    if (rel := area_rules.relative(f, roots)) is not None
+                ]
+                refs = [
+                    {"id": i, "name": names[i]}
+                    for i in area_rules.files_areas(rels, repo_areas)
+                ]
+                if task["status"] in TERMINAL and (refs or _settled(task)):
+                    known[task["prompt_id"]] = refs
+                if refs:
+                    result[task["id"]] = refs
+        return result
+
     def has_history(self) -> bool:
         return self._conn.execute("SELECT 1 FROM attempts LIMIT 1").fetchone() is not None
 
@@ -1984,7 +2362,9 @@ class Store:
             )
         }
         stats = self.task_stats(t["prompt_id"] for t in tasks if t["kind"] == "prompt")
+        task_areas = self.task_areas(tasks)
         for task in tasks:
+            task["areas"] = task_areas.get(task["id"], [])
             task["latest_in_session"] = latest.get(task["session_id"]) == task["id"]
             task["stats"] = stats.get(task["prompt_id"]) if task["kind"] == "prompt" else None
         tokens = self.session_tokens()

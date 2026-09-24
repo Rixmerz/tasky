@@ -40,6 +40,9 @@ anyone whose attention is the scarcest resource in the room.
 - **Keeps a history of problems and what was tried.** Per repository: problems with the ordered
   chain of fixes attempted and why each failed, milestones, a map, and an MCP server so the agent
   can check what already failed before trying it again.
+- **Knows the parts of each repository.** Areas (business or technical: "checkout", "auth",
+  "ci") with aliases and folders, the specs and decisions that describe them (OpenSpec, spec-kit,
+  Kiro, ADRs, Archify, Graphify), and where work happened, for the dashboard and the agent.
 - **Suggests how to `/compact`.** After a history sync, each open session gets `/compact`
   instructions that keep what matters and drop the rest, one click to copy.
 - **Shows results as cards, not markdown.** Each result opens with its bottom line; every point,
@@ -268,6 +271,7 @@ Reading the history is free. It also reaches the agent in two ways:
   the moment it knows, with no sync and no extra model call; those attempts are tagged "agent".
   `search_conversations` searches every stored message (with the turns around each hit) and
   `last_session` says what the latest sessions in the repository did, with their latest recap.
+  `get_architecture` names the repository's areas (see below).
 
 After a sync, every session that is still open and had tasks in it gets suggested instructions for
 Claude Code's `/compact`: what the summary must keep (the goal in progress, decisions and why, open
@@ -279,6 +283,36 @@ under **Suggested /compact** in the History panel and as
 paste: the copy leaves the command out because Claude Code collapses a long paste into "[Pasted
 text]" and would not run a `/compact` inside it. They come out of the same
 model call as the sync, at no extra cost.
+
+### Architecture: areas and specs
+
+The Architecture button in the top bar shows, per repository, its **areas**: the controlled
+vocabulary for where work happened. An area is a business part of the product ("checkout",
+"onboarding") or a technical part of the system ("auth", "ci", "database"), not a layer, with:
+
+- **aliases**: synonyms, the other language, and the History topics that mean it, so "pago",
+  "payments" and "checkout" land in one place;
+- **paths**: the folders that belong to it. A task is in the areas of the files it edited, and each
+  area shows how many turns edited it, how many files, and when last, counted from every edit
+  Tasky copied, including sessions with no task on the board;
+- **specs**: OpenSpec capabilities and changes, spec-kit features, Kiro specs and architecture
+  decision records (Nygard, MADR and home-grown styles, Spanish headings included), with their
+  status, summary and requirement names;
+- the **problems** and **milestones** of the History that belong to it, by topic or by their tasks.
+
+**Scan** (free) reads the repository: specs, ADRs, `*.architecture.json` from
+[Archify](https://github.com/tt-a1i/archify) and `graphify-out/graph.json` from Graphify. When a
+repository has no areas yet and Archify boundaries or Graphify communities exist, the scan adopts
+them. **Map areas** makes one model call (Sonnet by default, Opus optional; about $0.09 for a
+900-file repository with 12 specs) that proposes the vocabulary from the folder tree, the specs,
+the candidates, the History topics and where edits happened. Nothing it returns is trusted: paths
+must exist, specs must be ones it was shown, a path belongs to one area only. You can add, rename,
+edit and delete areas; an area you edited keeps its name and description when you map again, and
+only gains paths, specs and aliases.
+
+The agent reads the same map with the MCP tool `get_architecture`: the areas with their folders,
+aliases and activity, or one area in detail with its specs' requirements, problems and the fixes
+that failed, milestones and recent tasks. The CLI is `tasky architecture [--map]`.
 
 ### Put the counters in your status line
 
@@ -309,6 +343,8 @@ tasky enqueue ID [--permission-mode MODE]
 tasky import [--dry-run]
 tasky history [--cwd DIR | --repo KEY] [--model sonnet|opus]
                                     sync a repository's history (spends tokens)
+tasky architecture [--cwd DIR | --repo KEY] [--map] [--model sonnet|opus]
+                                    scan specs and areas; --map defines areas (spends tokens)
 tasky mcp                           serve the history and ledger as MCP tools on stdio
 tasky status [--short]
 ```
@@ -339,6 +375,8 @@ call. Every hook exits successfully and prints nothing when something goes wrong
 | Dead ends reminder at session start | A few lines, only in repositories with failed attempts |
 | History sync | One model call per batch of up to 40 tasks, only when you press Sync |
 | Smart search | One Haiku call (2–6¢), only when you press Smart search |
+| Architecture scan and view | 0 |
+| Map areas | One model call (Sonnet about 5–15¢), only when you press Map areas |
 | `tasky` MCP tools | Their definitions in each session's context; results only when called |
 | Auto-pull | One normal turn per pulled task |
 | Run now and the run queue | One normal headless session per task |
@@ -360,7 +398,10 @@ keys, provider API keys and tokens (Anthropic, OpenAI-style, GitHub, Slack, AWS,
 bearer tokens and `password=`/`api_key:`-style assignments. That filter is pattern-based; a secret
 in another shape is stored as typed. Token counts per API message, recaps and messages typed
 mid-turn are stored too. Deleting a task in the dashboard hides it; the row stays so the history
-sync can still use it. It never modifies your Claude Code settings or transcripts. Delete the
+sync can still use it. An architecture scan stores each spec's path, title, status, a
+300-character summary and its requirement names, and only reads the repository; Map areas sends
+the folder tree (names and file counts, no file contents), those spec lines and the History topics
+to the model through `claude -p`. It never modifies your Claude Code settings or transcripts. Delete the
 directory to erase everything.
 
 ## Security

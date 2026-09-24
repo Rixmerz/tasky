@@ -28,7 +28,8 @@ _SCOPE = {
 INSTRUCTIONS = (
     "Tasky keeps, per repository, problems with the ordered chain of fixes tried and why each "
     "failed, plus milestones. Before fixing a bug, search_history for it: a fix that already "
-    "failed must not be applied again. After a fix is confirmed to work or not, record_attempt."
+    "failed must not be applied again. After a fix is confirmed to work or not, record_attempt. "
+    "get_architecture names the repository's areas, their folders, specs and open problems."
 )
 
 TOOLS: list[dict[str, Any]] = [
@@ -85,6 +86,18 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {"scope": _SCOPE, "count": {"type": "integer"}},
+        },
+    },
+    {
+        "name": "get_architecture",
+        "description": "This repository's areas (business and technical parts, with their "
+        "folders, aliases and specs), and for one area: its specs' requirements, problems with "
+        "failed fixes, milestones and recent tasks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "area": {"type": "string", "description": "an area name or alias for detail"}
+            },
         },
     },
     {
@@ -234,6 +247,8 @@ def call_tool(store: Store, name: str, args: dict) -> str:
         return "\n\n".join(_format_task(t) for t in tasks)
     if name == "record_attempt":
         return _record_attempt(store, args)
+    if name == "get_architecture":
+        return _architecture(store, str(args.get("area") or "").strip())
     if name == "search_conversations":
         query = str(args.get("query") or "").strip()
         if not query:
@@ -260,6 +275,74 @@ def _int(args: dict, key: str, default: int | None = None) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ToolError(f"{key} must be an integer")
     return value
+
+
+def _area_line(area: dict) -> str:
+    line = f"- {area['name']} [{area['kind']}]"
+    if area["description"]:
+        line += f" {area['description']}"
+    if area["paths"]:
+        line += f" | paths: {', '.join(area['paths'][:6])}"
+    if area["aliases"]:
+        line += f" | aka: {', '.join(area['aliases'][:6])}"
+    open_problems = sum(1 for p in area["problems"] if p["state"] != "solved")
+    line += f" | {area['turns']} turn(s) edited {area['files']} file(s)"
+    if area["last_edit"]:
+        line += f", last {area['last_edit']}"
+    if area["problems"]:
+        line += f", {len(area['problems'])} problem(s) ({open_problems} open)"
+    if area["spec_items"]:
+        line += f", {len(area['spec_items'])} spec(s)"
+    return line
+
+
+def _architecture(store: Store, wanted: str) -> str:
+    from tasky import architecture
+    from tasky import areas as area_rules
+
+    repo = repos.repo_of(store, os.getcwd())
+    view = architecture.overview(store, repo)
+    scan = view["scan"] or {}
+    if not view["areas"] and not view["specs"]:
+        return (
+            f"No architecture recorded for {repo}. Open the Tasky dashboard, Architecture tab, "
+            "and scan or map the areas."
+        )
+    specs = {s["path"]: s for s in view["specs"]}
+    if wanted:
+        area_id = area_rules.by_name(wanted, view["areas"])
+        area = next((a for a in view["areas"] if a["id"] == area_id), None)
+        if area is None:
+            raise ToolError(
+                f"no area {wanted!r}; areas: {', '.join(a['name'] for a in view['areas'])}"
+            )
+        lines = [_area_line(area)]
+        for path in area["spec_items"]:
+            spec = specs[path]
+            status = f", {spec['status']}" if spec["status"] else ""
+            lines.append(f"spec {path} [{spec['kind']}{status}] {spec['title']}: {spec['summary']}")
+            lines += [f"  · {item}" for item in spec["items"][:15]]
+        for problem in area["problems"][:10]:
+            chain = store.get_problem(problem["id"])
+            if chain is not None:
+                lines.append(_format_problem(chain))
+        for milestone in area["milestones"][:8]:
+            lines.append(f"milestone {milestone['happened_on'] or '?'}: {milestone['title']}")
+        for task in area["recent_tasks"]:
+            lines.append(f"task #{task['id']} {task['date']} [{task['status']}] {task['title']}")
+        return "\n".join(lines)
+    lines = [
+        f"Areas of {repo}"
+        + (f" (scanned {scan['scanned_at'][:10]})" if scan.get("scanned_at") else "")
+        + ":",
+        *(_area_line(a) for a in view["areas"]),
+    ]
+    if view["unlinked_specs"]:
+        lines.append("Specs in no area: " + ", ".join(view["unlinked_specs"][:20]))
+    if view["unplaced_topics"]:
+        lines.append("History topics in no area: " + ", ".join(view["unplaced_topics"][:20]))
+    lines.append("Call get_architecture with area=<name> for its specs, problems and tasks.")
+    return "\n".join(lines)
 
 
 def _record_attempt(store: Store, args: dict) -> str:

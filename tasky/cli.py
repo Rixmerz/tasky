@@ -129,6 +129,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", default=None, help="sonnet or opus (default: sonnet)")
     p.set_defaults(handler=_cmd_history)
 
+    p = sub.add_parser(
+        "architecture",
+        help="scan a repository's specs and areas; --map asks a model for the areas (tokens)",
+    )
+    p.add_argument("--cwd", default=None, help="a folder of the repo (default: current directory)")
+    p.add_argument("--repo", default=None, help="repo key, as the dashboard lists it")
+    p.add_argument("--map", action="store_true", help="define the areas with a model call")
+    p.add_argument("--model", default=None, help="sonnet or opus (default: sonnet)")
+    p.set_defaults(handler=_cmd_architecture)
+
     p = sub.add_parser("mcp", help="serve the history and task ledger as MCP tools on stdio")
     p.set_defaults(handler=_cmd_mcp)
 
@@ -348,6 +358,39 @@ def _cmd_history(args: argparse.Namespace, config: Config, out: TextIO) -> int:
     if summary["error"]:
         print(f"tasky: sync stopped: {summary['error']}", file=sys.stderr)
         return 1
+    return 0
+
+
+def _cmd_architecture(args: argparse.Namespace, config: Config, out: TextIO) -> int:
+    from tasky import architecture, repos
+
+    repo = args.repo
+    if not repo:
+        with Store.open(config) as store:
+            repo = repos.repo_of(store, os.path.abspath(args.cwd or os.getcwd()))
+    try:
+        if args.map:
+            summary = architecture.map_areas(config, repo, model=args.model)
+        else:
+            summary = architecture.scan(config, repo)
+    except architecture.ArchitectureError as exc:
+        print(f"tasky: {exc}", file=sys.stderr)
+        return 1
+    if summary.get("error"):
+        print(f"tasky: mapping stopped: {summary['error']}", file=sys.stderr)
+        return 1
+    line = (
+        f"{repo}: {summary['files']} file(s), {summary['specs']} spec(s), "
+        f"{summary['candidates']} candidate area(s)"
+    )
+    if args.map:
+        line += (
+            f"; areas: {summary['added']} added, {summary['updated']} updated, "
+            f"{summary['retired']} retired, {summary['model']}, ${summary['cost_usd']:.4f}"
+        )
+    elif summary["adopted"]:
+        line += f"; {summary['adopted']} area(s) adopted from Archify/Graphify"
+    print(line, file=out)
     return 0
 
 

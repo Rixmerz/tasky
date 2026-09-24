@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-09-24
+
+### Added
+
+- Architecture view: per repository, its areas (business or technical parts, with aliases, folders
+  and kind), the specs and decisions that describe each one, its History problems and milestones,
+  and how much work touched it (turns, files, last edit), counted from every edit Tasky copied.
+- Scan (free) reads OpenSpec capabilities and changes, spec-kit features, Kiro specs, ADRs in
+  Nygard, MADR and home-grown styles, Archify `*.architecture.json` and Graphify
+  `graphify-out/graph.json`. A repository with no areas adopts Archify boundaries or Graphify
+  communities.
+- Map areas: one Sonnet or Opus call proposes the vocabulary; paths and specs it returns are
+  checked against the scan, and areas you edited keep their name and description.
+- Areas can be added, renamed, edited and deleted from the dashboard (`/api/areas`).
+- Board cards and the task panel show the areas of the files a task edited.
+- MCP tool `get_architecture` and CLI command `tasky architecture [--map]`.
+
 ## [0.8.1] - 2026-09-24
 
 ### Fixed

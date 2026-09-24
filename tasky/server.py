@@ -18,9 +18,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from tasky import __version__, history, repos, scheduler, smart_search, transcripts, worker
+from tasky import (
+    __version__,
+    architecture,
+    history,
+    repos,
+    scheduler,
+    smart_search,
+    transcripts,
+    worker,
+)
+from tasky import areas as area_rules
 from tasky.config import Config, load_token, token_proof
-from tasky.store import SEARCH_LIMIT, TASK_STATUSES, Store
+from tasky.store import SEARCH_LIMIT, TASK_STATUSES, Store, _parse_iso
 from tasky.titles import TitleWatcher
 
 _NONCE_RE = re.compile(r"[0-9a-f]{16,128}")
@@ -43,6 +53,7 @@ _TASK_RUN_RE = re.compile(r"^/api/tasks/(\d{1,18})/run$")
 _TASK_ENQUEUE_RE = re.compile(r"^/api/tasks/(\d{1,18})/enqueue$")
 _TASK_RESTORE_RE = re.compile(r"^/api/tasks/(\d{1,18})/restore$")
 _SESSION_ID_RE = re.compile(r"^/api/sessions/([^/]+)$")
+_AREA_ID_RE = re.compile(r"^/api/areas/(\d{1,18})$")
 _TASK_PATCH_FIELDS = ("status", "title", "body", "before_id", "lane", "permission_mode")
 _SESSION_PATCH_FIELDS = ("auto_pull", "title")
 
@@ -214,6 +225,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._route_history()
         elif method == "POST" and path == "/api/history/sync":
             self._route_history_sync(body)
+        elif method == "GET" and path == "/api/architecture":
+            self._route_architecture()
+        elif method == "POST" and path == "/api/architecture/scan":
+            self._route_architecture_scan(body)
+        elif method == "POST" and path == "/api/architecture/map":
+            self._route_architecture_map(body)
+        elif method == "POST" and path == "/api/areas":
+            self._route_create_area(body)
         elif method == "POST" and path == "/api/tasks":
             self._route_create_task(body)
         elif method == "POST" and path == "/api/import":
@@ -246,6 +265,13 @@ class _Handler(BaseHTTPRequestHandler):
                     self._route_delete_task(task_id)
                 else:
                     self._error(404, "not found")
+                return
+            match = _AREA_ID_RE.match(path)
+            if match and method in ("PATCH", "DELETE"):
+                if method == "PATCH":
+                    self._route_patch_area(int(match.group(1)), body)
+                else:
+                    self._route_delete_area(int(match.group(1)))
                 return
             match = _SESSION_ID_RE.match(path)
             if method == "PATCH" and match:
@@ -400,6 +426,172 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             os.close(fd)
         self._send_json(202, {"started": True})
+
+    def _route_architecture(self) -> None:
+        wanted = parse_qs(urlsplit(self.path).query).get("repo", [""])[0]
+        config = self.server.config
+        with Store.open(config) as store:
+            repos.ensure(store, store.task_cwds())
+            repo_list = store.repo_list()
+            for entry in repo_list:
+                row = store.architecture(entry["repo"])
+                entry["scanned_at"] = row["scanned_at"] if row else None
+                entry["areas"] = len(store.areas(entry["repo"]))
+            known = {e["repo"] for e in repo_list}
+            repo = wanted if wanted in known else (repo_list[0]["repo"] if repo_list else None)
+            view = architecture.overview(store, repo) if repo else None
+        self._send_json(200, {
+            "repo": repo,
+            "repos": repo_list,
+            "default_model": config.history_model,
+            "models": list(architecture.MODELS),
+            "view": view,
+        })
+
+    def _known_repo(self, body: dict | None) -> str | None:
+        repo = body.get("repo") if isinstance(body, dict) else None
+        if not isinstance(repo, str) or not repo:
+            self._error(400, "repo is required")
+            return None
+        with Store.open(self.server.config) as store:
+            if not store.repo_cwds(repo):
+                self._error(404, "no tasks recorded for this repository")
+                return None
+        return repo
+
+    def _route_architecture_scan(self, body: dict | None) -> None:
+        repo = self._known_repo(body)
+        if repo is None:
+            return
+        try:
+            summary = architecture.scan(self.server.config, repo)
+        except architecture.ArchitectureError as exc:
+            self._error(409, str(exc))
+            return
+        self._send_json(200, summary)
+
+    def _route_architecture_map(self, body: dict | None) -> None:
+        repo = self._known_repo(body)
+        if repo is None:
+            return
+        assert isinstance(body, dict)
+        config = self.server.config
+        model = body.get("model", config.history_model)
+        if model not in architecture.MODELS:
+            self._error(400, f"model must be one of {', '.join(architecture.MODELS)}")
+            return
+        with Store.open(config) as store:
+            current = store.architecture(repo)
+        if current is not None and current["state"] == "running":
+            started = _parse_iso(current["started_at"] or "")
+            if started is not None and time.time() - started < architecture.STALE_MAPPING_S:
+                self._error(409, "areas of this repository are already being mapped")
+                return
+        config.log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(
+            config.log_dir / "architecture.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
+        )
+        try:
+            self.server.popen(
+                [
+                    sys.executable, str(worker._TASKY_BIN), "architecture",
+                    "--repo", repo, "--map", "--model", model,
+                ],
+                cwd=str(config.home),
+                stdin=subprocess.DEVNULL,
+                stdout=fd,
+                stderr=fd,
+                start_new_session=True,
+            )
+        finally:
+            os.close(fd)
+        self._send_json(202, {"started": True})
+
+    @staticmethod
+    def _area_fields(body: dict) -> tuple[dict, str | None]:
+        """Checked area fields from a request body, or an error message."""
+        fields: dict = {}
+        if "kind" in body:
+            if body["kind"] not in area_rules.KINDS:
+                return {}, f"kind must be one of {', '.join(area_rules.KINDS)}"
+            fields["kind"] = body["kind"]
+        if "description" in body:
+            if not isinstance(body["description"], str):
+                return {}, "description must be text"
+            fields["description"] = body["description"].strip()[:300]
+        for key, limit, size in (
+            ("aliases", area_rules.MAX_ALIASES, area_rules.NAME_CHARS),
+            ("paths", area_rules.MAX_PATHS, 300),
+            ("specs", area_rules.MAX_SPECS, 300),
+        ):
+            if key in body:
+                value = body[key]
+                if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                    return {}, f"{key} must be a list of text"
+                if len(value) > limit:
+                    return {}, f"at most {limit} {key}"
+                cleaned = [v.strip()[:size] for v in value if v.strip()]
+                if key == "paths":
+                    cleaned = [p for p in map(area_rules.clean_path, cleaned) if p]
+                fields[key] = cleaned
+        return fields, None
+
+    def _route_create_area(self, body: dict | None) -> None:
+        repo = self._known_repo(body)
+        if repo is None:
+            return
+        assert isinstance(body, dict)
+        name = area_rules.slug(str(body.get("name") or ""))
+        if not name:
+            self._error(400, "name is required")
+            return
+        fields, problem = self._area_fields(body)
+        if problem:
+            self._error(400, problem)
+            return
+        # A deleted area of the same name is reused as a new one, not with its old fields.
+        fields = {"kind": "technical", "description": "", "aliases": [], "paths": [],
+                  "specs": [], **fields}
+        with Store.open(self.server.config) as store:
+            if any(a["name"] == name for a in store.areas(repo)):
+                self._error(409, f"area {name!r} already exists")
+                return
+            area = store.save_area(repo, name, source="user", **fields)
+        self._send_json(201, area)
+
+    def _route_patch_area(self, area_id: int, body: dict | None) -> None:
+        if not isinstance(body, dict):
+            self._error(400, "a JSON object is required")
+            return
+        fields, problem = self._area_fields(body)
+        if problem:
+            self._error(400, problem)
+            return
+        with Store.open(self.server.config) as store:
+            area = store.get_area(area_id)
+            if area is None or area["deleted_at"]:
+                self._error(404, "no such area")
+                return
+            if "name" in body:
+                name = area_rules.slug(str(body.get("name") or ""))
+                if not name:
+                    self._error(400, "name is required")
+                    return
+                if name != area["name"]:
+                    if store.rename_area(area_id, name) is None:
+                        self._error(409, f"area {name!r} already exists")
+                        return
+                    area["name"] = name
+            # Edited by hand: a later mapping keeps its name and description.
+            area = store.save_area(area["repo"], area["name"], source="user", **fields)
+        self._send_json(200, area)
+
+    def _route_delete_area(self, area_id: int) -> None:
+        with Store.open(self.server.config) as store:
+            if not store.hide_area(area_id, by_user=True):
+                self._error(404, "no such area")
+                return
+        self._send_json(200, {"deleted": True})
 
     def _route_create_task(self, body: dict) -> None:
         task_body = body.get("body")

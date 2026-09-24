@@ -33,6 +33,11 @@
   --recap: #6d28d9;
   --recap-bg: #f5f3ff;
   --recap-border: #ddd6fe;
+  /* Area kinds: two calm hues that are neither status nor accent. */
+  --kind-business: #0f766e;
+  --kind-business-bg: #e6f4f1;
+  --kind-technical: #4f5bb5;
+  --kind-technical-bg: #eceefa;
 
   /* Card rails: a repeating 5-colour cycle so neighbours are tellable apart.
      Low chroma on purpose; they carry position, never status. */
@@ -77,6 +82,10 @@
     --recap: #c4b5fd;
     --recap-bg: #1c1530;
     --recap-border: #3b2d63;
+    --kind-business: #5ec4b6;
+    --kind-business-bg: #0f2724;
+    --kind-technical: #9aa6f0;
+    --kind-technical-bg: #1a1d33;
 
     --tint-0: #7d9be0;
     --tint-1: #ab96de;
@@ -2677,6 +2686,777 @@ details.digest-card > .digest-card-title {
   color: var(--foreground);
 }
 
+/* ---------- architecture ---------- */
+
+.arch {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px var(--gutter) 32px;
+}
+
+.arch > * {
+  max-width: 960px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.arch-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.arch-heading {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.arch-repo,
+.arch-model {
+  width: auto;
+  max-width: 320px;
+}
+
+.arch-model {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12.5px;
+}
+
+.arch-close {
+  margin-left: auto;
+}
+
+.arch-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px 20px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.arch-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.arch-hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.arch-status {
+  flex: 1 1 100%;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.arch-status:empty {
+  display: none;
+}
+
+.arch-error {
+  color: var(--fail);
+}
+
+.arch-meta {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.arch-empty {
+  margin-top: 16px;
+  padding: 20px 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  text-align: center;
+}
+
+.arch-empty-title {
+  font-weight: 600;
+}
+
+.arch-empty-text {
+  max-width: 60ch;
+  margin: 6px auto 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.arch-body {
+  margin-top: 20px;
+}
+
+.arch-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.arch-subheading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.arch-no-match {
+  padding: 16px;
+}
+
+/* area cards */
+
+.arch-areas {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.arch-area {
+  --kind: var(--kind-technical);
+  --kind-bg: var(--kind-technical-bg);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 14px 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.arch-area.is-business {
+  --kind: var(--kind-business);
+  --kind-bg: var(--kind-business-bg);
+}
+
+/* The kind as a thin rail on the left edge: tellable at a glance, never loud. */
+.arch-area::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--kind);
+}
+
+.arch-area.is-idle {
+  background: color-mix(in srgb, var(--card) 55%, var(--background));
+  box-shadow: none;
+}
+
+.arch-area.is-idle > :not(.arch-area-head),
+.arch-area.is-idle .arch-area-name,
+.arch-area.is-idle .arch-kind {
+  opacity: 0.72;
+}
+
+.arch-area.is-idle::before {
+  opacity: 0.4;
+}
+
+.arch-area-head {
+  display: flex;
+  align-items: center;
+  gap: 6px 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.arch-area-name {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 650;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.arch-kind {
+  border-color: transparent;
+  color: var(--kind);
+  background: var(--kind-bg);
+}
+
+.arch-kind[data-kind="business"] {
+  color: var(--kind-business);
+  background: var(--kind-business-bg);
+}
+
+.arch-kind[data-kind="technical"] {
+  color: var(--kind-technical);
+  background: var(--kind-technical-bg);
+}
+
+.arch-source {
+  font-size: 10.5px;
+  border-style: dashed;
+}
+
+.arch-area-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.arch-confirm-ask {
+  margin-right: 4px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fail);
+}
+
+.arch-danger {
+  background: var(--fail-bg);
+  border-color: transparent;
+  color: var(--fail);
+}
+
+.arch-danger:hover {
+  background: color-mix(in srgb, var(--fail) 22%, var(--fail-bg));
+}
+
+.arch-area-desc {
+  font-size: 13px;
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--foreground) 82%, var(--muted));
+  overflow-wrap: anywhere;
+}
+
+.arch-activity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.arch-bar {
+  flex: 0 0 160px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--muted-bg);
+  overflow: hidden;
+}
+
+.arch-bar-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--kind);
+}
+
+.arch-activity-text {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.arch-activity-text > span {
+  white-space: pre;
+}
+
+.arch-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.arch-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.arch-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--muted-bg);
+  color: color-mix(in srgb, var(--foreground) 75%, var(--muted));
+}
+
+.arch-alias {
+  border: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.arch-chip-more {
+  flex: none;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* counts line, which is also the disclosure */
+
+.arch-disclosure {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 28px;
+  margin: 0 0 0 -6px;
+  padding: 2px 8px 2px 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.arch-disclosure:hover {
+  background: var(--muted-bg);
+  color: var(--foreground);
+}
+
+.arch-disclosure .chevron {
+  flex-shrink: 0;
+  transition: transform 120ms;
+}
+
+.arch-disclosure[aria-expanded="true"] .chevron {
+  transform: rotate(90deg);
+}
+
+.arch-counts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0 4px;
+  min-width: 0;
+}
+
+.arch-counts > span + span::before {
+  content: "·";
+  margin-right: 4px;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.arch-counts .is-attn {
+  color: var(--attn);
+  font-weight: 600;
+}
+
+.arch-counts-none {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.arch-detail {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 14px 20px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.arch-detail-section {
+  min-width: 0;
+}
+
+.arch-detail-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.arch-detail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.arch-detail-item {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.arch-detail-title {
+  min-width: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.arch-detail-meta,
+.arch-detail-date {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.arch-detail-date {
+  flex: none;
+}
+
+.arch-problem .badge {
+  align-self: center;
+}
+
+.arch-spec {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.arch-spec:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.arch-spec-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.arch-spec-kind {
+  font-size: 10.5px;
+  background: var(--muted-bg);
+  border-color: transparent;
+}
+
+.arch-spec-status {
+  font-size: 10.5px;
+}
+
+.arch-spec-summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.arch-spec-items {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.arch-spec-more {
+  list-style: none;
+  color: var(--muted);
+}
+
+.arch-spec-path {
+  display: block;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.arch-task-link {
+  font-size: 13px;
+}
+
+.arch-task-id {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* create / edit */
+
+.arch-new {
+  margin-bottom: 10px;
+  padding: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.arch-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.arch-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 180px);
+  gap: 10px;
+}
+
+.arch-input {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--card);
+  font-size: 13px;
+  box-shadow: var(--shadow);
+}
+
+.arch-textarea {
+  min-height: 0;
+}
+
+.arch-paths-input {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.arch-form-error {
+  font-size: 12.5px;
+  color: var(--fail);
+  overflow-wrap: anywhere;
+}
+
+.arch-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* not placed, all specs */
+
+.arch-unplaced {
+  margin-top: 28px;
+}
+
+.arch-unplaced-note {
+  margin-top: 4px;
+}
+
+.arch-unplaced-lists {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 14px 20px;
+  margin-top: 10px;
+}
+
+.arch-unplaced-group {
+  min-width: 0;
+}
+
+.arch-unplaced-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.arch-unplaced-list > li {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.arch-place {
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  cursor: pointer;
+}
+
+.arch-place:hover {
+  border-style: solid;
+  background: var(--muted-bg);
+  color: var(--foreground);
+}
+
+.arch-place svg {
+  flex-shrink: 0;
+}
+
+.arch-place-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.arch-specs {
+  margin-top: 24px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.arch-specs-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 6px;
+  margin-left: -6px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+
+.arch-specs-summary::-webkit-details-marker {
+  display: none;
+}
+
+.arch-specs-summary:hover {
+  background: var(--muted-bg);
+}
+
+.arch-specs-summary .chevron {
+  color: var(--muted);
+  transition: transform 120ms;
+}
+
+.arch-specs[open] .arch-specs-summary .chevron {
+  transform: rotate(90deg);
+}
+
+.arch-specs-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.arch-specs-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  min-width: 0;
+}
+
+.arch-specs-foot {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.arch-specs-foot > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.arch-specs-areas {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.arch-specs-areas.is-none {
+  color: var(--attn);
+}
+
+.arch-specs-foot .arch-spec-path {
+  flex: 1;
+}
+
+/* area chips on board cards and in the drawer */
+
+.card-areas,
+.drawer-areas {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.drawer-areas {
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.area-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 16ch;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--muted-bg);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drawer-areas .area-chip {
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.area-chip-more {
+  flex: none;
+  font-family: var(--font-mono);
+}
+
 @media (min-width: 481px) {
   body {
     overflow: hidden;
@@ -2797,6 +3577,49 @@ details.digest-card > .digest-card-title {
   }
   .history-toggle-label {
     display: none;
+  }
+  .arch {
+    padding: 12px var(--gutter) 24px;
+  }
+  .arch-head {
+    gap: 8px;
+  }
+  .arch-repo {
+    order: 3;
+    flex: 1 1 100%;
+    max-width: none;
+    min-width: 0;
+  }
+  .arch-filter {
+    order: 4;
+    flex-basis: 100%;
+  }
+  .arch-actions {
+    gap: 8px;
+  }
+  .arch-area {
+    padding: 10px 12px 8px 14px;
+  }
+  .arch-activity {
+    flex-wrap: wrap;
+    gap: 4px 10px;
+  }
+  .arch-bar {
+    flex: 1 1 100%;
+  }
+  .arch-form-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .arch-disclosure {
+    min-height: 36px;
+  }
+  .arch-specs-foot {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+  }
+  .arch-specs-areas {
+    max-width: 100%;
   }
   .tablist {
     display: flex;

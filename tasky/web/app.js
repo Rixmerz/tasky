@@ -155,6 +155,7 @@ const el = {
   drawerTitle: document.getElementById("drawer-title"),
   drawerClose: document.getElementById("drawer-close"),
   drawerMeta: document.querySelector("#drawer .drawer-meta"),
+  drawerAreas: document.querySelector("#drawer .drawer-areas"),
   drawerEditOpen: document.querySelector("#drawer .drawer-edit-open"),
   drawerEdit: document.querySelector("#drawer .drawer-edit"),
   drawerEditTextarea: document.querySelector("#drawer .drawer-edit-textarea"),
@@ -219,6 +220,34 @@ const el = {
   historyProblems: document.getElementById("history-problems"),
   historyDead: document.getElementById("history-dead"),
   historyMap: document.getElementById("history-map"),
+  archToggle: document.getElementById("arch-toggle"),
+  arch: document.getElementById("arch"),
+  archHeading: document.getElementById("arch-heading"),
+  archRepo: document.getElementById("arch-repo"),
+  archFilter: document.getElementById("arch-filter"),
+  archClose: document.getElementById("arch-close"),
+  archActions: document.getElementById("arch-actions"),
+  archScan: document.getElementById("arch-scan"),
+  archScanLabel: document.getElementById("arch-scan-label"),
+  archModel: document.getElementById("arch-model"),
+  archMap: document.getElementById("arch-map"),
+  archStatus: document.getElementById("arch-status"),
+  archMeta: document.getElementById("arch-meta"),
+  archEmpty: document.getElementById("arch-empty"),
+  archEmptyTitle: document.getElementById("arch-empty-title"),
+  archEmptyText: document.getElementById("arch-empty-text"),
+  archBody: document.getElementById("arch-body"),
+  archCount: document.getElementById("arch-count"),
+  archAdd: document.getElementById("arch-add"),
+  archNew: document.getElementById("arch-new"),
+  archNoMatch: document.getElementById("arch-no-match"),
+  archAreas: document.getElementById("arch-areas"),
+  archUnplaced: document.getElementById("arch-unplaced"),
+  archUnplacedNote: document.getElementById("arch-unplaced-note"),
+  archUnplacedLists: document.getElementById("arch-unplaced-lists"),
+  archSpecs: document.getElementById("arch-specs"),
+  archSpecsCount: document.getElementById("arch-specs-count"),
+  archSpecsList: document.getElementById("arch-specs-list"),
 };
 
 // ---------- access token ----------
@@ -516,6 +545,7 @@ function applyState(next) {
   }
   renderAll();
   if (historyOpen) loadHistory();
+  if (archOpen) loadArch();
 }
 
 function startPolling() {
@@ -930,6 +960,8 @@ function updateCard(node, task, kind) {
   if (kind === "attention" && asksUser(task)) spoken.push("asked you a question");
   if (kind === "runner") spoken.push("queue runner");
   if (kind === "parallel" && task.run_mode === "fork") spoken.push(`fork of ${forkSourceLabel(task)}`);
+  const areaNames = taskAreaNames(task);
+  if (areaNames.length) spoken.push(`${areaNames.length === 1 ? "area" : "areas"} ${areaNames.join(", ")}`);
   titleBtn.setAttribute("aria-label", `${spoken.join(", ")}. Open details`);
 
   time.textContent = taskTimeLabel(task);
@@ -961,6 +993,7 @@ function updateCard(node, task, kind) {
   summaryEl.textContent = summary;
 
   renderCardMeta(node.querySelector(".card-meta"), task, kind);
+  renderAreaChips(node.querySelector(".card-areas"), task.areas, 2);
   renderPrimaryActions(node, task, kind);
   renderOverflowMenu(node, task, kind);
 }
@@ -1015,6 +1048,36 @@ function renderCardMeta(metaEl, task, kind) {
     item.className = "meta-item";
     item.textContent = part;
     metaEl.appendChild(item);
+  }
+}
+
+function taskAreaNames(task) {
+  return (Array.isArray(task.areas) ? task.areas : []).map((a) => a && a.name).filter(Boolean);
+}
+
+/**
+ * The areas a task edited, as small muted chips on one line: the first
+ * `max`, then "+N" for the rest (all of them in the tooltip).
+ */
+function renderAreaChips(container, areas, max) {
+  const names = (Array.isArray(areas) ? areas : []).map((a) => a && a.name).filter(Boolean);
+  const key = `${max}|${names.join("|")}`;
+  container.hidden = names.length === 0;
+  if (container.dataset.key === key) return;
+  container.dataset.key = key;
+  container.textContent = "";
+  container.title = names.length > max ? names.join(", ") : "";
+  for (const name of names.slice(0, max)) {
+    const chip = document.createElement("span");
+    chip.className = "area-chip";
+    chip.textContent = name;
+    container.appendChild(chip);
+  }
+  if (names.length > max) {
+    const more = document.createElement("span");
+    more.className = "area-chip area-chip-more";
+    more.textContent = `+${names.length - max}`;
+    container.appendChild(more);
   }
 }
 
@@ -1365,6 +1428,7 @@ function renderDrawerContent(task, editing) {
   const time = taskTimeLabel(task);
   if (time) metaParts.push(time);
   el.drawerMeta.textContent = metaParts.join(" · ");
+  renderAreaChips(el.drawerAreas, task.areas, 6);
 
   if (task.body && task.body !== task.title) {
     el.drawerBody.textContent = task.body;
@@ -2887,6 +2951,7 @@ function scopeHistoryData(data, scope) {
 
 function openHistory() {
   if (el.searchInput.value) clearSearch();
+  if (archOpen) closeArch(false);
   historyOpen = true;
   el.historyToggle.setAttribute("aria-pressed", "true");
   el.history.hidden = false;
@@ -3748,6 +3813,1274 @@ el.history.addEventListener("keydown", (evt) => {
   closeHistory();
 });
 
+// ---------- architecture ----------
+//
+// A repo's areas: the vocabulary its work is described in ("checkout",
+// "auth", "ci"), each with the specs, problems and milestones linked to it
+// and how much editing happened there. Reading and Scan are free; only Map
+// areas spends tokens, one model call with the model picked next to it.
+
+const ARCH_MODEL_KEY = "tasky.archModel";
+const ARCH_POLL_MS = 3000;
+const ARCH_START_GRACE_MS = 4000;
+const ARCH_KINDS = ["business", "technical"];
+const ARCH_PATH_CHIPS = 4;
+const ARCH_ALIAS_CHIPS = 6;
+const ARCH_UNPLACED_MAX = 8;
+const ARCH_SPEC_ITEMS = 3;
+const ARCH_SPEC_KINDS = ["openspec", "openspec-change", "spec-kit", "kiro", "adr"];
+const ARCH_SPEC_LABEL = {
+  openspec: "OpenSpec",
+  "openspec-change": "OpenSpec change",
+  "spec-kit": "spec-kit",
+  kiro: "Kiro",
+  adr: "ADR",
+};
+const ARCH_SOURCE_HINT = {
+  user: { text: "edited", title: "Edited by you: a new mapping keeps its name and description" },
+  archify: { text: "Archify", title: "Taken from Archify output" },
+  graphify: { text: "Graphify", title: "Taken from Graphify output" },
+};
+
+let archOpen = false;
+let archRepo = ""; // the shown repo key; "" until the server names one
+let archRepoChosen = false;
+let archRepos = [];
+let archData = null;
+let archSeq = 0;
+let archStarting = ""; // repo key a mapping was just asked for, until the server reports it running
+let archStartTimer = null;
+let archPollTimer = null;
+let archWasRunning = false;
+let archScanning = false;
+let archNotice = null; // {text, error} from the last Scan or Map click
+let archFilterText = "";
+let archRenderedKey = "";
+let archRepoOptionsKey = "";
+let archModelOptionsKey = "";
+let archStaleWhileEditing = false;
+const archExpanded = new Set();
+let archEditing = null; // an area id, "new", or null
+let archConfirming = null; // the area id whose Delete waits for "Yes, delete"
+let archNewPrefill = null;
+
+function archView() {
+  return archData && archData.view ? archData.view : null;
+}
+
+function archScanRow() {
+  const view = archView();
+  return view && view.scan ? view.scan : null;
+}
+
+function archIsRunning() {
+  if (!archRepo) return false;
+  if (archStarting === archRepo) return true;
+  const scan = archScanRow();
+  return Boolean(scan && scan.state === "running");
+}
+
+/** "just now" / "3h ago" within a day, else the date. */
+function archWhen(iso) {
+  if (!iso) return "";
+  const rel = relativeTime(iso);
+  if (rel === "just now") return rel;
+  if (/^\d+[mh]$/.test(rel)) return `${rel} ago`;
+  return String(iso).slice(0, 10);
+}
+
+function archRepoLabel(repo) {
+  const twins = archRepos.filter((r) => r.name === repo.name).length;
+  const name = twins > 1 ? `${repo.name} (${repo.repo})` : repo.name || repo.repo;
+  return repo.areas ? `${name} · ${plural(repo.areas, "area")}` : name;
+}
+
+/** Network and auth failures go to the usual banner; anything else is returned for inline display. */
+function archErrorText(err) {
+  if (err instanceof UnauthorizedError || err instanceof NetworkError || err instanceof NotVerifiedError) {
+    handleApiError(err);
+    return "";
+  }
+  return err && err.message ? err.message : "Something went wrong";
+}
+
+function openArch() {
+  if (el.searchInput.value) clearSearch();
+  if (historyOpen) closeHistory(false);
+  archOpen = true;
+  el.archToggle.setAttribute("aria-pressed", "true");
+  el.arch.hidden = false;
+  el.board.hidden = true;
+  el.tablist.hidden = true;
+  archData = null;
+  archRenderedKey = "";
+  archEditing = null;
+  archConfirming = null;
+  archNotice = null;
+  renderArch();
+  loadArch();
+  el.archHeading.focus();
+}
+
+function closeArch(focusToggle = true) {
+  archOpen = false;
+  clearTimeout(archPollTimer);
+  archPollTimer = null;
+  el.archToggle.setAttribute("aria-pressed", "false");
+  el.arch.hidden = true;
+  el.board.hidden = false;
+  el.tablist.hidden = false;
+  if (focusToggle) el.archToggle.focus();
+}
+
+async function loadArch() {
+  const seq = ++archSeq;
+  const wanted = archRepo;
+  let data;
+  try {
+    data = await apiGet(`/api/architecture${wanted ? `?${new URLSearchParams({ repo: wanted })}` : ""}`);
+  } catch (err) {
+    if (seq !== archSeq) return;
+    handleApiError(err);
+    scheduleArchPoll();
+    return;
+  }
+  // A reply for a repo switched away from, or older than a newer load, is dropped.
+  if (seq !== archSeq || wanted !== archRepo || !archOpen) return;
+  archRepos = Array.isArray(data.repos) ? data.repos : [];
+  if (!archRepoChosen && !wanted && projectFilter) {
+    // First open: prefer the repo the board is filtered to.
+    const hit = archRepos.find((r) => Array.isArray(r.cwds) && r.cwds.includes(projectFilter));
+    if (hit && hit.repo !== data.repo) {
+      archRepo = hit.repo;
+      loadArch();
+      return;
+    }
+  }
+  archRepo = data.repo || "";
+  archData = data;
+  const scan = archScanRow();
+  const serverRunning = Boolean(scan && scan.state === "running");
+  if (archStarting && archStarting === archRepo && serverRunning) clearArchStarting();
+  if (archWasRunning && !archIsRunning()) {
+    if (scan && scan.error) announce(`Mapping stopped: ${scan.error}`);
+    else announce(`Mapped ${plural(data.view ? data.view.areas.length : 0, "area")}`);
+  }
+  archWasRunning = archIsRunning();
+  renderArch();
+  scheduleArchPoll();
+}
+
+function scheduleArchPoll() {
+  clearTimeout(archPollTimer);
+  archPollTimer = null;
+  if (!archOpen || !archIsRunning()) return;
+  archPollTimer = setTimeout(() => {
+    archPollTimer = null;
+    if (document.hidden) {
+      scheduleArchPoll();
+      return;
+    }
+    loadArch();
+  }, ARCH_POLL_MS);
+}
+
+function clearArchStarting() {
+  archStarting = "";
+  clearTimeout(archStartTimer);
+  archStartTimer = null;
+}
+
+async function startArchScan() {
+  const repo = archRepo;
+  if (!repo || archScanning || archIsRunning()) return;
+  archScanning = true;
+  archNotice = null;
+  renderArchActions();
+  try {
+    const res = await apiMutate("POST", "/api/architecture/scan", { repo });
+    const parts = [`Scanned ${plural(res.files || 0, "file")}`, plural(res.specs || 0, "spec")];
+    if (res.candidates) parts.push(plural(res.candidates, "candidate area"));
+    if (res.adopted) parts.push(`${res.adopted} adopted`);
+    archNotice = { text: parts.join(" · ") };
+    announce(parts.join(", "));
+  } catch (err) {
+    const text = archErrorText(err);
+    archNotice = text ? { text, error: true } : null;
+  } finally {
+    archScanning = false;
+  }
+  if (repo !== archRepo) return;
+  archRenderedKey = "";
+  await loadArch();
+}
+
+async function startArchMap() {
+  const repo = archRepo;
+  if (!repo || archScanning || archIsRunning()) return;
+  const model = el.archModel.value;
+  archStarting = repo;
+  archNotice = null;
+  archWasRunning = true;
+  renderArchActions();
+  try {
+    await apiMutate("POST", "/api/architecture/map", { repo, model });
+    announce(`Mapping areas with ${modelLabel(model)}`);
+  } catch (err) {
+    clearArchStarting();
+    archWasRunning = false;
+    const text = archErrorText(err);
+    archNotice = text ? { text, error: true } : null;
+    renderArchActions();
+    loadArch();
+    return;
+  }
+  // The worker claims the repo a moment after it starts; until the server
+  // says so, keep showing it as starting rather than idle.
+  clearTimeout(archStartTimer);
+  archStartTimer = setTimeout(() => {
+    archStarting = "";
+    archStartTimer = null;
+    loadArch();
+  }, ARCH_START_GRACE_MS);
+  scheduleArchPoll();
+}
+
+// ----- head, actions, meta -----
+
+function renderArchRepoOptions() {
+  const key = JSON.stringify(archRepos.map((r) => [r.repo, r.name, r.areas]));
+  if (key !== archRepoOptionsKey) {
+    archRepoOptionsKey = key;
+    el.archRepo.textContent = "";
+    for (const r of archRepos) {
+      const opt = document.createElement("option");
+      opt.value = r.repo;
+      opt.textContent = archRepoLabel(r);
+      el.archRepo.appendChild(opt);
+    }
+  }
+  if (archRepo) el.archRepo.value = archRepo;
+  el.archRepo.disabled = archRepos.length === 0;
+}
+
+function renderArchModelOptions() {
+  const models = archData && Array.isArray(archData.models) && archData.models.length ? archData.models : HISTORY_DEFAULT_MODELS;
+  const key = models.join(",");
+  if (key !== archModelOptionsKey) {
+    archModelOptionsKey = key;
+    el.archModel.textContent = "";
+    for (const m of models) {
+      const opt = document.createElement("option");
+      opt.value = m;
+      opt.textContent = modelLabel(m);
+      el.archModel.appendChild(opt);
+    }
+    const stored = readLocal(ARCH_MODEL_KEY);
+    const fallback = archData && archData.default_model;
+    el.archModel.value = models.includes(stored) ? stored : models.includes(fallback) ? fallback : models[0];
+  }
+}
+
+function formatUsd(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
+}
+
+function renderArchActions() {
+  const view = archView();
+  el.archActions.hidden = !view;
+  if (!view) return;
+  renderArchModelOptions();
+  const running = archIsRunning();
+  const scan = view.scan;
+  el.archScan.disabled = running || archScanning;
+  el.archScanLabel.textContent = archScanning ? "Scanning…" : "Scan";
+  el.archMap.disabled = running || archScanning;
+  el.archMap.textContent = running ? "Mapping…" : "Map areas";
+  el.archModel.disabled = running;
+
+  const status = el.archStatus;
+  status.textContent = "";
+  status.title = scan && scan.total_cost_usd ? `Spent on this repo's areas so far: ${formatUsd(scan.total_cost_usd)}` : "";
+  if (archScanning) {
+    status.textContent = "Scanning the repo…";
+    return;
+  }
+  if (running) {
+    const model = (scan && scan.state === "running" && scan.model) || el.archModel.value;
+    status.textContent = `Mapping… ${modelLabel(model)} is defining this repo's areas. This takes about a minute.`;
+    return;
+  }
+  if (archNotice) {
+    const span = document.createElement("span");
+    if (archNotice.error) span.className = "arch-error";
+    span.textContent = archNotice.text;
+    status.appendChild(span);
+    return;
+  }
+  // When and by whom it was mapped, and the cost, sit in the meta line;
+  // the status line only speaks up for a failed run.
+  if (scan && scan.error) {
+    const err = document.createElement("span");
+    err.className = "arch-error";
+    err.textContent = `Last mapping stopped: ${scan.error}`;
+    status.appendChild(err);
+  }
+}
+
+function renderArchMeta() {
+  const view = archView();
+  const scan = view && view.scan;
+  el.archMeta.hidden = !(scan && scan.scanned_at);
+  if (el.archMeta.hidden) {
+    el.archMeta.textContent = "";
+    return;
+  }
+  const sources = scan.sources || {};
+  const specKinds = ARCH_SPEC_KINDS.filter((k) => sources[k]).map((k) => `${ARCH_SPEC_LABEL[k]} ${sources[k]}`);
+  const others = Object.keys(sources)
+    .filter((k) => !ARCH_SPEC_KINDS.includes(k) && sources[k])
+    .map((k) => `${k === "folder" ? "folders" : k} ${sources[k]}`);
+  const specCount = Array.isArray(view.specs) ? view.specs.length : 0;
+  const parts = [`Scanned ${archWhen(scan.scanned_at)}`];
+  if (scan.files != null) parts.push(plural(scan.files, "file"));
+  parts.push(`${plural(specCount, "spec")}${specKinds.length ? ` (${specKinds.join(", ")})` : ""}`);
+  if (others.length) parts.push(`candidates from ${others.join(", ")}`);
+  if (scan.mapped_at) {
+    const cost = formatUsd(scan.last_cost_usd);
+    parts.push(`mapped ${archWhen(scan.mapped_at)}${scan.model ? ` by ${scan.model}` : ""}${cost ? ` (${cost})` : ""}`);
+  }
+  el.archMeta.textContent = parts.join(" · ");
+  el.archMeta.title = scan.root || "";
+}
+
+function renderArchEmpty() {
+  const view = archView();
+  let title = "";
+  let text = "";
+  if (archData && !archRepos.length) {
+    title = "No repos recorded yet.";
+    text = "Areas are kept per repository. Run a task in one and it shows up here.";
+  } else if (view && !view.areas.length) {
+    if (!view.scan) {
+      title = "This repo has not been scanned yet.";
+      text =
+        "Scan reads its specs, ADRs, Archify and Graphify output for free. Map areas then asks the model to define the vocabulary: the business and technical parts the repo is made of. You can also add areas yourself.";
+    } else {
+      title = "No areas yet.";
+      text = `Scan found ${plural(view.specs.length, "spec")}. Map areas asks the model to define the vocabulary from them, or add areas yourself.`;
+    }
+  }
+  el.archEmpty.hidden = !title;
+  el.archEmptyTitle.textContent = title;
+  el.archEmptyText.textContent = text;
+}
+
+function renderArch() {
+  renderArchRepoOptions();
+  renderArchActions();
+  renderArchMeta();
+  renderArchEmpty();
+  const view = archView();
+  el.archBody.hidden = !view;
+  if (!view) {
+    archRenderedKey = "";
+    return;
+  }
+  // Polls re-deliver the same view often; rebuilding would drop focus,
+  // open details and scroll position for nothing. An open form is never
+  // rebuilt under the user's hands; it catches up once closed.
+  const key = JSON.stringify([
+    archRepo,
+    view.areas,
+    view.specs,
+    view.unplaced_dirs,
+    view.unplaced_topics,
+    view.unlinked_specs,
+    view.edited_without_area,
+    archFilterText,
+  ]);
+  if (key === archRenderedKey) return;
+  if (archEditing !== null || archConfirming !== null) {
+    archStaleWhileEditing = true;
+    return;
+  }
+  archRenderedKey = key;
+  archStaleWhileEditing = false;
+  renderArchBody();
+}
+
+/** Re-renders after a form or confirm closes, if data arrived meanwhile. */
+function archCatchUp() {
+  if (archStaleWhileEditing) {
+    archRenderedKey = "";
+    renderArch();
+  }
+}
+
+// ----- areas -----
+
+function archAreaMatches(area) {
+  if (!archFilterText) return true;
+  const hay = [area.name, area.kind, area.description, ...(area.aliases || []), ...(area.paths || [])]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+  return hay.includes(archFilterText);
+}
+
+function archAreaActivity(area) {
+  return (area.turns || 0) + (area.files || 0) + (area.tasks || 0);
+}
+
+/** Areas as the server sorted them (by activity), with idle ones moved last. */
+function archSortedAreas(view) {
+  const active = view.areas.filter((a) => archAreaActivity(a) > 0);
+  const idle = view.areas.filter((a) => archAreaActivity(a) === 0);
+  return [...active, ...idle];
+}
+
+function archContext(view) {
+  const specsByPath = new Map((view.specs || []).map((s) => [s.path, s]));
+  const maxTurns = Math.max(1, ...view.areas.map((a) => a.turns || 0));
+  return { specsByPath, maxTurns };
+}
+
+function renderArchBody() {
+  const view = archView();
+  const focusKey = archFocusKey();
+  const areas = archSortedAreas(view);
+  const shown = areas.filter(archAreaMatches);
+  const ctx = archContext(view);
+  el.archCount.textContent = archFilterText ? `${shown.length} of ${areas.length}` : String(areas.length);
+  el.archAreas.textContent = "";
+  for (const area of shown) el.archAreas.appendChild(buildArchArea(area, ctx));
+  el.archNoMatch.hidden = !(archFilterText && areas.length && !shown.length);
+  el.archNoMatch.textContent = el.archNoMatch.hidden ? "" : `No areas match “${el.archFilter.value.trim()}”.`;
+  renderArchUnplaced(view);
+  renderArchSpecs(view);
+  if (focusKey) archRestoreFocus(focusKey);
+}
+
+function archFocusKey() {
+  const active = document.activeElement;
+  if (!active || !el.arch.contains(active)) return "";
+  return active.dataset.focus || "";
+}
+
+function archRestoreFocus(key) {
+  const node = el.arch.querySelector(`[data-focus="${CSS.escape(key)}"]`);
+  if (node) node.focus();
+}
+
+function archButton(text, className, focusKey) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = className;
+  btn.textContent = text;
+  if (focusKey) btn.dataset.focus = focusKey;
+  return btn;
+}
+
+function archChipRow(values, max, className, label, render) {
+  if (!values.length) return null;
+  const row = document.createElement("div");
+  row.className = `arch-chips ${className}`;
+  row.setAttribute("role", "group");
+  row.setAttribute("aria-label", label);
+  for (const v of values.slice(0, max)) row.appendChild(render(v));
+  if (values.length > max) {
+    const more = document.createElement("span");
+    more.className = "arch-chip arch-chip-more";
+    more.textContent = `+${values.length - max}`;
+    more.title = values.slice(max).join("\n");
+    row.appendChild(more);
+  }
+  return row;
+}
+
+function archPathChip(path) {
+  const chip = document.createElement("code");
+  chip.className = "arch-chip arch-path";
+  chip.textContent = path;
+  chip.title = path;
+  return chip;
+}
+
+function archAliasChip(alias) {
+  const chip = document.createElement("span");
+  chip.className = "arch-chip arch-alias";
+  chip.textContent = alias;
+  return chip;
+}
+
+function archKindBadge(kind) {
+  const badge = document.createElement("span");
+  badge.className = "badge arch-kind";
+  badge.dataset.kind = ARCH_KINDS.includes(kind) ? kind : "technical";
+  badge.textContent = kind || "technical";
+  return badge;
+}
+
+function archAreaSpecs(area) {
+  const linked = Array.isArray(area.spec_items) && area.spec_items.length ? area.spec_items : area.specs || [];
+  return [...new Set(linked)];
+}
+
+function buildArchArea(area, ctx) {
+  const li = document.createElement("li");
+  li.className = "arch-area";
+  li.id = `arch-area-${area.id}`;
+  li.dataset.areaId = String(area.id);
+  if (archAreaActivity(area) === 0) li.classList.add("is-idle");
+  if (area.kind === "business") li.classList.add("is-business");
+  if (archEditing === area.id) {
+    li.classList.add("is-editing");
+    li.appendChild(buildArchForm(area));
+    return li;
+  }
+
+  const head = document.createElement("div");
+  head.className = "arch-area-head";
+  const name = document.createElement("h4");
+  name.className = "arch-area-name";
+  name.textContent = area.name;
+  head.append(name, archKindBadge(area.kind));
+  const hint = ARCH_SOURCE_HINT[area.source];
+  if (hint) {
+    const src = document.createElement("span");
+    src.className = "badge arch-source";
+    src.textContent = hint.text;
+    src.title = hint.title;
+    head.appendChild(src);
+  }
+  head.appendChild(buildArchTools(area));
+  li.appendChild(head);
+
+  if (area.description) {
+    const desc = document.createElement("p");
+    desc.className = "arch-area-desc";
+    desc.textContent = area.description;
+    li.appendChild(desc);
+  }
+
+  li.appendChild(buildArchActivity(area, ctx.maxTurns));
+  appendMaybe(li, archChipRow(area.paths || [], ARCH_PATH_CHIPS, "arch-paths", "Paths", archPathChip));
+  appendMaybe(li, archChipRow(area.aliases || [], ARCH_ALIAS_CHIPS, "arch-aliases", "Aliases", archAliasChip));
+
+  const error = document.createElement("p");
+  error.className = "arch-form-error";
+  error.setAttribute("role", "alert");
+  error.hidden = true;
+  li.appendChild(error);
+
+  const specs = archAreaSpecs(area);
+  const problems = area.problems || [];
+  const milestones = area.milestones || [];
+  const tasks = area.recent_tasks || [];
+  const counts = document.createElement("span");
+  counts.className = "arch-counts";
+  const addCount = (text, attention) => {
+    const span = document.createElement("span");
+    span.textContent = text;
+    if (attention) span.className = "is-attn";
+    counts.appendChild(span);
+  };
+  if (specs.length) addCount(plural(specs.length, "spec"));
+  const open = problems.filter((p) => p.state !== "solved").length;
+  if (open) addCount(plural(open, "open problem"), true);
+  const solved = problems.length - open;
+  if (solved) addCount(`${solved} solved`);
+  if (milestones.length) addCount(plural(milestones.length, "milestone"));
+  if (area.tasks) addCount(plural(area.tasks, "task"));
+
+  if (!counts.childNodes.length) {
+    const none = document.createElement("p");
+    none.className = "arch-counts arch-counts-none";
+    none.textContent = "No specs, problems or tasks linked yet";
+    li.appendChild(none);
+    return li;
+  }
+  const detailId = `arch-detail-${area.id}`;
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "arch-disclosure";
+  toggle.dataset.focus = `toggle-${area.id}`;
+  toggle.setAttribute("aria-controls", detailId);
+  const expanded = archExpanded.has(area.id);
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.innerHTML =
+    '<svg class="chevron" aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>';
+  toggle.appendChild(counts);
+  const sr = document.createElement("span");
+  sr.className = "visually-hidden";
+  sr.textContent = ` for ${area.name}`;
+  toggle.appendChild(sr);
+  const detail = document.createElement("div");
+  detail.className = "arch-detail";
+  detail.id = detailId;
+  detail.hidden = !expanded;
+  if (expanded) fillArchDetail(detail, area, ctx, specs);
+  toggle.addEventListener("click", () => {
+    const on = toggle.getAttribute("aria-expanded") !== "true";
+    toggle.setAttribute("aria-expanded", String(on));
+    if (on) {
+      archExpanded.add(area.id);
+      if (!detail.childNodes.length) fillArchDetail(detail, area, ctx, specs);
+    } else {
+      archExpanded.delete(area.id);
+    }
+    detail.hidden = !on;
+  });
+  li.append(toggle, detail);
+  return li;
+}
+
+function buildArchActivity(area, maxTurns) {
+  const row = document.createElement("div");
+  row.className = "arch-activity";
+  const bar = document.createElement("span");
+  bar.className = "arch-bar";
+  bar.setAttribute("aria-hidden", "true");
+  const fill = document.createElement("span");
+  fill.className = "arch-bar-fill";
+  const turns = area.turns || 0;
+  // CSSOM writes are not inline styles as far as CSP is concerned.
+  fill.style.width = `${turns ? Math.max(3, Math.round((turns / maxTurns) * 100)) : 0}%`;
+  bar.appendChild(fill);
+  const text = document.createElement("span");
+  text.className = "arch-activity-text";
+  const parts = [];
+  if (turns) parts.push(plural(turns, "turn"));
+  if (area.files) parts.push(plural(area.files, "file"));
+  if (area.last_edit) parts.push(`last ${area.last_edit}`);
+  if (!parts.length) parts.push("No edits recorded");
+  parts.forEach((part, i) => {
+    const span = document.createElement("span");
+    span.textContent = i ? ` · ${part}` : part;
+    text.appendChild(span);
+  });
+  row.append(bar, text);
+  return row;
+}
+
+function buildArchTools(area) {
+  const tools = document.createElement("span");
+  tools.className = "arch-area-tools";
+  if (archConfirming === area.id) {
+    const ask = document.createElement("span");
+    ask.className = "arch-confirm-ask";
+    ask.textContent = "Delete?";
+    const yes = archButton("Yes, delete", "btn btn-sm arch-danger", `yes-${area.id}`);
+    yes.addEventListener("click", () => deleteArchArea(area, yes));
+    const no = archButton("Cancel", "btn btn-ghost btn-sm", `no-${area.id}`);
+    no.addEventListener("click", () => {
+      archConfirming = null;
+      rerenderArchArea(area.id, `delete-${area.id}`);
+      archCatchUp();
+    });
+    tools.append(ask, yes, no);
+    return tools;
+  }
+  const edit = archButton("Edit", "btn btn-ghost btn-sm", `edit-${area.id}`);
+  edit.setAttribute("aria-label", `Edit ${area.name}`);
+  edit.addEventListener("click", () => {
+    closeArchNew();
+    archConfirming = null;
+    archEditing = area.id;
+    rerenderArchArea(area.id);
+    const input = el.archAreas.querySelector(`#arch-area-${area.id} input[name="name"]`);
+    if (input) input.focus();
+  });
+  const del = archButton("Delete", "btn btn-ghost btn-sm", `delete-${area.id}`);
+  del.setAttribute("aria-label", `Delete ${area.name}`);
+  del.addEventListener("click", () => {
+    archConfirming = area.id;
+    rerenderArchArea(area.id, `yes-${area.id}`);
+  });
+  tools.append(edit, del);
+  return tools;
+}
+
+function findArchArea(id) {
+  const view = archView();
+  return view ? view.areas.find((a) => a.id === id) || null : null;
+}
+
+/** Swaps one card for a fresh copy (edit, confirm, cancel), leaving the rest alone. */
+function rerenderArchArea(id, focusKey) {
+  const node = document.getElementById(`arch-area-${id}`);
+  const area = findArchArea(id);
+  const view = archView();
+  if (!node || !area || !view) return;
+  node.replaceWith(buildArchArea(area, archContext(view)));
+  if (focusKey) archRestoreFocus(focusKey);
+}
+
+async function deleteArchArea(area, button) {
+  button.disabled = true;
+  try {
+    await apiMutate("DELETE", `/api/areas/${area.id}`);
+  } catch (err) {
+    button.disabled = false;
+    const text = archErrorText(err);
+    const node = document.getElementById(`arch-area-${area.id}`);
+    const box = node && node.querySelector(".arch-form-error");
+    if (box && text) {
+      box.textContent = text;
+      box.hidden = false;
+    }
+    return;
+  }
+  archConfirming = null;
+  archExpanded.delete(area.id);
+  announce(`Deleted area ${area.name}`);
+  archRenderedKey = "";
+  await loadArch();
+  el.archAdd.focus();
+}
+
+// ----- expanded detail -----
+
+function archDetailSection(title, count) {
+  const section = document.createElement("section");
+  section.className = "arch-detail-section";
+  const h = document.createElement("h5");
+  h.className = "arch-detail-heading";
+  h.textContent = title;
+  if (count != null) {
+    const n = document.createElement("span");
+    n.className = "col-count";
+    n.textContent = String(count);
+    h.appendChild(n);
+  }
+  const list = document.createElement("ul");
+  list.className = "arch-detail-list";
+  section.append(h, list);
+  return { section, list };
+}
+
+function fillArchDetail(detail, area, ctx, specs) {
+  detail.textContent = "";
+  if (specs.length) {
+    const { section, list } = archDetailSection("Specs", specs.length);
+    for (const path of specs) list.appendChild(buildArchSpecItem(ctx.specsByPath.get(path), path));
+    detail.appendChild(section);
+  }
+  const problems = area.problems || [];
+  if (problems.length) {
+    const { section, list } = archDetailSection("Problems", problems.length);
+    for (const p of problems) {
+      const li = document.createElement("li");
+      li.className = "arch-detail-item arch-problem";
+      const title = document.createElement("span");
+      title.className = "arch-detail-title";
+      title.textContent = p.title;
+      const state = document.createElement("span");
+      state.className = `badge history-chip history-state-${p.state}`;
+      state.textContent = HISTORY_STATE_LABEL[p.state] || p.state;
+      li.append(state, title);
+      const meta = [];
+      if (p.failed) meta.push(`${plural(p.failed, "failed fix")}`);
+      if (p.last_seen) meta.push(`last seen ${p.last_seen}`);
+      if (meta.length) {
+        const m = document.createElement("span");
+        m.className = "arch-detail-meta";
+        m.textContent = meta.join(" · ");
+        li.appendChild(m);
+      }
+      list.appendChild(li);
+    }
+    detail.appendChild(section);
+  }
+  const milestones = area.milestones || [];
+  if (milestones.length) {
+    const { section, list } = archDetailSection("Milestones", milestones.length);
+    for (const m of milestones) {
+      const li = document.createElement("li");
+      li.className = "arch-detail-item arch-milestone";
+      const date = document.createElement("span");
+      date.className = "arch-detail-date";
+      date.textContent = m.happened_on || "undated";
+      const title = document.createElement("span");
+      title.className = "arch-detail-title";
+      title.textContent = m.title;
+      li.append(date, title);
+      list.appendChild(li);
+    }
+    detail.appendChild(section);
+  }
+  const tasks = area.recent_tasks || [];
+  if (tasks.length) {
+    const label = area.tasks > tasks.length ? `Recent tasks (${tasks.length} of ${area.tasks})` : "Recent tasks";
+    const { section, list } = archDetailSection(label, area.tasks > tasks.length ? null : tasks.length);
+    for (const t of tasks) {
+      const li = document.createElement("li");
+      li.className = "arch-detail-item arch-task";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "history-link arch-task-link";
+      btn.dataset.focus = `task-${area.id}-${t.id}`;
+      const id = document.createElement("span");
+      id.className = "arch-task-id";
+      id.textContent = `#${t.id}`;
+      btn.append(id, document.createTextNode(` ${t.title || "Untitled task"}`));
+      btn.addEventListener("click", () => openTaskById(t.id));
+      li.appendChild(btn);
+      const meta = [t.date, t.status && t.status !== "done" ? STATUS_WORD[t.status] || t.status : ""].filter(Boolean);
+      if (meta.length) {
+        const m = document.createElement("span");
+        m.className = "arch-detail-meta";
+        m.textContent = meta.join(" · ");
+        li.appendChild(m);
+      }
+      list.appendChild(li);
+    }
+    detail.appendChild(section);
+  }
+}
+
+function buildArchSpecItem(spec, path) {
+  const li = document.createElement("li");
+  li.className = "arch-detail-item arch-spec";
+  const head = document.createElement("div");
+  head.className = "arch-spec-head";
+  const title = document.createElement("span");
+  title.className = "arch-detail-title";
+  title.textContent = (spec && spec.title) || path;
+  head.appendChild(title);
+  if (spec && spec.kind) {
+    const kind = document.createElement("span");
+    kind.className = "badge arch-spec-kind";
+    kind.textContent = ARCH_SPEC_LABEL[spec.kind] || spec.kind;
+    head.appendChild(kind);
+  }
+  if (spec && spec.status) {
+    const status = document.createElement("span");
+    status.className = "badge arch-spec-status";
+    status.textContent = spec.status;
+    head.appendChild(status);
+  }
+  li.appendChild(head);
+  if (spec && spec.summary) {
+    const summary = document.createElement("p");
+    summary.className = "arch-spec-summary";
+    summary.textContent = spec.summary;
+    li.appendChild(summary);
+  }
+  const items = spec && Array.isArray(spec.items) ? spec.items : [];
+  if (items.length) {
+    const ul = document.createElement("ul");
+    ul.className = "arch-spec-items";
+    for (const item of items.slice(0, ARCH_SPEC_ITEMS)) {
+      const it = document.createElement("li");
+      it.textContent = typeof item === "string" ? item : item && (item.title || item.text || JSON.stringify(item));
+      ul.appendChild(it);
+    }
+    if (items.length > ARCH_SPEC_ITEMS) {
+      const more = document.createElement("li");
+      more.className = "arch-spec-more";
+      more.textContent = `and ${items.length - ARCH_SPEC_ITEMS} more`;
+      ul.appendChild(more);
+    }
+    li.appendChild(ul);
+  }
+  const code = document.createElement("code");
+  code.className = "arch-spec-path";
+  code.textContent = path;
+  li.appendChild(code);
+  return li;
+}
+
+// ----- create and edit -----
+
+function archField(label, control, hint) {
+  const wrap = document.createElement("label");
+  wrap.className = "field arch-field";
+  const text = document.createElement("span");
+  text.className = "field-label";
+  text.textContent = label;
+  wrap.append(text, control);
+  if (hint) {
+    const h = document.createElement("span");
+    h.className = "field-hint";
+    h.textContent = hint;
+    wrap.appendChild(h);
+  }
+  return wrap;
+}
+
+function archSplit(text, separator) {
+  return text
+    .split(separator)
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+/** The same form for a new area (area null, maybe prefilled) and for editing one. */
+function buildArchForm(area, prefill) {
+  const values = area || prefill || {};
+  const form = document.createElement("form");
+  form.className = "arch-form";
+  form.noValidate = true;
+  form.setAttribute("aria-label", area ? `Edit area ${area.name}` : "New area");
+
+  const name = document.createElement("input");
+  name.type = "text";
+  name.name = "name";
+  name.className = "arch-input";
+  name.required = true;
+  name.maxLength = 60;
+  name.autocomplete = "off";
+  name.spellcheck = false;
+  name.value = values.name || "";
+
+  const kind = document.createElement("select");
+  kind.name = "kind";
+  kind.className = "select";
+  for (const k of ARCH_KINDS) {
+    const opt = document.createElement("option");
+    opt.value = k;
+    opt.textContent = k.charAt(0).toUpperCase() + k.slice(1);
+    kind.appendChild(opt);
+  }
+  kind.value = ARCH_KINDS.includes(values.kind) ? values.kind : "technical";
+
+  const desc = document.createElement("textarea");
+  desc.name = "description";
+  desc.className = "textarea arch-textarea";
+  desc.rows = 2;
+  desc.maxLength = 300;
+  desc.value = values.description || "";
+
+  const aliases = document.createElement("input");
+  aliases.type = "text";
+  aliases.name = "aliases";
+  aliases.className = "arch-input";
+  aliases.autocomplete = "off";
+  aliases.spellcheck = false;
+  aliases.value = (values.aliases || []).join(", ");
+
+  const paths = document.createElement("textarea");
+  paths.name = "paths";
+  paths.className = "textarea arch-textarea arch-paths-input";
+  paths.rows = Math.min(8, Math.max(3, (values.paths || []).length + 1));
+  paths.spellcheck = false;
+  paths.value = (values.paths || []).join("\n");
+
+  const top = document.createElement("div");
+  top.className = "arch-form-row";
+  top.append(archField("Name", name, "lowercase words joined by dashes"), archField("Kind", kind));
+
+  const error = document.createElement("p");
+  error.className = "arch-form-error";
+  error.setAttribute("role", "alert");
+  error.hidden = true;
+
+  const actions = document.createElement("div");
+  actions.className = "arch-form-actions";
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.className = "btn btn-primary btn-sm";
+  save.textContent = area ? "Save" : "Add area";
+  const cancel = archButton("Cancel", "btn btn-sm");
+  cancel.addEventListener("click", () => cancelArchForm(area));
+  actions.append(save, cancel);
+
+  form.append(
+    top,
+    archField("Description", desc),
+    archField("Aliases", aliases, "comma-separated: other words people use for it"),
+    archField("Paths", paths, "one per line, relative to the repo root"),
+    error,
+    actions,
+  );
+
+  form.addEventListener("submit", async (evt) => {
+    evt.preventDefault();
+    const payload = {
+      name: name.value.trim(),
+      kind: kind.value,
+      description: desc.value.trim(),
+      aliases: archSplit(aliases.value, ","),
+      paths: archSplit(paths.value, /\n/),
+    };
+    if (!payload.name) {
+      error.textContent = "Give the area a name.";
+      error.hidden = false;
+      name.focus();
+      return;
+    }
+    save.disabled = true;
+    error.hidden = true;
+    let saved;
+    try {
+      saved = area
+        ? await apiMutate("PATCH", `/api/areas/${area.id}`, payload)
+        : await apiMutate("POST", "/api/areas", { repo: archRepo, ...payload });
+    } catch (err) {
+      save.disabled = false;
+      const text = archErrorText(err);
+      if (text) {
+        error.textContent = text;
+        error.hidden = false;
+      }
+      return;
+    }
+    archEditing = null;
+    if (!area) closeArchNew();
+    announce(area ? `Saved area ${saved.name}` : `Added area ${saved.name}`);
+    archRenderedKey = "";
+    await loadArch();
+    const node = document.getElementById(`arch-area-${saved.id}`);
+    if (node) {
+      node.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
+      archRestoreFocus(`edit-${saved.id}`);
+    }
+  });
+  form.addEventListener("keydown", (evt) => {
+    if (evt.key !== "Escape") return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    cancelArchForm(area);
+  });
+  return form;
+}
+
+function cancelArchForm(area) {
+  if (area) {
+    archEditing = null;
+    rerenderArchArea(area.id, `edit-${area.id}`);
+  } else {
+    closeArchNew();
+    el.archAdd.focus();
+  }
+  archCatchUp();
+}
+
+function openArchNew(prefill) {
+  if (archEditing !== null && archEditing !== "new") {
+    const id = archEditing;
+    archEditing = null;
+    rerenderArchArea(id);
+  }
+  archConfirming = null;
+  archEditing = "new";
+  archNewPrefill = prefill || null;
+  el.archNew.textContent = "";
+  el.archNew.appendChild(buildArchForm(null, archNewPrefill));
+  el.archNew.hidden = false;
+  el.archAdd.setAttribute("aria-expanded", "true");
+  el.archNew.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
+  const input = el.archNew.querySelector('input[name="name"]');
+  if (input) input.focus();
+}
+
+function closeArchNew() {
+  if (archEditing === "new") archEditing = null;
+  archNewPrefill = null;
+  el.archNew.hidden = true;
+  el.archNew.textContent = "";
+  el.archAdd.setAttribute("aria-expanded", "false");
+}
+
+// ----- not placed, all specs -----
+
+function archSlug(text) {
+  return String(text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+}
+
+function archUnplacedGroup(title, values, render) {
+  const group = document.createElement("div");
+  group.className = "arch-unplaced-group";
+  const h = document.createElement("h4");
+  h.className = "arch-detail-heading";
+  h.textContent = title;
+  const n = document.createElement("span");
+  n.className = "col-count";
+  n.textContent = String(values.length);
+  h.appendChild(n);
+  const list = document.createElement("ul");
+  list.className = "arch-unplaced-list";
+  for (const v of values.slice(0, ARCH_UNPLACED_MAX)) {
+    const li = document.createElement("li");
+    li.appendChild(render(v));
+    list.appendChild(li);
+  }
+  if (values.length > ARCH_UNPLACED_MAX) {
+    const li = document.createElement("li");
+    li.className = "arch-chip arch-chip-more";
+    li.textContent = `+${values.length - ARCH_UNPLACED_MAX} more`;
+    li.title = values.slice(ARCH_UNPLACED_MAX).join("\n");
+    list.appendChild(li);
+  }
+  group.append(h, list);
+  return group;
+}
+
+function archPlaceButton(text, label, prefill, mono) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = `arch-chip arch-place${mono ? " arch-path" : ""}`;
+  btn.title = label;
+  btn.setAttribute("aria-label", `${text}: ${label}`);
+  const t = document.createElement("span");
+  t.className = "arch-place-text";
+  t.textContent = text;
+  btn.innerHTML =
+    '<svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>';
+  btn.appendChild(t);
+  btn.addEventListener("click", () => openArchNew(prefill));
+  return btn;
+}
+
+function renderArchUnplaced(view) {
+  const dirs = view.unplaced_dirs || [];
+  const topics = view.unplaced_topics || [];
+  const specs = view.unlinked_specs || [];
+  const without = view.edited_without_area || 0;
+  el.archUnplaced.hidden = !(dirs.length || topics.length || specs.length || without);
+  el.archUnplacedLists.textContent = "";
+  el.archUnplacedNote.hidden = !without;
+  el.archUnplacedNote.textContent = without
+    ? `${without} of ${plural(view.tasks_total || without, "task")} edited only files outside every area.`
+    : "";
+  if (dirs.length) {
+    el.archUnplacedLists.appendChild(
+      archUnplacedGroup("Folders edited outside every area", dirs, (d) => {
+        if (d === "." || d === "") return archPlaceButton("repo root", "New area with the files at the repo root", { paths: ["."] }, true);
+        const base = d.split("/").filter(Boolean).pop() || d;
+        return archPlaceButton(d, "New area with this folder", { name: archSlug(base), paths: [d] }, true);
+      }),
+    );
+  }
+  if (topics.length) {
+    el.archUnplacedLists.appendChild(
+      archUnplacedGroup("History topics with no area", topics, (t) =>
+        archPlaceButton(t, "New area named after this topic", { name: archSlug(t), aliases: [t] }, false),
+      ),
+    );
+  }
+  if (specs.length) {
+    el.archUnplacedLists.appendChild(
+      archUnplacedGroup("Specs linked to no area", specs, (p) => {
+        const code = document.createElement("code");
+        code.className = "arch-chip arch-path";
+        code.textContent = p;
+        code.title = p;
+        return code;
+      }),
+    );
+  }
+}
+
+function renderArchSpecs(view) {
+  const specs = view.specs || [];
+  el.archSpecs.hidden = specs.length === 0;
+  el.archSpecsCount.textContent = String(specs.length);
+  el.archSpecsList.textContent = "";
+  for (const spec of specs) {
+    const li = document.createElement("li");
+    li.className = "arch-specs-row";
+    const head = document.createElement("div");
+    head.className = "arch-spec-head";
+    const kind = document.createElement("span");
+    kind.className = "badge arch-spec-kind";
+    kind.textContent = ARCH_SPEC_LABEL[spec.kind] || spec.kind || "spec";
+    const title = document.createElement("span");
+    title.className = "arch-detail-title";
+    title.textContent = spec.title || spec.path;
+    head.append(kind, title);
+    if (spec.status) {
+      const status = document.createElement("span");
+      status.className = "badge arch-spec-status";
+      status.textContent = spec.status;
+      head.appendChild(status);
+    }
+    li.appendChild(head);
+    const foot = document.createElement("div");
+    foot.className = "arch-specs-foot";
+    const areas = Array.isArray(spec.areas) ? spec.areas : [];
+    const where = document.createElement("span");
+    where.className = areas.length ? "arch-specs-areas" : "arch-specs-areas is-none";
+    where.textContent = areas.length ? areas.join(", ") : "no area";
+    const code = document.createElement("code");
+    code.className = "arch-spec-path";
+    code.textContent = spec.path;
+    code.title = spec.path;
+    foot.append(where, code);
+    li.appendChild(foot);
+    el.archSpecsList.appendChild(li);
+  }
+}
+
+// ----- wiring -----
+
+el.archToggle.addEventListener("click", () => {
+  if (archOpen) closeArch();
+  else openArch();
+});
+el.archClose.addEventListener("click", () => closeArch());
+el.archRepo.addEventListener("change", () => {
+  archRepo = el.archRepo.value;
+  archRepoChosen = true;
+  archData = null;
+  archRenderedKey = "";
+  archEditing = null;
+  archConfirming = null;
+  archNotice = null;
+  archWasRunning = false;
+  archExpanded.clear();
+  closeArchNew();
+  renderArch();
+  loadArch();
+});
+el.archFilter.addEventListener("input", () => {
+  archFilterText = el.archFilter.value.trim().toLowerCase();
+  if (archData) renderArch();
+});
+el.archModel.addEventListener("change", () => writeLocal(ARCH_MODEL_KEY, el.archModel.value));
+el.archScan.addEventListener("click", startArchScan);
+el.archMap.addEventListener("click", startArchMap);
+el.archAdd.setAttribute("aria-expanded", "false");
+el.archAdd.setAttribute("aria-controls", "arch-new");
+el.archAdd.setAttribute("aria-label", "Add an area");
+el.archAdd.addEventListener("click", () => {
+  if (archEditing === "new") {
+    closeArchNew();
+    archCatchUp();
+  } else {
+    openArchNew(null);
+  }
+});
+el.arch.addEventListener("keydown", (evt) => {
+  if (evt.key !== "Escape" || isDrawerOpen()) return;
+  evt.preventDefault();
+  if (archConfirming !== null) {
+    const id = archConfirming;
+    archConfirming = null;
+    rerenderArchArea(id, `delete-${id}`);
+    archCatchUp();
+    return;
+  }
+  // Escape in a filled filter clears the filter first; the next one closes.
+  if (evt.target === el.archFilter && el.archFilter.value) {
+    el.archFilter.value = "";
+    archFilterText = "";
+    if (archData) renderArch();
+    return;
+  }
+  closeArch();
+});
+
 // ---------- search ----------
 //
 // Searches the whole ledger on the server, not just the tasks the board holds,
@@ -3767,6 +5100,7 @@ function searchWords(query) {
 
 function setSearchMode(on) {
   if (on && historyOpen) closeHistory(false);
+  if (on && archOpen) closeArch(false);
   el.searchResults.hidden = !on;
   el.board.hidden = on;
   el.tablist.hidden = on;

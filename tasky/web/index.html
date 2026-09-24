@@ -64,6 +64,10 @@
       <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
       <span class="history-toggle-label">History</span>
     </button>
+    <button type="button" id="arch-toggle" class="btn btn-ghost btn-sm history-toggle arch-toggle" aria-pressed="false" title="Architecture: areas, specs and where work happened">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></svg>
+      <span class="history-toggle-label">Architecture</span>
+    </button>
     <button type="button" id="settings-toggle" class="btn btn-icon btn-ghost" aria-expanded="false" aria-controls="topbar-extra" aria-label="Project filter">
       <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
     </button>
@@ -215,6 +219,62 @@
   </div>
 </section>
 
+<section id="arch" class="arch" aria-labelledby="arch-heading" hidden>
+  <div class="arch-head">
+    <h2 id="arch-heading" class="arch-heading" tabindex="-1">Architecture</h2>
+    <label for="arch-repo" class="visually-hidden">Repository</label>
+    <select id="arch-repo" class="select arch-repo"></select>
+    <label for="arch-filter" class="visually-hidden">Filter areas by name, alias, path or description</label>
+    <input type="search" id="arch-filter" class="history-filter arch-filter" placeholder="Filter areas" autocomplete="off" spellcheck="false" maxlength="200">
+    <button type="button" id="arch-close" class="btn btn-ghost btn-sm arch-close">Back to board</button>
+  </div>
+  <div id="arch-actions" class="arch-actions" hidden>
+    <div class="arch-action">
+      <button type="button" id="arch-scan" class="btn btn-sm">
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>
+        <span id="arch-scan-label">Scan</span>
+      </button>
+      <span class="arch-hint">free · reads specs, ADRs, Archify, Graphify</span>
+    </div>
+    <div class="arch-action">
+      <label for="arch-model" class="history-model-label">Model</label>
+      <select id="arch-model" class="select arch-model"></select>
+      <button type="button" id="arch-map" class="btn btn-primary btn-sm">Map areas</button>
+      <span class="arch-hint">one model call, ~5–15¢</span>
+    </div>
+    <p id="arch-status" class="arch-status" role="status" aria-live="polite"></p>
+  </div>
+  <p id="arch-meta" class="arch-meta" hidden></p>
+  <div id="arch-empty" class="arch-empty" hidden>
+    <p id="arch-empty-title" class="arch-empty-title"></p>
+    <p id="arch-empty-text" class="arch-empty-text"></p>
+  </div>
+  <div id="arch-body" class="arch-body" hidden>
+    <div class="arch-section-head">
+      <h3 class="arch-subheading">Areas <span id="arch-count" class="col-count"></span></h3>
+      <button type="button" id="arch-add" class="btn btn-sm arch-add">
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+        <span>Area</span>
+      </button>
+    </div>
+    <div id="arch-new" class="arch-new" hidden></div>
+    <p id="arch-no-match" class="empty-state arch-no-match" hidden></p>
+    <ol id="arch-areas" class="arch-areas"></ol>
+    <section id="arch-unplaced" class="arch-unplaced" aria-labelledby="arch-unplaced-heading" hidden>
+      <h3 id="arch-unplaced-heading" class="arch-subheading">Not placed</h3>
+      <p id="arch-unplaced-note" class="arch-hint arch-unplaced-note" hidden></p>
+      <div id="arch-unplaced-lists" class="arch-unplaced-lists"></div>
+    </section>
+    <details id="arch-specs" class="arch-specs" hidden>
+      <summary class="arch-specs-summary">
+        <svg class="chevron" aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>
+        All specs <span id="arch-specs-count" class="col-count"></span>
+      </summary>
+      <ul id="arch-specs-list" class="arch-specs-list"></ul>
+    </details>
+  </div>
+</section>
+
 <main id="board" class="board">
   <section id="col-inbox" class="column" data-lane="inbox" aria-labelledby="inbox-heading">
     <h2 id="inbox-heading" tabindex="-1"><span>Inbox</span><span class="col-count" id="inbox-count">0</span></h2>
@@ -276,6 +336,7 @@
     <div class="drawer-heading">
       <h2 id="drawer-title" class="drawer-title"></h2>
       <p class="drawer-meta"></p>
+      <p class="drawer-areas" hidden></p>
     </div>
     <button type="button" id="drawer-close" class="btn btn-icon btn-ghost" aria-label="Close details">
       <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
@@ -369,6 +430,7 @@
           <span class="title"></span>
           <span class="card-summary" hidden></span>
           <span class="card-meta" hidden></span>
+          <span class="card-areas" hidden></span>
         </span>
       </button>
       <span class="badge badge-answer" hidden>Needs answer</span>

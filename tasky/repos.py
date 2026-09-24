@@ -9,6 +9,7 @@ for git at most once per folder per hour.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import time
@@ -70,6 +71,24 @@ def resolve(cwd: str) -> tuple[str, str]:
     return f"path:{cwd}", Path(cwd).name or cwd
 
 
+def toplevel(cwd: str) -> str | None:
+    """The checkout (or worktree) root a folder is in; None outside git or when gone."""
+    if not Path(cwd).is_dir():
+        return None
+    top = _git(cwd, "rev-parse", "--show-toplevel")
+    if top is None:
+        return None
+    # git resolves symlinks; transcripts spell paths the way the folder was opened. Keep that
+    # spelling when the folder is the root or inside it.
+    real = os.path.realpath(cwd)
+    inside = os.path.relpath(real, top)
+    if inside == ".":
+        return cwd.rstrip("/") or cwd
+    if not inside.startswith("..") and cwd.rstrip("/").endswith("/" + inside):
+        return cwd.rstrip("/")[: -len(inside) - 1]
+    return top
+
+
 def ensure(store, cwds: Iterable[str], *, max_age_s: float = MAX_AGE_S) -> None:
     """Resolve and cache every folder whose answer is missing or older than max_age_s."""
     from tasky.store import _parse_iso
@@ -81,7 +100,7 @@ def ensure(store, cwds: Iterable[str], *, max_age_s: float = MAX_AGE_S) -> None:
             if checked is not None and time.time() - checked < max_age_s:
                 continue
         key, name = resolve(cwd)
-        store.set_repo(cwd, key, name, now_iso())
+        store.set_repo(cwd, key, name, now_iso(), toplevel(cwd))
 
 
 def repo_of(store, cwd: str) -> str:
