@@ -23,6 +23,7 @@ from tasky import (
     __version__,
     architecture,
     history,
+    quickdiagram,
     repos,
     scheduler,
     smart_search,
@@ -246,6 +247,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._route_architecture_diagram(body)
         elif method == "POST" and path == "/api/architecture/open":
             self._route_architecture_open(body)
+        elif method == "POST" and path == "/api/architecture/quick":
+            self._route_architecture_quick(body)
         elif method == "POST" and path == "/api/architecture/embed":
             self._route_architecture_embed(body)
         elif method == "GET" and _DIAGRAM_LINK_RE.match(path):
@@ -608,6 +611,23 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(404, "no such diagram")
             return None
         return page
+
+    def _route_architecture_quick(self, body: dict | None) -> None:
+        """Draw the areas and their imports with Archify's CLI; no model, a few seconds."""
+        repo = self._known_repo(body)
+        if repo is None:
+            return
+        if not self.server.claim_quick(repo):
+            self._error(409, "a quick diagram of this repository is being drawn")
+            return
+        try:
+            drawn = quickdiagram.draw(self.server.config, repo)
+        except quickdiagram.QuickDiagramError as exc:
+            self._error(409, str(exc))
+            return
+        finally:
+            self.server.release_quick(repo)
+        self._send_json(200, drawn)
 
     def _route_architecture_embed(self, body: dict | None) -> None:
         """A short-lived link to a diagram page, for an iframe (which cannot send the token)."""
@@ -1024,6 +1044,19 @@ class _Server(ThreadingHTTPServer):
     # it and never spawn a real `claude` process (see design.md decision 2).
     popen: object
     _diagram_links: dict[str, tuple[Path, float]]
+    _quick: set[str]
+    _quick_lock: threading.Lock
+
+    def claim_quick(self, repo: str) -> bool:
+        with self._quick_lock:
+            if repo in self._quick:
+                return False
+            self._quick.add(repo)
+            return True
+
+    def release_quick(self, repo: str) -> None:
+        with self._quick_lock:
+            self._quick.discard(repo)
 
     def diagram_link(self, page: Path) -> str:
         """A random id that serves ``page`` for DIAGRAM_LINK_S seconds."""
@@ -1111,6 +1144,8 @@ def make_server(
     server.titles = TitleWatcher()
     server._titles_lock = threading.Lock()
     server._diagram_links = {}
+    server._quick = set()
+    server._quick_lock = threading.Lock()
     server._titles_synced_at = float("-inf")
     if token is not None:
         # Tests pin a token and never touch the file; treat it as the only

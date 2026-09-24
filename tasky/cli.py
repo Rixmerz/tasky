@@ -136,6 +136,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cwd", default=None, help="a folder of the repo (default: current directory)")
     p.add_argument("--repo", default=None, help="repo key, as the dashboard lists it")
     p.add_argument("--map", action="store_true", help="define the areas with a model call")
+    p.add_argument(
+        "--quick", action="store_true",
+        help="draw the areas and the imports between them with Archify's CLI (no model)",
+    )
     p.add_argument("--model", default=None, help="sonnet or opus (default: sonnet)")
     p.set_defaults(handler=_cmd_architecture)
 
@@ -368,6 +372,20 @@ def _cmd_architecture(args: argparse.Namespace, config: Config, out: TextIO) -> 
     if not repo:
         with Store.open(config) as store:
             repo = repos.repo_of(store, os.path.abspath(args.cwd or os.getcwd()))
+    if args.quick:
+        from tasky import quickdiagram
+
+        try:
+            drawn = quickdiagram.draw(config, repo)
+        except quickdiagram.QuickDiagramError as exc:
+            print(f"tasky: {exc}", file=sys.stderr)
+            return 1
+        print(
+            f"{repo}: {drawn['areas']} area(s), {drawn['connections']} relationship(s) from "
+            f"{drawn['imports']} import(s) → {drawn['html']}",
+            file=out,
+        )
+        return 0
     try:
         if args.map:
             summary = architecture.map_areas(config, repo, model=args.model)

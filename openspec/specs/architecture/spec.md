@@ -122,3 +122,19 @@ have history with their counts and aliases.
 - **WHEN** area `checkout` has alias `pago`, no record contains "pago", and the agent searches
   "problemas de pago"
 - **THEN** the result starts with `Areas named: checkout ("pago")` and lists checkout's problems
+
+### Requirement: Quick diagram without a model
+When the Archify skill is installed and the repository has areas with folders, the dashboard SHALL
+offer a quick diagram that calls no model. Its components SHALL be the areas with folders, each
+with up to 2 files tracked at the current commit as evidence; a relationship SHALL be 3 or more
+imports from one area's files into another's, keeping the stronger direction of each pair and at
+most 18. Importing areas SHALL be placed above the areas they import. The source SHALL be
+validated with Archify's CLI and repaired from its diagnostics; relationships that cannot be
+repaired SHALL be left out and counted; the page SHALL be delivered to
+`docs/architecture/<repo>.areas.html` and the repository scanned again. Only one quick diagram per
+repository SHALL be drawn at a time.
+
+#### Scenario: A line through a box
+- **WHEN** Archify reports a relationship crossing a component
+- **THEN** the component moves to a free column next to it, or the relationship is left out
+

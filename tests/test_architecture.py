@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from tasky import architecture, cli, history, mcp, repos
+from tasky import architecture, cli, history, mcp, quickdiagram, repos
 from tasky import areas as area_rules
 from tasky.config import load_token
 from tasky.server import make_server
@@ -633,6 +633,7 @@ def test_diagram_request_names_areas_and_limits_tools(config, store, root, skill
     assert args[:4] == ["--strict-mcp-config", "--add-dir", str(skill), "--allowedTools"]
     assert f"Bash(node {skill}/bin/archify.mjs:*)" in args
     assert not any(a in ("Bash", "Bash(*)", "Bash(node:*)") for a in args)
+    assert args[-2:] == ["--effort", architecture.DRAW_EFFORT]
 
 
 def test_scan_lists_diagrams_with_their_page(config, store, root):
@@ -782,3 +783,18 @@ def test_api_embeds_a_diagram_in_a_sandbox(api, store, root):
     assert resp.status == 404
     resp.read()
     conn.close()
+
+
+def test_api_quick_diagram_answers_errors_and_one_at_a_time(api, store, root, monkeypatch):
+    _task(store, str(root), "hi", "p0")
+    store.save_area(REPO, "checkout", paths=["src/checkout"], source="model")
+    status, body = api("POST", "/api/architecture/quick", {"repo": REPO})
+    assert status == 409 and "not installed" in body["error"]
+    assert api("POST", "/api/architecture/quick", {"repo": "x/y"})[0] == 404
+    drawn = {"json": "a.json", "html": "a.html", "areas": 1, "connections": 0, "dropped": 0,
+             "imports": 0, "diagrams": 1}
+    monkeypatch.setattr(quickdiagram, "draw", lambda config, repo: drawn)
+    assert api("POST", "/api/architecture/quick", {"repo": REPO}) == (200, drawn)
+    assert api.server.claim_quick(REPO)
+    assert api("POST", "/api/architecture/quick", {"repo": REPO})[0] == 409
+    api.server.release_quick(REPO)

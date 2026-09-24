@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-09-24
+
+### Added
+
+- Quick diagram: draws the mapped areas and the imports between them (JavaScript, TypeScript,
+  Python, Go) with Archify's CLI, no model and no cost, in layers, validated against the pinned
+  commit and repaired from Archify's diagnostics; the page opens inside the Architecture tab.
+  Also `tasky architecture --quick`.
+
+### Changed
+
+- Draw with Archify runs at effort low: on the same repository it cost $2.13 in 8 minutes against
+  $2.22 in 14 minutes at the default effort, with the same diagram. Its hint now says ~$2–3.
+
 ## [0.11.1] - 2026-09-24
 
 ### Changed

@@ -239,6 +239,11 @@ const el = {
   archDrawCmd: document.getElementById("arch-draw-cmd"),
   archDrawCopy: document.getElementById("arch-draw-copy"),
   archDrawStatus: document.getElementById("arch-draw-status"),
+  archQuick: document.getElementById("arch-quick"),
+  archQuickBtn: document.getElementById("arch-quick-btn"),
+  archQuickLabel: document.getElementById("arch-quick-label"),
+  archQuickHint: document.getElementById("arch-quick-hint"),
+  archQuickStatus: document.getElementById("arch-quick-status"),
   archDiagrams: document.getElementById("arch-diagrams"),
   archDiagramsCount: document.getElementById("arch-diagrams-count"),
   archDiagramsPending: document.getElementById("arch-diagrams-pending"),
@@ -3880,6 +3885,8 @@ let archConfirming = null; // the area id whose Delete waits for "Yes, delete"
 let archNewPrefill = null;
 let archDrawStarting = ""; // repo key a drawing was just asked for, until the server answers
 let archDrawNotice = null; // {text} when the last Draw click could not start one
+let archQuickBusy = ""; // repo whose quick diagram is being drawn
+let archQuickNotice = null; // {repo, text, error} from the last Quick diagram click
 let archDrawWasActive = false;
 let archDrawStatusKey = "";
 let archDiagramsKey = "";
@@ -4226,6 +4233,7 @@ function renderArchActions() {
   if (!view) return;
   renderArchModelOptions();
   renderArchDraw();
+  renderArchQuick();
   const running = archIsRunning();
   const scan = view.scan;
   el.archScan.disabled = running || archScanning;
@@ -4276,6 +4284,59 @@ function archDrawTaskLink(id) {
 }
 
 /** The Draw with Archify button, or how to install Archify, and the drawing's status line. */
+const ARCH_QUICK_HINT = "free, no model · the areas and the imports between them · writes docs/architecture/ in the repo";
+
+/** Quick diagram: Archify's CLI draws the mapped areas and their imports, no model. */
+function renderArchQuick() {
+  const archify = archData && archData.archify;
+  const view = archView();
+  el.archQuick.hidden = !(archify && archify.installed && view);
+  if (el.archQuick.hidden) return;
+  const mapped = (view.areas || []).some((a) => (a.paths || []).length);
+  const busy = archQuickBusy !== "" && archQuickBusy === archRepo;
+  el.archQuickBtn.disabled = busy || !mapped;
+  el.archQuickLabel.textContent = busy ? "Drawing…" : "Quick diagram";
+  el.archQuickHint.textContent = mapped ? ARCH_QUICK_HINT : "needs areas with folders: scan or map the areas first";
+  const notice = archQuickNotice && archQuickNotice.repo === archRepo ? archQuickNotice : null;
+  el.archQuickStatus.textContent = "";
+  if (busy) {
+    el.archQuickStatus.textContent = "Reading imports and checking the diagram with Archify…";
+  } else if (notice) {
+    const span = document.createElement("span");
+    if (notice.error) span.className = "arch-attn";
+    span.textContent = notice.text;
+    el.archQuickStatus.appendChild(span);
+  }
+}
+
+async function startArchQuick() {
+  const repo = archRepo;
+  if (!repo || archQuickBusy) return;
+  archQuickBusy = repo;
+  archQuickNotice = null;
+  renderArchQuick();
+  try {
+    const res = await apiMutate("POST", "/api/architecture/quick", { repo });
+    const lines = res.connections === 1 ? "1 relationship" : `${res.connections} relationships`;
+    const text = `Drew ${res.areas} areas and ${lines} from ${res.imports} imports`;
+    archQuickNotice = {
+      repo,
+      text: res.dropped ? `${text} (${res.dropped} left out so the lines stay readable).` : `${text}.`,
+      error: false,
+    };
+    archDiagramShown = `${repo}\n${res.html}`;
+    archDiagramsKey = "";
+    announce(archQuickNotice.text);
+  } catch (err) {
+    const text = archErrorText(err);
+    archQuickNotice = text ? { repo, text: `Could not draw: ${text}`, error: true } : null;
+  } finally {
+    if (archQuickBusy === repo) archQuickBusy = "";
+  }
+  renderArchQuick();
+  if (repo === archRepo) await loadArch();
+}
+
 function renderArchDraw() {
   const archify = archData && archData.archify;
   const installed = Boolean(archify && archify.installed);
@@ -4309,7 +4370,7 @@ function renderArchDraw() {
     status.append(
       document.createTextNode(task.status === "queued" ? "Drawing… queued as " : "Drawing… "),
       archDrawTaskLink(task.id),
-      document.createTextNode(" · a full session, usually 10–20 minutes."),
+      document.createTextNode(" · a full session, usually about 10 minutes."),
     );
   } else if (task.status === "done") {
     const when = archWhen(task.finished_at);
@@ -5373,6 +5434,7 @@ el.archModel.addEventListener("change", () => writeLocal(ARCH_MODEL_KEY, el.arch
 el.archScan.addEventListener("click", startArchScan);
 el.archMap.addEventListener("click", startArchMap);
 el.archDrawBtn.addEventListener("click", startArchDraw);
+el.archQuickBtn.addEventListener("click", startArchQuick);
 el.archDrawCopy.addEventListener("click", copyArchifyInstall);
 el.archAdd.setAttribute("aria-expanded", "false");
 el.archAdd.setAttribute("aria-controls", "arch-new");

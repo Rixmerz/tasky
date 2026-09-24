@@ -338,10 +338,23 @@ Archify's own CLI and a few read-only git commands. When it finishes the reposit
 again, the diagram's boundaries become candidate areas, **View** shows the diagram inside the
 dashboard and **Open** in your browser. Inside the dashboard the page runs sandboxed from a
 short-lived link: it keeps its zoom, themes and export, and cannot read Tasky's token or call its
-API. It is the most expensive button in Tasky: drawing Tasky itself with Sonnet took 15
-minutes and about $6 (90 turns validating and fixing the diagram until Archify accepted it).
+API. It is the most expensive button in Tasky. Drawing Tasky itself with Sonnet cost about $6
+with the session's MCP servers loaded; without them, which is how it runs now, it cost $2.22 in
+14 minutes at the default effort and $2.13 in 8 minutes at effort low, with the same diagram, so
+it runs at low.
 Archify draws one repository per diagram: its code evidence is pinned to one origin and
 commit, so other services can only appear as external components.
+
+**Quick diagram** (free, no model, a few seconds) draws the areas you already mapped and the
+imports between them with Archify's own CLI, next to Draw with Archify. Each area is a box with
+one or two tracked files as evidence, pinned to the current commit; a line means at least 3
+imports from one area's files into another's (relative imports in JavaScript and TypeScript,
+module imports in Python, the module's packages in Go), the stronger direction of each pair,
+at most 18. Boxes sit in layers, what imports above what it uses. Archify validates the result;
+Tasky repairs what it reports (moves a box out of a line's way, lets a line route itself, or
+leaves a line out and says how many) and writes `docs/architecture/<repo>.areas.architecture.json`
+and `.html` in your checkout. It shows how the code depends on itself, not the runtime:
+databases, queues and other services only appear through Draw with Archify.
 
 The agent reads the same map with the MCP tool `get_architecture`: the areas with their folders,
 aliases and activity, or one area in detail with its specs' requirements, problems and the fixes
@@ -410,7 +423,8 @@ call. Every hook exits successfully and prints nothing when something goes wrong
 | Smart search | One Haiku call (2–6¢), only when you press Smart search |
 | Architecture scan and view | 0 |
 | Map areas | One model call (Sonnet about 10–20¢ at effort medium), only when you press Map areas |
-| Draw with Archify | One headless agent session (Sonnet about $3–7), only when you press it |
+| Quick diagram | 0 (Archify's CLI, no model) |
+| Draw with Archify | One headless agent session (Sonnet about $2–3 at effort low), only when you press it |
 | `tasky` MCP tools | Their definitions in each session's context; results only when called |
 | Auto-pull | One normal turn per pulled task |
 | Run now and the run queue | One normal headless session per task |

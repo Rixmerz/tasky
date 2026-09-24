@@ -52,6 +52,9 @@ STALE_MAPPING_S = 20 * 60
 # Measured (2026-09-24): medium kept every spec link for ~$0.13; the default effort cost
 # $0.03 but assigned no specs, and high cost $0.21 for the same areas.
 MAP_EFFORT = "medium"
+# Measured on the same repo (2026-09-24): low $2.13 in 8 min, default $2.22 in 14 min, same
+# diagram quality. Most of the earlier $6.4 was MCP servers' context, now left out.
+DRAW_EFFORT = "low"
 _SUMMARY = 300
 _ITEM = 140
 _ITEMS = 40
@@ -721,7 +724,10 @@ def diagram_request(config: Config, store: Store, repo: str) -> dict:
         "title": f"Archify diagram of {Path(root).name}",
         # The skill's schemas and examples live outside the checkout: let it read them.
         # No MCP servers: their tool definitions would ride along on every one of its turns.
-        "args": ["--strict-mcp-config", "--add-dir", skill["dir"], "--allowedTools", *allowed],
+        "args": [
+            "--strict-mcp-config", "--add-dir", skill["dir"], "--allowedTools", *allowed,
+            "--effort", DRAW_EFFORT,
+        ],
         "json": json_path,
         "html": html_path,
     }
