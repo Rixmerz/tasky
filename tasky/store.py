@@ -31,7 +31,7 @@ _ATTEMPT_FIELDS = (
     "task_ids", "commits",
 )
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 HISTORY_FTS_REBUILD = """
 DELETE FROM history_fts;
 INSERT INTO history_fts (kind, ref_id, text)
@@ -43,7 +43,7 @@ INSERT INTO history_fts (kind, ref_id, text)
   SELECT 'milestone', id, title || ' ' || detail || ' ' || COALESCE(topic, '') FROM milestones;
 """
 _INIT_TIMEOUT_S = 10.0
-_SESSION_FIELDS = ("title", "auto_pull", "pull_chain", "state")
+_SESSION_FIELDS = ("title", "auto_pull", "pull_chain", "state", "compact_prompt", "compact_at")
 _SESSION_STATES = ("active", "ended")
 _LIST_TASKS_ORDER = (
     "ORDER BY CASE WHEN status = 'queued' THEN 0 ELSE 1 END, "
@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'active',
   auto_pull INTEGER NOT NULL DEFAULT 0, pull_chain INTEGER NOT NULL DEFAULT 0,
-  source TEXT NOT NULL DEFAULT 'hook'
+  source TEXT NOT NULL DEFAULT 'hook', compact_prompt TEXT, compact_at TEXT
 );
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +124,20 @@ CREATE TABLE IF NOT EXISTS history_syncs (
 CREATE VIRTUAL TABLE IF NOT EXISTS history_fts USING fts5(
   kind UNINDEXED, ref_id UNINDEXED, text, tokenize = 'unicode61 remove_diacritics 2'
 );
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL,
+  cwd TEXT, prompt_id TEXT, role TEXT NOT NULL, kind TEXT NOT NULL, tool_name TEXT,
+  file_path TEXT, text TEXT NOT NULL DEFAULT '', ts TEXT, sidechain INTEGER NOT NULL DEFAULT 0
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+  text, tokenize = 'unicode61 remove_diacritics 2'
+);
+CREATE TABLE IF NOT EXISTS transcript_offsets (
+  path TEXT PRIMARY KEY, offset INTEGER NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
+CREATE INDEX IF NOT EXISTS idx_messages_prompt ON messages(prompt_id);
+CREATE INDEX IF NOT EXISTS idx_messages_file ON messages(file_path);
 CREATE INDEX IF NOT EXISTS idx_milestones_cwd ON milestones(cwd);
 CREATE INDEX IF NOT EXISTS idx_problems_cwd ON problems(cwd);
 CREATE INDEX IF NOT EXISTS idx_attempts_problem ON attempts(problem_id);
@@ -226,6 +240,15 @@ def _clean_result(value: str | None, limit: int) -> str | None:
     return _truncate(value, limit)
 
 
+def _message_search_text(row: dict) -> str:
+    parts = [row.get("text") or ""]
+    if row.get("tool_name"):
+        parts.append(row["tool_name"])
+    if row.get("file_path"):
+        parts.append(row["file_path"].replace("/", " ").replace(".", " "))
+    return " ".join(parts)
+
+
 def _parse_iso(value: str) -> float | None:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
@@ -273,6 +296,7 @@ class Store:
                     )
                     self._migrate_v1_to_v2()
                     self._migrate_v3_to_v4()
+                    self._migrate_v4_to_v5()
                     self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                 self._conn.commit()
                 return
@@ -294,6 +318,13 @@ class Store:
         for column in ("lane", "run_mode", "permission_mode", "fork_of"):
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT")  # noqa: S608
+
+    def _migrate_v4_to_v5(self) -> None:
+        """Sessions gain the /compact prompt the last history sync suggested for them."""
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(sessions)")}
+        for column in ("compact_prompt", "compact_at"):
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE sessions ADD COLUMN {column} TEXT")  # noqa: S608
 
     def _migrate_v3_to_v4(self) -> None:
         """Move 0.5.0 history records into problems, attempts and milestones.
@@ -1007,6 +1038,119 @@ class Store:
             (cwd,),
         ).fetchone()
         return self._row(row) if row else None
+
+    # -- full conversations -------------------------------------------------
+    #
+    # A copy of every user and assistant message from the transcripts, kept after
+    # Claude Code deletes the transcript files (30 days by default).
+
+    def transcript_offset(self, path: str) -> tuple[int, int]:
+        row = self._conn.execute(
+            "SELECT offset, size FROM transcript_offsets WHERE path = ?", (path,)
+        ).fetchone()
+        return (int(row[0]), int(row[1])) if row else (0, 0)
+
+    def set_transcript_offset(self, path: str, offset: int, size: int) -> None:
+        self._conn.execute(
+            "INSERT INTO transcript_offsets (path, offset, size) VALUES (?, ?, ?) "
+            "ON CONFLICT(path) DO UPDATE SET offset = excluded.offset, size = excluded.size",
+            (path, offset, size),
+        )
+        self._conn.commit()
+
+    def add_messages(self, rows: list[dict]) -> int:
+        """Insert messages not stored yet (by uuid); returns how many were new."""
+        added = 0
+        for row in rows:
+            cursor = self._conn.execute(
+                "INSERT OR IGNORE INTO messages (uuid, session_id, cwd, prompt_id, role, kind, "
+                "tool_name, file_path, text, ts, sidechain) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["uuid"], row["session_id"], row.get("cwd"), row.get("prompt_id"),
+                    row["role"], row["kind"], row.get("tool_name"), row.get("file_path"),
+                    row.get("text") or "", row.get("ts"), 1 if row.get("sidechain") else 0,
+                ),
+            )
+            if cursor.rowcount:
+                added += 1
+                self._conn.execute(
+                    "INSERT INTO messages_fts (rowid, text) VALUES (?, ?)",
+                    (cursor.lastrowid, _message_search_text(row)),
+                )
+        self._conn.commit()
+        return added
+
+    def count_messages(self, session_id: str | None = None) -> int:
+        if session_id is None:
+            return int(self._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+        return int(
+            self._conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
+        )
+
+    def search_messages(
+        self, query: str, cwds: list[str] | None, *, limit: int = 10, context: int = 2
+    ) -> list[dict]:
+        """Messages matching every word (else any word), best first, with nearby turns."""
+        words = [w.replace('"', "") for w in query.split()][:SEARCH_MAX_WORDS]
+        words = [w for w in words if w]
+        if not words:
+            return []
+        scope = ""
+        params: list[Any] = []
+        if cwds is not None:
+            if not cwds:
+                return []
+            scope = f" AND m.cwd IN ({', '.join('?' for _ in cwds)})"
+            params = list(cwds)
+        rows: list[sqlite3.Row] = []
+        for joiner in (" ", " OR "):
+            match = joiner.join(f'"{w}"' for w in words)
+            rows = self._conn.execute(
+                "SELECT m.* FROM messages_fts f JOIN messages m ON m.id = f.rowid "  # noqa: S608
+                "WHERE messages_fts MATCH ?" + scope
+                + " ORDER BY bm25(messages_fts) LIMIT ?",
+                [match, *params, limit],
+            ).fetchall()
+            if rows:
+                break
+        hits = []
+        for r in rows:
+            hit = self._row(r)
+            hit["context"] = [
+                self._row(c)
+                for c in self._conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? AND id BETWEEN ? AND ? "
+                    "AND kind = 'text' AND id != ? ORDER BY id",
+                    (r["session_id"], r["id"] - context * 3, r["id"] + context * 3, r["id"]),
+                ).fetchall()
+            ][: context * 2]
+            hits.append(hit)
+        return hits
+
+    def last_sessions(self, cwds: list[str] | None, limit: int = 1) -> list[dict]:
+        scope = ""
+        params: list[Any] = []
+        if cwds is not None:
+            if not cwds:
+                return []
+            scope = f" WHERE cwd IN ({', '.join('?' for _ in cwds)})"
+            params = list(cwds)
+        rows = self._conn.execute(
+            "SELECT * FROM sessions" + scope  # noqa: S608 - placeholders only
+            + " ORDER BY last_seen_at DESC LIMIT ?",
+            [*params, limit],
+        ).fetchall()
+        return [self._row(r) for r in rows]
+
+    def files_touched(self, prompt_id: str) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT file_path FROM messages WHERE prompt_id = ? AND file_path IS NOT NULL",
+            (prompt_id,),
+        ).fetchall()
+        return [r[0] for r in rows]
 
     # -- project history ----------------------------------------------------
     #

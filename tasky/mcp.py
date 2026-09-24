@@ -69,6 +69,25 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "search_conversations",
+        "description": "Search every message of past sessions (what was said, tools run, "
+        "files touched), with the turns around each hit.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "scope": _SCOPE},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "last_session",
+        "description": "What the most recent sessions in this repository did: their tasks, "
+        "outcomes and suggested /compact.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"scope": _SCOPE, "count": {"type": "integer"}},
+        },
+    },
+    {
         "name": "record_attempt",
         "description": "Record a fix applied to a problem and its outcome. Give problem_id, or "
         "problem_title to open a new problem. failed_attempt_id marks an earlier attempt failed.",
@@ -134,6 +153,33 @@ def _format_milestone(m: dict) -> str:
     return line + (f": {m['detail']}" if m.get("detail") else "")
 
 
+def _format_hit(store: Store, hit: dict) -> str:
+    session = store.get_session(hit["session_id"]) or {}
+    where = f"session {session.get('title') or hit['session_id'][:8]} {(hit['ts'] or '')[:10]}"
+    what = hit["kind"] + (f" {hit['tool_name']}" if hit.get("tool_name") else "")
+    if hit.get("file_path"):
+        what += f" {hit['file_path']}"
+    lines = [f"[{where}] {hit['role']} {what}: {hit['text'][:600]}"]
+    for c in hit.get("context", []):
+        lines.append(f"  · {c['role']}: {c['text'][:240]}")
+    return "\n".join(lines)
+
+
+def _format_session(store: Store, session: dict) -> str:
+    title = session.get("title") or session["id"][:8]
+    lines = [
+        f"session {title} ({session['state']}, {session['started_at'][:10]} → "
+        f"{session['last_seen_at'][:10]}, {session.get('cwd') or '?'})"
+    ]
+    for t in store.list_tasks(session_id=session["id"], kind="prompt", limit=15):
+        reply = " ".join((t.get("result") or "").split())[:200]
+        line = f"  #{t['id']} [{t['status']}] {t['title']}"
+        lines.append(line + (f" → {reply}" if reply else ""))
+    if session.get("compact_prompt"):
+        lines.append(f"  suggested /compact: {session['compact_prompt']}")
+    return "\n".join(lines)
+
+
 def call_tool(store: Store, name: str, args: dict) -> str:
     if name == "search_history":
         query = str(args.get("query") or "").strip()
@@ -178,6 +224,24 @@ def call_tool(store: Store, name: str, args: dict) -> str:
         )
     if name == "record_attempt":
         return _record_attempt(store, args)
+    if name == "search_conversations":
+        query = str(args.get("query") or "").strip()
+        if not query:
+            raise ToolError("query is required")
+        repo = _scope_repo(store, args)
+        cwds = None if repo is None else store.repo_cwds(repo)
+        hits = store.search_messages(query, cwds, limit=8)
+        if not hits:
+            return "No matching messages."
+        return "\n\n".join(_format_hit(store, h) for h in hits)
+    if name == "last_session":
+        count = min(max(_int(args, "count", 1), 1), 5)
+        repo = _scope_repo(store, args)
+        cwds = None if repo is None else store.repo_cwds(repo)
+        sessions = store.last_sessions(cwds, count)
+        if not sessions:
+            return "No sessions recorded."
+        return "\n\n".join(_format_session(store, s) for s in sessions)
     raise ToolError(f"unknown tool {name!r}")
 
 

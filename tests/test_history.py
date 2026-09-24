@@ -428,7 +428,10 @@ def test_mcp_handshake_and_tool_list(config):
     assert [r["id"] for r in replies] == [1, 2, 3]
     assert replies[0]["result"]["serverInfo"]["name"] == "tasky"
     names = {t["name"] for t in replies[1]["result"]["tools"]}
-    assert names == {"search_history", "get_problem", "dead_ends", "search_tasks", "record_attempt"}
+    assert names == {
+        "search_history", "get_problem", "dead_ends", "search_tasks", "record_attempt",
+        "search_conversations", "last_session",
+    }
     assert replies[2]["error"]["code"] == -32601
 
 

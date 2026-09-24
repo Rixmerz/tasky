@@ -163,6 +163,8 @@ const el = {
   historyToggle: document.getElementById("history-toggle"),
   history: document.getElementById("history"),
   historyHeading: document.getElementById("history-heading"),
+  historyCompact: document.getElementById("history-compact"),
+  historyCompactList: document.getElementById("history-compact-list"),
   historyScope: document.getElementById("history-scope"),
   historyFilter: document.getElementById("history-filter"),
   historyClose: document.getElementById("history-close"),
@@ -848,6 +850,14 @@ function renderSessionLine(container, task) {
   const toggle = container.querySelector(".auto-pull-toggle");
   toggle.checked = !!session.auto_pull;
   toggle.onchange = () => toggleAutoPull(session.id, toggle.checked);
+
+  const compactBtn = container.querySelector(".copy-compact");
+  const canCompact = session.state === "active" && !!session.compact_prompt;
+  compactBtn.hidden = !canCompact;
+  if (canCompact) {
+    if (compactBtn.dataset.copied !== "1") compactBtn.textContent = "Copy /compact";
+    compactBtn.onclick = () => copyCompact(compactCommand(session), compactBtn, "Copy /compact");
+  }
 
   const copyBtn = container.querySelector(".copy-resume");
   const validId = SESSION_ID_RE.test(session.id);
@@ -2237,9 +2247,66 @@ function renderHistoryModelOptions() {
   el.historyModel.value = models.includes(stored) ? stored : models.includes(fallback) ? fallback : models[0];
 }
 
+function compactCommand(session) {
+  return `/compact ${session.compact_prompt.replace(/\s+/g, " ").trim()}`;
+}
+
+/** Open sessions of the shown repo with a /compact the last sync suggested, newest first. */
+function renderHistoryCompact(repo) {
+  const cwds = new Set((repo && repo.cwds) || []);
+  const sessions = (state.sessions || [])
+    .filter((s) => s.state === "active" && s.compact_prompt && cwds.has(s.cwd))
+    .sort((a, b) => ((a.compact_at || "") < (b.compact_at || "") ? 1 : -1));
+  el.historyCompact.hidden = sessions.length === 0;
+  const key = sessions.map((s) => `${s.id}:${s.compact_at}`).join("|");
+  if (el.historyCompactList.dataset.key === key) return;
+  el.historyCompactList.dataset.key = key;
+  el.historyCompactList.textContent = "";
+  for (const session of sessions) {
+    const li = document.createElement("li");
+    li.className = "history-compact-item";
+    const head = document.createElement("div");
+    head.className = "history-compact-head";
+    const name = document.createElement("span");
+    name.className = "history-compact-session";
+    name.textContent = session.title || session.id.slice(0, 8);
+    const when = document.createElement("span");
+    when.className = "history-compact-when";
+    when.textContent = relativeTime(session.compact_at);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-sm";
+    btn.textContent = "Copy";
+    btn.setAttribute("aria-label", `Copy /compact for ${name.textContent}`);
+    btn.addEventListener("click", () => copyCompact(compactCommand(session), btn, "Copy"));
+    head.append(name, when, btn);
+    const text = document.createElement("pre");
+    text.className = "history-compact-text";
+    text.textContent = compactCommand(session);
+    li.append(head, text);
+    el.historyCompactList.appendChild(li);
+  }
+}
+
+async function copyCompact(command, button, label) {
+  try {
+    await copyText(command);
+    button.dataset.copied = "1";
+    button.textContent = "Copied";
+    announce("/compact copied: paste it in that session");
+    window.setTimeout(() => {
+      button.dataset.copied = "";
+      if (button.isConnected) button.textContent = label;
+    }, 2000);
+  } catch {
+    showError("Could not copy the /compact command");
+  }
+}
+
 function renderHistorySync() {
   const repo = currentHistoryRepo();
   el.historySyncRow.hidden = !repo;
+  renderHistoryCompact(repo);
   if (!repo) return;
   renderHistoryModelOptions();
   const running = historyIsRunning(repo);

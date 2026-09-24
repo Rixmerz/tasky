@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tasky</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -116,13 +117,16 @@
   <div id="history-sync-row" class="history-sync" hidden>
     <label for="history-model" class="history-model-label">Model</label>
     <select id="history-model" class="select history-model">
-      <option value="haiku">Haiku · cheapest</option>
       <option value="sonnet">Sonnet · recommended</option>
       <option value="opus">Opus · most thorough</option>
     </select>
     <button type="button" id="history-sync" class="btn btn-primary btn-sm">Sync</button>
     <p id="history-sync-status" class="history-sync-status" role="status" aria-live="polite"></p>
   </div>
+  <section id="history-compact" class="history-compact" aria-labelledby="history-compact-heading" hidden>
+    <h3 id="history-compact-heading" class="history-compact-heading">Suggested /compact <span class="history-compact-hint">from the last sync, for sessions still open</span></h3>
+    <ul id="history-compact-list" class="history-compact-list"></ul>
+  </section>
   <p id="history-empty" class="empty-state history-empty" hidden></p>
   <div id="history-body" class="history-body" hidden>
     <div id="history-tabs" class="history-tabs" role="tablist" aria-label="History views">
@@ -276,6 +280,7 @@
         <span class="field-hint">Spends tokens.</span>
       </label>
       <button type="button" class="btn btn-sm copy-resume" hidden>Copy resume command</button>
+      <button type="button" class="btn btn-sm copy-compact" hidden title="Instructions for /compact suggested by the last history sync">Copy /compact</button>
     </section>
   </div>
 </aside>

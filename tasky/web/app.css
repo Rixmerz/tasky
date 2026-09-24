@@ -1953,6 +1953,77 @@ details.digest-card > .digest-card-title {
   stroke-width: 2.5;
 }
 
+/* ---------- suggested /compact ---------- */
+
+.history-compact {
+  max-width: 960px;
+  margin: 12px auto 20px;
+}
+
+.history-compact-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.history-compact-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.history-compact-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-compact-item {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--live);
+  border-radius: var(--radius);
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.history-compact-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.history-compact-session {
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.history-compact-when {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.history-compact-head .btn {
+  margin-left: auto;
+}
+
+.history-compact-text {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--foreground);
+}
+
 @media (min-width: 481px) {
   body {
     overflow: hidden;

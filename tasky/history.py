@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from tasky import repos
-from tasky.config import Config
+from tasky.config import Config, now_iso
 from tasky.store import Store
 
 # No Haiku: the sync judges whether a fix really failed across tasks days apart, which Haiku
@@ -44,6 +44,7 @@ STALE_SYNC_S = 45 * 60
 _TITLE = 160
 _TEXT = 1_000
 _QUOTE = 300
+_COMPACT = 1_200
 _TOPIC = 40
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -88,6 +89,14 @@ have no existing_id: never number them yourself.
 already in use.
 - Dates are YYYY-MM-DD, the date of the task where it happened.
 - Write in the language the developer writes in. Titles under 12 words.
+
+compact: for each session listed in <sessions>, write the instructions to give Claude Code's \
+/compact for that session, so its summary keeps what matters: the goal in progress, decisions \
+taken and why, open problems and the attempts that already failed (so they are not retried), \
+the files and components being changed, constraints and preferences the developer stated, and \
+the next step; and drops what no longer matters (resolved tangents, tool output already acted \
+on, abandoned ideas). Imperative, specific (names, paths, ids), under 120 words, based only on \
+what you were shown.
 - Returning empty lists is fine when the new tasks change nothing.
 """
 
@@ -126,6 +135,17 @@ OUTPUT_SCHEMA: dict[str, Any] = {
                 },
             },
         },
+        "compact": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "instructions": {"type": "string"},
+                },
+                "required": ["session_id", "instructions"],
+            },
+        },
         "milestones": {
             "type": "array",
             "items": {
@@ -142,7 +162,7 @@ OUTPUT_SCHEMA: dict[str, Any] = {
             },
         },
     },
-    "required": ["problems", "milestones"],
+    "required": ["problems", "milestones", "compact"],
 }
 
 Runner = Callable[..., subprocess.CompletedProcess]
@@ -172,6 +192,7 @@ def sync(
             raise SyncError("a sync of this repository is already running")
     summary: dict[str, Any] = {
         "batches": 0,
+        "compact": 0,
         "tasks": 0,
         "added": 0,
         "updated": 0,
@@ -187,12 +208,14 @@ def sync(
                     break
                 known_problems = store.problems(repo)[:KNOWN_PROBLEMS]
                 known_milestones = store.milestones(repo)[-KNOWN_MILESTONES:]
+                sessions = _active_sessions(store, tasks)
             git = git_log(cwds[0], tasks)
-            prompt = build_prompt(known_problems, known_milestones, tasks, git)
+            prompt = build_prompt(known_problems, known_milestones, tasks, git, sessions)
             output, cost = call_model(config, model, prompt, run=run)
             summary["cost_usd"] += cost
             with Store.open(config) as store:
                 added, updated = apply_output(store, repo, output, tasks, git)
+                summary["compact"] += apply_compact(store, output, sessions)
                 for cwd in {t["cwd"] for t in tasks}:
                     store.advance_history_cursor(
                         cwd, max(t["id"] for t in tasks if t["cwd"] == cwd)
@@ -253,7 +276,38 @@ def _as_existing(item: dict, keys: tuple[str, ...]) -> dict:
     return {"existing_id": compact.pop("id"), **compact}
 
 
-def build_prompt(problems: list[dict], milestones: list[dict], tasks: list[dict], git: str) -> str:
+def _active_sessions(store: Store, tasks: list[dict]) -> list[dict]:
+    """Sessions of this batch that are still open: the only ones a /compact can help."""
+    seen: dict[str, dict] = {}
+    for task in tasks:
+        sid = task.get("session_id")
+        if sid and sid not in seen:
+            session = store.get_session(sid)
+            if session and session["state"] == "active" and session["source"] != "worker":
+                seen[sid] = session
+    return list(seen.values())
+
+
+def apply_compact(store: Store, output: dict, sessions: list[dict]) -> int:
+    allowed = {s["id"] for s in sessions}
+    stored = 0
+    for item in output.get("compact") or []:
+        if not isinstance(item, dict) or item.get("session_id") not in allowed:
+            continue
+        text = _text(item.get("instructions"), _COMPACT)
+        if text:
+            store.update_session(item["session_id"], compact_prompt=text, compact_at=now_iso())
+            stored += 1
+    return stored
+
+
+def build_prompt(
+    problems: list[dict],
+    milestones: list[dict],
+    tasks: list[dict],
+    git: str,
+    sessions: list[dict] | None = None,
+) -> str:
     known = {
         "problems": [
             {
@@ -277,6 +331,13 @@ def build_prompt(problems: list[dict], milestones: list[dict], tasks: list[dict]
             lines.append(f"<answered>{_clip(task['result'], REPLY_CHARS)}</answered>")
         lines.append("</task>")
     lines.append("</tasks>")
+    if sessions:
+        lines += ["", "<sessions>"]
+        lines += [
+            f'<session id="{s["id"]}" title="{(s.get("title") or "").replace(chr(34), "")}"/>'
+            for s in sessions
+        ]
+        lines.append("</sessions>")
     if git:
         lines += ["", "<git_log>", git, "</git_log>"]
     return "\n".join(lines)

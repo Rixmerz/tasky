@@ -1,6 +1,6 @@
 [project]
 name = "tasky"
-version = "0.6.1"
+version = "0.7.0"
 description = "A visual task ledger for Claude Code sessions, fed by hooks at zero token cost."
 readme = "README.md"
 license = { text = "MIT" }

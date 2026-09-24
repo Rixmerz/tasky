@@ -717,7 +717,7 @@ def test_import_calls_importer(conn, auth_headers, monkeypatch):
 
     resp, parsed = _request(conn, "POST", "/api/import", body={}, headers=auth_headers)
     assert resp.status == 200
-    assert parsed == fake_report
+    assert parsed == {**fake_report, "messages": "copying in the background"}
 
 
 # -- unexpected handler errors --------------------------------------------------

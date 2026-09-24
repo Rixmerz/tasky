@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from tasky import history, repos, scheduler, worker
+from tasky import history, repos, scheduler, transcripts, worker
 from tasky.config import Config, load_token, token_proof
 from tasky.store import SEARCH_LIMIT, TASK_STATUSES, Store
 from tasky.titles import TitleWatcher
@@ -36,6 +36,7 @@ _STATIC_FILES = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/app.css": ("app.css", "text/css; charset=utf-8"),
     "/digest.js": ("digest.js", "text/javascript; charset=utf-8"),
+    "/favicon.svg": ("favicon.svg", "image/svg+xml"),
 }
 _TASK_ID_RE = re.compile(r"^/api/tasks/(\d{1,18})$")
 _TASK_RUN_RE = re.compile(r"^/api/tasks/(\d{1,18})/run$")
@@ -590,6 +591,10 @@ class _Handler(BaseHTTPRequestHandler):
         config = self.server.config
         with Store.open(config) as store:
             report = importer.import_transcripts(store, config)
+        # Copying every message of every transcript can take minutes on a long
+        # history; the tasks above are what the board needs now.
+        threading.Thread(target=_backfill_messages, args=(config,), daemon=True).start()
+        report["messages"] = "copying in the background"
         self._send_json(200, report)
 
     def _route_static(self, path: str) -> None:
@@ -662,6 +667,11 @@ class _Server(ThreadingHTTPServer):
             self._token_cache_value = load_token(self.config, create=False)
             self._token_cache_key = key if self._token_cache_value is not None else None
         return self._token_cache_value
+
+
+def _backfill_messages(config: Config) -> None:
+    with contextlib.suppress(Exception), Store.open(config) as store:
+        transcripts.backfill(store, config)
 
 
 def make_server(

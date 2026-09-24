@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any, TextIO
 
-from tasky import repos
+from tasky import repos, transcripts
 from tasky.config import Config, now_iso
 from tasky.prompts import classify, parse_notifications, queue_request
 from tasky.store import Store
@@ -423,14 +423,40 @@ _HANDLERS = {
     "Stop": _stop,
     "StopFailure": _stop_failure,
     "SessionEnd": _session_end,
+    "PreCompact": lambda *args: None,
 }
+
+# Events after which the transcript has new messages worth copying: the end of a
+# turn, before a compaction rewrites the context, and the end of the session.
+_INGEST_EVENTS = ("Stop", "StopFailure", "SubagentStop", "PreCompact", "SessionEnd")
 
 
 def handle(event: dict, store: Store, config: Config, env: Mapping[str, str]) -> dict | None:
-    handler = _HANDLERS.get(event.get("hook_event_name"))
+    name = event.get("hook_event_name")
+    handler = _HANDLERS.get(name)
     if handler is None:
         return None
-    return handler(event, store, config, env)
+    result = handler(event, store, config, env)
+    if name in _INGEST_EVENTS:
+        _ingest(event, store, config)
+    return result
+
+
+def _ingest(event: dict, store: Store, config: Config) -> None:
+    """Copy the session's new transcript lines; a failure here never costs the event."""
+    session_id = event.get("session_id")
+    path = event.get("transcript_path")
+    if not session_id:
+        return
+    try:
+        # Read the path from the event, never through upsert_session: that would
+        # mark a session SessionEnd just ended as active again.
+        if isinstance(path, str) and path:
+            transcripts.ingest_file(store, path, budget=transcripts.HOOK_BUDGET)
+        else:
+            transcripts.ingest_session(store, session_id)
+    except Exception:  # noqa: BLE001 - the ledger update above already happened
+        _log_error(config)
 
 
 def _log_error(config: Config) -> None:

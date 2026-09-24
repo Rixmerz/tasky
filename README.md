@@ -27,6 +27,14 @@ anyone whose attention is the scarcest resource in the room.
   the context.
 - **Remembers the past.** Import your existing Claude Code transcripts so the board is not empty
   on day one.
+- **Keeps every conversation.** Every message, tool call and tool result is copied into the ledger
+  at the end of each turn, before each compaction and at session end, so it stays searchable after
+  Claude Code deletes its transcripts (30 days by default).
+- **Keeps a history of problems and what was tried.** Per repository: problems with the ordered
+  chain of fixes attempted and why each failed, milestones, a map, and an MCP server so the agent
+  can check what already failed before trying it again.
+- **Suggests how to `/compact`.** After a history sync, each open session gets `/compact`
+  instructions that keep what matters and drop the rest, one click to copy.
 - **Shows results as cards, not markdown.** Each result opens with its bottom line; every point,
   step, table and code block gets its own card, and a reply that ends with a question is marked
   "waiting for you" right on the collapsed card.
@@ -175,7 +183,9 @@ tasky import
 
 Reads `~/.claude/projects/*/*.jsonl`. It is idempotent, tolerates damaged lines, skips subagent
 transcripts, and skips any session that hooks or workers have already recorded. Imported sessions
-are shown as ended.
+are shown as ended. It also copies every message of every transcript into the ledger (in the
+background when started from the dashboard), which is what keeps them after Claude Code's 30-day
+cleanup.
 
 ### Readable results and the Focus Cards style
 
@@ -230,6 +240,15 @@ Reading the history is free. It also reaches the agent in two ways:
 - The plugin ships an MCP server, `tasky`, with `search_history`, `get_problem`, `dead_ends`,
   `search_tasks` and `record_attempt`. The last one lets the agent write an attempt and its outcome
   the moment it knows, with no sync and no extra model call; those attempts are tagged "agent".
+  `search_conversations` searches every stored message (with the turns around each hit) and
+  `last_session` says what the latest sessions in the repository did.
+
+After a sync, every session that is still open and had tasks in it gets suggested instructions for
+Claude Code's `/compact`: what the summary must keep (the goal in progress, decisions and why, open
+problems and the attempts that already failed, files in flight, your stated constraints, the next
+step) and what it can drop. They appear under **Suggested /compact** in the History panel and as
+**Copy /compact** in the task's side panel; paste them into that session. They come out of the same
+model call as the sync, at no extra cost.
 
 ### Put the counters in your status line
 
@@ -282,6 +301,7 @@ call. Every hook exits successfully and prints nothing when something goes wrong
 | Action | Tokens |
 | --- | --- |
 | Recording prompts, delegations and results | 0 |
+| Copying full conversations | 0 |
 | Queueing with `++`, the dashboard or the CLI | 0 |
 | Dashboard, search, CLI and status line | 0 |
 | Context reminder after resume or compaction | A few lines, only when tasks are unfinished |
@@ -301,8 +321,13 @@ $TASKY_HOME/tasky.db   (default: $XDG_DATA_HOME/tasky or ~/.local/share/tasky)
 ```
 
 Tasky stores prompt text, subagent prompts and final assistant messages (results are capped at
-8000 characters, and dashboard access links in them are redacted). It never modifies your Claude Code settings or transcripts. Delete the directory
-to erase everything.
+8000 characters, and dashboard access links in them are redacted), and a copy of every message of
+your sessions: text, tool calls and tool results (capped at 8000, 1000 and 4000 characters).
+Before a message is stored, strings that look like secrets are replaced with `[redacted]`: private
+keys, provider API keys and tokens (Anthropic, OpenAI-style, GitHub, Slack, AWS, Google), JWTs,
+bearer tokens and `password=`/`api_key:`-style assignments. That filter is pattern-based; a secret
+in another shape is stored as typed. It never modifies your Claude Code settings or transcripts.
+Delete the directory to erase everything.
 
 ## Security
 
@@ -379,6 +404,21 @@ TASKY_HOME=$(mktemp -d) ./bin/tasky serve  # dashboard against an empty database
 
 The behaviour contract lives in `openspec/specs/`; the design and history of v0.1.0 are in `openspec/changes/archive/2026-09-15-add-tasky-v1/`.
 
+## Credits
+
+Tasky is built on, borrows from, or works alongside these projects:
+
+| Project | What Tasky owes it | License |
+| --- | --- | --- |
+| [Claude Code](https://github.com/anthropics/claude-code) | Hooks, transcripts, `claude -p`, plugins and MCP: everything Tasky records and runs goes through it | Anthropic terms |
+| [attention-span](https://github.com/alexgreensh/attention-span) | The reply shape behind the Focus Cards output style and the result cards (inspiration only; Focus Cards text is original) | AGPL-3.0 |
+| [MemPalace](https://github.com/MemPalace/mempalace) | Ideas for the project history: facts with validity windows, repository-then-topic organisation, verbatim evidence, memory the agent can write | MIT |
+| [OpenSpec](https://github.com/Fission-AI/OpenSpec) | The living-spec format this repository's `openspec/` follows | MIT |
+| [SQLite](https://sqlite.org) and FTS5 | The ledger and its accent-insensitive full-text search | Public domain |
+
+No code from these projects is included in Tasky.
+
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © 2026 Tasky contributors. You may use, copy, modify and distribute Tasky, including
+commercially, as long as the copyright notice and the license text come with it.

@@ -181,9 +181,11 @@ def _cmd_ui(args: argparse.Namespace, config: Config, out: TextIO) -> int:
 
 def _cmd_import(args: argparse.Namespace, config: Config, out: TextIO) -> int:
     from tasky.importer import import_transcripts
+    from tasky.transcripts import backfill
 
     with Store.open(config) as store:
         report = import_transcripts(store, config, dry_run=args.dry_run)
+        copied = None if args.dry_run else backfill(store, config)
     prefix = "would import" if args.dry_run else "imported"
     print(
         f"{prefix} {report['tasks']} tasks from {report['sessions']} sessions "
@@ -191,6 +193,8 @@ def _cmd_import(args: argparse.Namespace, config: Config, out: TextIO) -> int:
         f"{report['bad_lines']} bad lines)",
         file=out,
     )
+    if copied is not None:
+        print(f"copied {copied['messages']} new messages from {copied['files']} files", file=out)
     return 0
 
 
@@ -309,6 +313,7 @@ def _cmd_history(args: argparse.Namespace, config: Config, out: TextIO) -> int:
     print(
         f"{summary['tasks']} task(s) read in {summary['batches']} batch(es): "
         f"{summary['added']} record(s) added, {summary['updated']} updated, "
+        f"{summary['compact']} /compact suggestion(s), "
         f"{summary['model']}, ${summary['cost_usd']:.4f}, "
         f"{summary['pending']} task(s) still to sync",
         file=out,

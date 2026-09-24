@@ -89,3 +89,23 @@ replaced with `#token=<redacted>`.
 #### Scenario: Agent prints the access link
 - **WHEN** a turn stops with a final message containing `http://127.0.0.1:7733/#token=abcDEF123_-xyz`
 - **THEN** the stored result contains `#token=<redacted>` and not the token value
+
+### Requirement: Full conversation copy
+The system SHALL copy every user and assistant message of each session, including tool calls and
+tool results, into the ledger at the end of each turn, before each compaction and at session end,
+reading only transcript lines not copied yet, never storing a message twice, and replacing strings
+that match known secret patterns before storing them. Copied messages SHALL remain after the
+transcript file is deleted and SHALL be searchable without spending tokens.
+
+#### Scenario: Survives transcript cleanup
+- **WHEN** a session's transcript is deleted by Claude Code's cleanup after it was copied
+- **THEN** its messages are still returned by a conversation search
+
+#### Scenario: A pasted token is not stored
+- **WHEN** a tool result contains a GitHub token
+- **THEN** the stored message holds `[redacted]` in its place
+
+#### Scenario: A session that ended stays ended
+- **WHEN** the SessionEnd hook copies the last lines of a transcript
+- **THEN** the session is still shown as ended
+

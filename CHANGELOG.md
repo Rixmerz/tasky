@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-09-24
+
+### Added
+
+- Full conversations: every message, tool call and tool result of every session is copied into the
+  ledger at the end of each turn, before each compaction (new `PreCompact` hook) and at session
+  end, incrementally and with a per-call byte budget, so it survives Claude Code's 30-day
+  transcript cleanup. `tasky import` and the dashboard's Import history copy existing transcripts.
+  Files touched by Edit/Write/Read calls are recorded with each message.
+- Secret scrubbing before anything is stored: private keys, provider keys and tokens, JWTs, bearer
+  tokens and password-style assignments become `[redacted]`.
+- Suggested `/compact` instructions per open session, produced by the history sync in the same
+  model call, shown under "Suggested /compact" in the History panel and as "Copy /compact" in the
+  task side panel.
+- MCP tools `search_conversations` (accent-insensitive search over every stored message, with the
+  turns around each hit) and `last_session`.
+- A favicon.
+- A Credits section in the README naming the projects Tasky builds on or borrows from, with their
+  licenses.
+
+### Changed
+
+- Schema version 5: `messages`, `messages_fts` and `transcript_offsets` tables; sessions gain
+  `compact_prompt` and `compact_at`.
+
 ## [0.6.1] - 2026-09-24
 
 ### Removed
