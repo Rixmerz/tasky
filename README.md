@@ -326,12 +326,21 @@ with every later commit. A card that is wrong can be removed. The CLI is `tasky 
 
 Cards are written in the language of your prompts. Tasky tells it from their function words
 ("el", "los", "cuando" against "the", "which", "when"; also Portuguese, French, German and
-Italian), with no model, names it to Haiku in the prompt, and checks every card that comes back:
-one written in another language goes back to Haiku once, only its wording (title, objective,
-description, criteria), for translation. Which tasks it holds is not asked again, and a stated
-criterion's quote keeps your own words. When the prompts are too short to tell, Haiku is asked to
-follow them and nothing is checked. `tasky compact` reports the language and how many cards were
-translated.
+Italian), with no model. Only your own words count: what you paste (`<pasted_content>` blocks,
+such as a CI log) and fenced code are left out, and so are identifiers and paths like
+`APP_HAS_CONFIGMAP`. When a batch's prompts are too short to tell ("dale", "fix ci"), your latest
+200 prompts in any repository decide; `TASKY_LANGUAGE=es` (a code or an English name) fixes it
+outright.
+
+Haiku is told the language in the system prompt, in the prompt and in the schema of every worded
+field. Named only in the prompt, it wrote all 15 cards of a Spanish repository in English; named in
+all three, the same 33 tasks came back as 12 cards in Spanish. Every card is still checked: one in
+another language goes back to Haiku once, only its wording (title, objective, description,
+criteria), for translation. That second call only runs when a card is off and is cheap: 15 cards
+cost $0.05 of a $0.21 run. `TASKY_CARDS_TRANSLATE=0` turns it off and leaves such cards as they
+came. Which tasks a card holds is not asked again, and a stated criterion's quote keeps your own
+words. `tasky compact` reports the language, what told it (`TASKY_LANGUAGE`, these prompts, your
+earlier prompts), and how many cards were translated and at what cost.
 
 ### Architecture: areas and specs
 
@@ -527,6 +536,8 @@ What it does not protect against:
 | `TASKY_HISTORY_MODEL` | `sonnet` | Default model for history syncs |
 | `TASKY_HISTORY_MAX_BATCHES` | `8` | Batches one sync reads before stopping; press again for more |
 | `TASKY_DEAD_END_ITEMS` | `5` | Failed attempts added at session start; `0` turns it off |
+| `TASKY_LANGUAGE` | unset | Language of the cards (`es`, `Spanish`…); unset, your prompts tell it |
+| `TASKY_CARDS_TRANSLATE` | `1` | `0` leaves a card Haiku wrote in another language untranslated |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Where transcripts are imported from |
 
 Hooks read these from the environment of the Claude Code process.

@@ -2472,6 +2472,15 @@ class Store:
                     rows.append(dict(r))
         return rows
 
+    def recent_prompts(self, limit: int) -> list[str]:
+        """What the developer wrote in their latest prompts, in every repository."""
+        rows = self._conn.execute(
+            "SELECT body FROM tasks WHERE kind = 'prompt' AND deleted_at IS NULL "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [r[0] for r in rows if r[0]]
+
     def repo_tasks(self, repo: str, limit: int = 2000) -> list[dict]:
         """The repo's visible prompt tasks, newest first."""
         rows = self._conn.execute(

@@ -11,6 +11,7 @@ out of both lists, so each hit is evidence for one language only.
 from __future__ import annotations
 
 import re
+import string
 import unicodedata
 
 NAMES = {
@@ -56,13 +57,21 @@ _SHARED = {w for a in _WORDS for b in _WORDS if a < b for w in _WORDS[a] & _WORD
 _WORDS = {code: words - _SHARED for code, words in _WORDS.items()}
 
 _TOKEN = re.compile(r"[^\W\d_]+")
+_EDGES = string.punctuation + "¿¡«»“”‘’…"
+# What a developer pastes (logs, specs, stack traces) and fenced code are someone else's words,
+# usually English; only what is left around them says which language the developer writes in.
+_NOT_THEIRS = re.compile(
+    r"<pasted_content\b[^>]*>.*?(?:</pasted_content\b[^>]*>|\Z)|```.*?(?:```|\Z)", re.DOTALL
+)
 MIN_HITS = 4
 LEAD = 1.5
 
 
 def _tokens(text: str) -> list[str]:
+    """The plain words: identifiers like APP_HAS_CONFIG, paths and file names are not prose."""
     text = unicodedata.normalize("NFC", text or "").casefold()
-    return _TOKEN.findall(text)
+    words = (chunk.strip(_EDGES) for chunk in text.split())
+    return [w for w in words if _TOKEN.fullmatch(w)]
 
 
 def scores(text: str) -> dict[str, int]:
@@ -79,5 +88,18 @@ def detect(text: str) -> str | None:
     return best
 
 
+def own_words(text: str) -> str:
+    """The text without what was pasted into it or fenced as code."""
+    return _NOT_THEIRS.sub(" ", text or "")
+
+
 def name(code: str | None) -> str | None:
     return NAMES.get(code) if code else None
+
+
+def code_of(value: str | None) -> str | None:
+    """A language given as a code ("es") or an English name ("Spanish"); None when unknown."""
+    value = (value or "").strip().casefold()
+    if value in NAMES:
+        return value
+    return next((code for code, full in NAMES.items() if full.casefold() == value), None)

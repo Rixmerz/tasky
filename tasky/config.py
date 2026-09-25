@@ -44,6 +44,8 @@ class Config:
     history_model: str = "sonnet"
     history_max_batches: int = 8
     dead_end_items: int = 5
+    card_language: str = ""
+    card_translate: bool = True
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Config:
@@ -78,6 +80,9 @@ class Config:
             history_model=_str_env(env, "TASKY_HISTORY_MODEL", "sonnet"),
             history_max_batches=max(1, _int_env(env, "TASKY_HISTORY_MAX_BATCHES", 8)),
             dead_end_items=max(0, _int_env(env, "TASKY_DEAD_END_ITEMS", 5)),
+            card_language=_str_env(env, "TASKY_LANGUAGE", ""),
+            card_translate=env.get("TASKY_CARDS_TRANSLATE", "").strip().lower()
+            not in ("0", "false", "no"),
         )
 
 

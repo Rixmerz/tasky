@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] - 2026-09-25
+
+### Added
+
+- `TASKY_LANGUAGE` fixes the language of the cards; `TASKY_CARDS_TRANSLATE=0` turns off the
+  translation call.
+
+### Changed
+
+- The cards' language is named to Haiku in the system prompt and in the schema of every worded
+  field, not only in the prompt. Measured on a real repository with Spanish prompts and English
+  replies: named in the prompt alone, all 15 cards came back in English and needed translation
+  ($0.21 run, $0.05 of it translating); named in all three, 12 cards came back in Spanish with no
+  translation ($0.14).
+- When a batch's prompts are too short to tell the language, the developer's latest 200 prompts
+  in any repository decide it. `tasky compact` reports what told the language and what the
+  translation cost.
+
+### Fixed
+
+- Language detection counted pasted blocks (a CI log in `<pasted_content>`) and fenced code as
+  the developer's words, and split identifiers like `APP_HAS_CONFIGMAP` into English words: a
+  Spanish repository whose prompts carried English logs was detected as English, and a Spanish
+  card was flagged as English.
+
 ## [0.14.0] - 2026-09-24
 
 ### Added

@@ -394,9 +394,12 @@ def _cmd_compact(args: argparse.Namespace, config: Config, out: TextIO) -> int:
         file=out,
     )
     if summary["language"]:
-        line = f"written in {summary['language']}"
+        told = {"set": "TASKY_LANGUAGE", "tasks": "these prompts",
+                "history": "your earlier prompts"}[summary["language_from"]]
+        line = f"written in {summary['language']} (told by {told})"
         if summary["translated"] or summary["untranslated"]:
-            line += (f"; {summary['translated']} card(s) translated, "
+            line += (f"; {summary['translated']} card(s) translated "
+                     f"(${summary['translate_cost_usd']:.4f}), "
                      f"{summary['untranslated']} left in another language")
         print(line, file=out)
     if summary["error"]:

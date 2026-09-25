@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import subprocess
@@ -9,6 +10,7 @@ import subprocess
 import pytest
 
 from tasky import cards, cli, repos
+from tasky.config import Config
 from tasky.store import Store
 
 REPO = "github.com/o/shop"
@@ -241,6 +243,16 @@ def test_language_is_told_by_function_words_not_code():
     assert language.detect(EN_CARD["objective"] + " " + EN_CARD["description"]) == "en"
     assert language.detect("src/checkout/coupon.ts npm run build") is None  # nothing to tell by
     assert language.detect("el total") is None  # too few words to be sure
+    assert language.detect("Fijar la clave APP_HAS_CONFIGMAP y APP_HAS_SECRETS en config/has.json, "
+                           "APP_HAS_PORT") is None  # identifiers are not English words
+    assert language.detect("¿qué pasó con el deploy? (no está en el pipeline, ni en QA)") == "es"
+    log = ("<pasted_content id=\"a\">\nThe build failed because the tests were not run and "
+           "there is no coverage for this module\n</pasted_content id=\"a\">")
+    assert language.detect(log) == "en"
+    asked = f"no entiendo cuál es el error, esto es lo que sale en el pipeline {log}"
+    assert language.detect(language.own_words(asked)) == "es"  # the pasted log is not theirs
+    assert language.own_words("mira esto ```the code is here``` y esto <pasted_content x>the")\
+        .split() == ["mira", "esto", "y", "esto"]  # unclosed: pasted to the end
 
 
 def test_cards_are_written_in_the_developers_language_or_translated(config, store, shop):
@@ -258,9 +270,19 @@ def test_cards_are_written_in_the_developers_language_or_translated(config, stor
     assert summary["language"] == "Spanish"
     assert (summary["translated"], summary["untranslated"]) == (1, 0)
     assert summary["cost_usd"] == pytest.approx(0.06)  # the cards and the translation
+    assert summary["translate_cost_usd"] == pytest.approx(0.03)
+    assert summary["language_from"] == "tasks"
     first, second = (c["input"] for c in fake.calls)
     assert first.startswith("<language>Spanish</language>")
     assert first.rstrip().endswith("Write every card in Spanish.")
+    cmd = fake.calls[0]["cmd"]
+    system = cmd[cmd.index("--system-prompt") + 1]
+    schema = json.loads(cmd[cmd.index("--json-schema") + 1])
+    assert "The developer writes in Spanish." in system
+    assert schema["properties"]["cards"]["items"]["properties"]["title"]["description"] == \
+        "In Spanish."
+    assert "description" not in cards.OUTPUT_SCHEMA["properties"]["cards"]["items"][
+        "properties"]["title"]  # the shared schema is not changed
     assert "Translate into Spanish." in second and ES_1 not in second  # only the wording goes
     [card] = store.cards(REPO)
     assert card["title"] == "Cupones en el checkout" and card["objective"] == ES_CARD["objective"]
@@ -288,6 +310,37 @@ def test_no_translation_when_the_language_cannot_be_told(config, store, shop):
     assert summary["language"] is None and len(fake.calls) == 1
     assert "<language>the language the developer writes the tasks in</language>" in \
         fake.calls[0]["input"]
+
+
+def test_short_prompts_fall_back_to_the_developers_earlier_prompts(
+    config, store, shop, tmp_path
+):
+    _task(store, tmp_path / "elsewhere", f"{ES_1}. {ES_2}", "p0")  # another repository
+    t1 = _task(store, shop, "fix ci", "p1")
+    _synced(store, shop)
+    fake = FakeHaiku({"cards": [{**ES_CARD, "kind": "chore", "status": "done",
+                                 "task_ids": [t1["id"]]}]})
+    summary = cards.compact(config, REPO, run=fake)
+    assert (summary["language"], summary["language_from"]) == ("Spanish", "history")
+    assert fake.calls[0]["input"].startswith("<language>Spanish</language>")
+
+
+def test_tasky_language_names_it_and_translation_can_be_turned_off(config, store, shop):
+    t1 = _task(store, shop, f"{ES_1}. {ES_2}", "p1")
+    _synced(store, shop)
+    assert language.code_of("Portuguese") == language.code_of(" pt ") == "pt"
+    assert language.code_of("klingon") is None
+    fixed = dataclasses.replace(config, card_language="Portuguese", card_translate=False)
+    fake = FakeHaiku({"cards": [{**ES_CARD, "kind": "story", "status": "done",
+                                 "task_ids": [t1["id"]]}]})
+    summary = cards.compact(fixed, REPO, run=fake)
+    assert (summary["language"], summary["language_from"]) == ("Portuguese", "set")
+    assert (summary["translated"], summary["untranslated"]) == (0, 1)  # Spanish, not sent back
+    assert len(fake.calls) == 1 and summary["translate_cost_usd"] == 0
+    env = {"TASKY_HOME": str(config.home), "TASKY_LANGUAGE": "es", "TASKY_CARDS_TRANSLATE": "0"}
+    told = Config.from_env(env)
+    assert (told.card_language, told.card_translate) == ("es", False)
+    assert Config.from_env({"TASKY_HOME": str(config.home)}).card_translate is True
 
 
 # -- MCP ------------------------------------------------------------------------------

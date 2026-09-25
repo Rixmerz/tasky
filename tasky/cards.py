@@ -8,13 +8,16 @@ word it. Like the sync, nothing it returns is trusted: tasks, commits, problems 
 must be ones it was shown, and a criterion counts as stated by the developer only when its quote
 appears verbatim in one of the card's prompts; every other criterion is marked inferred. The
 files of a card come from the edits its tasks recorded, never from the model. The language
-the cards are written in is the one the developer's prompts are in, detected without a model,
-named to Haiku outright and checked on every card it returns; a card that comes back in another
-language is sent back for translation alone.
+the cards are written in is the one the developer's prompts are in, detected without a model
+(from the batch, else from their latest prompts in any repository, unless TASKY_LANGUAGE names
+it), named to Haiku outright and checked on every card it returns; a card that comes back in
+another language is sent back for translation alone.
 """
 
 from __future__ import annotations
 
+import contextlib
+import copy
 import json
 import subprocess
 from collections import Counter
@@ -40,6 +43,8 @@ CARD_FILES = 25
 MAX_CRITERIA = 6
 MAX_BATCHES = 10
 STALE_RUN_S = 20 * 60
+# Prompts read to tell the developer's language when a batch's own prompts are too short to.
+HISTORY_PROMPTS = 200
 _TITLE = 120
 _TEXT = 600
 _CRITERION = 200
@@ -174,9 +179,25 @@ def _asked(task: dict) -> str:
     return "\n".join([task.get("body") or "", *extra])
 
 
-def developer_language(tasks: list[dict]) -> str | None:
-    """The language code the developer's prompts are in, None when they do not say."""
-    return language.detect("\n".join(_asked(t) for t in tasks))
+def developer_language(
+    config: Config, store: Store, tasks: list[dict]
+) -> tuple[str | None, str | None]:
+    """The language code the cards are written in, and what told it.
+
+    TASKY_LANGUAGE wins ("set"). Otherwise the batch's own prompts ("tasks"), leaving out
+    what was pasted into them: a pasted English log says nothing of the developer. Prompts like
+    "fix ci" or "--continue" carry too few function words, so a batch of them falls back to the
+    developer's latest prompts in any repository ("history"). (None, None) when nothing tells.
+    """
+    code = language.code_of(config.card_language)
+    if code:
+        return code, "set"
+    code = language.detect("\n".join(language.own_words(_asked(t)) for t in tasks))
+    if code:
+        return code, "tasks"
+    earlier = store.recent_prompts(HISTORY_PROMPTS)
+    code = language.detect("\n".join(language.own_words(body) for body in earlier))
+    return (code, "history") if code else (None, None)
 
 
 def _card_text(item: dict) -> str:
@@ -246,6 +267,28 @@ def translate(
             fixed += 1
         wanted.discard(back["index"])
     return fixed, cost
+
+
+def instructions(code: str | None) -> tuple[str, dict[str, Any]]:
+    """The system prompt and output schema for cards in that language.
+
+    Named only in the prompt, the language lost to the English around it: Haiku wrote every card
+    of a Spanish-speaking developer's repository in English. The system prompt and the
+    description of every worded field in the schema name it as well.
+    """
+    name = language.name(code)
+    if name is None:
+        return SYSTEM_PROMPT, OUTPUT_SCHEMA
+    system = SYSTEM_PROMPT + (
+        f"\nThe developer writes in {name}. Every card's title, objective, description and "
+        f"criteria are written in {name}.\n"
+    )
+    schema = copy.deepcopy(OUTPUT_SCHEMA)
+    card = schema["properties"]["cards"]["items"]["properties"]
+    for key in _WORDED:
+        card[key]["description"] = f"In {name}."
+    card["criteria"]["items"]["properties"]["text"]["description"] = f"In {name}."
+    return system, schema
 
 
 def _batch(tasks: list[dict]) -> list[dict]:
@@ -450,7 +493,8 @@ def compact(
             raise CardsError("cards of this repository are already being made")
     summary: dict[str, Any] = {"batches": 0, "tasks": 0, "added": 0, "updated": 0,
                                "left_out": 0, "cost_usd": 0.0, "model": MODEL,
-                               "language": None, "translated": 0, "untranslated": 0}
+                               "language": None, "language_from": None, "translated": 0,
+                               "untranslated": 0, "translate_cost_usd": 0.0}
     error: str | None = None
     try:
         for _ in range(MAX_BATCHES):
@@ -468,26 +512,28 @@ def compact(
                 milestones = [m for m in store.milestones(repo) if ids & set(m["task_ids"])]
                 milestones = milestones[-KNOWN_MILESTONES:]
                 areas = store.areas(repo)
+                code, told_by = developer_language(config, store, tasks)
             git = history.git_log(cwds[0], tasks)
-            code = developer_language(tasks)
-            summary["language"] = language.name(code) or summary["language"]
+            if code:
+                summary["language"], summary["language_from"] = language.name(code), told_by
             prompt = build_prompt(tasks, files, task_areas, cards, problems, milestones, areas,
                                   git, code)
+            system, schema = instructions(code)
             try:
                 output, cost = history.call_model(
-                    config, MODEL, prompt, run=run, system_prompt=SYSTEM_PROMPT,
-                    schema=OUTPUT_SCHEMA,
+                    config, MODEL, prompt, run=run, system_prompt=system, schema=schema,
                 )
             except history.SyncError as exc:
                 raise CardsError(str(exc)) from exc
             summary["cost_usd"] += cost
             wrong = off_language(output, code)
             if wrong and code is not None:
-                try:
-                    fixed, cost = translate(config, output, wrong, code, run=run)
-                except history.SyncError:
-                    fixed, cost = 0, 0.0  # the cards are kept as written; the count says so
+                fixed, cost = 0, 0.0  # the cards are kept as written; the count says so
+                if config.card_translate:
+                    with contextlib.suppress(history.SyncError):
+                        fixed, cost = translate(config, output, wrong, code, run=run)
                 summary["cost_usd"] += cost
+                summary["translate_cost_usd"] += cost
                 summary["translated"] += fixed
                 summary["untranslated"] += len(wrong) - fixed
             shown = _Shown(tasks, cards, problems, milestones, areas, git)

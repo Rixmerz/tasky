@@ -296,9 +296,13 @@ commits the model was shown, each task in one card; a criterion SHALL be "stated
 quote appears in a prompt of the card's tasks, otherwise "inferred". The files of a card SHALL be
 the files its tasks edited, from the recorded edits. The Cards tab SHALL show the cards as a board
 by status, and a card SHALL be removable. The cards SHALL be written in the language of the
-developer's prompts, detected without a model and named in the prompt; a card that comes back
-in another language SHALL be sent back once, with only its wording, for translation, and the
-run SHALL report how many were translated and how many were not. The MCP server SHALL offer
+developer's prompts, detected without a model from the developer's own words (pasted blocks,
+fenced code and identifiers left out), from their latest prompts in any repository when the
+batch's are too short, or from `TASKY_LANGUAGE` when set; it SHALL be named in the system
+prompt, the prompt and the schema. A card that comes back in another language SHALL be sent back
+once, with only its wording, for translation unless `TASKY_CARDS_TRANSLATE=0`, and the run SHALL
+report what told the language, how many cards were translated, at what cost, and how many were
+not. The MCP server SHALL offer
 `search_cards` (words, status, scope) and `get_card` (one card in full).
 
 #### Scenario: History behind
@@ -313,3 +317,11 @@ run SHALL report how many were translated and how many were not. The MCP server 
 - **WHEN** the developer's prompts are in Spanish and Haiku returns a card in English
 - **THEN** only that card's title, objective, description and criteria go back for translation,
   its tasks stay as they were, and its stated quote keeps the developer's words
+
+#### Scenario: Short prompts
+- **WHEN** a batch's prompts are "dale" and "fix ci" and the developer's earlier prompts are Spanish
+- **THEN** the cards are asked for in Spanish and the run says the earlier prompts told it
+
+#### Scenario: Pasted log
+- **WHEN** a Spanish prompt carries a long English CI log in a pasted block
+- **THEN** the log does not count and the cards are asked for in Spanish
