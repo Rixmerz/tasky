@@ -360,6 +360,34 @@ code {
   grid-column: 2;
 }
 
+.router-settings {
+  border: 0;
+  margin: 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+  gap: 6px;
+}
+
+.router-settings legend {
+  padding: 0 0 4px;
+}
+
+.router-models {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+  padding-left: 12px;
+}
+
+.router-models.is-off {
+  opacity: 0.5;
+}
+
+.tag-model {
+  max-width: 14ch;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------- top bar ---------- */
 
 .topbar {

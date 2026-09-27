@@ -436,6 +436,40 @@ tasky mcp                           serve the history and ledger as MCP tools on
 tasky status [--short]
 ```
 
+## Model router
+
+Off by default. Turn it on in the settings panel (the sliders button) under **Model router**, and
+each task Tasky launches — Run now, After last or Parallel with context — starts on the model and
+effort level its kind of work calls for, following Anthropic's model × effort guidance:
+
+| Kind | First choice | If that model is off |
+| --- | --- | --- |
+| Plan, architecture, migration | Opus `xhigh` | Sonnet `xhigh` |
+| Debugging with no clear cause | Opus `xhigh` | Sonnet `high` |
+| Debugging with an error or repro | Sonnet `high` | Sonnet `medium` |
+| New feature across several parts | Opus `xhigh` | Sonnet `high` |
+| Implementing a plan, UI work | Sonnet `high` | Sonnet `medium` |
+| Bounded refactor | Sonnet `medium` | — |
+| Code review touching auth, payments, secrets | Opus `high` | Sonnet `high` |
+| Routine review, tests, docs, commits | Sonnet `medium` | Haiku |
+| Searching and exploring code | Haiku | Sonnet `low` |
+| Questions and short chat | Sonnet `low` | Haiku |
+| Tagged `#fable` | Fable `high` | Opus `max` |
+
+- **Switch models off** in the same panel. A switched-off model is never chosen: the router takes
+  the second choice, and if both are off the task keeps the session default. Fable is only ever
+  chosen for a task that carries the `#fable` tag.
+- **Anything the router does not recognise keeps the session default** — exactly the command
+  Tasky runs with the router off. So does every failure: classifier missing, slow or broken.
+- The chosen model and effort show on the task's row; hover it for the reason.
+- The kind comes from keyword rules (Spanish and English) in `tasky/router/*.json`, classifier
+  definitions run by the [muscle-memory](https://github.com/Rixmerz/muscle-memory) plugin's
+  `mm-classifier`. The router needs `node` and that plugin installed; Tasky itself still needs
+  nothing beyond Python. On 24 real prompts not used to write the rules, it picked the intended
+  kind for 18.
+- Classification runs in the detached worker, so the dashboard never waits for it; a routed
+  worker starts about a second later.
+
 ## How it works
 
 | Hook | What Tasky does | Output |
@@ -538,12 +572,15 @@ What it does not protect against:
 | `TASKY_DEAD_END_ITEMS` | `5` | Failed attempts added at session start; `0` turns it off |
 | `TASKY_LANGUAGE` | unset | Language of the cards (`es`, `Spanish`…); unset, your prompts tell it |
 | `TASKY_CARDS_TRANSLATE` | `1` | `0` leaves a card Haiku wrote in another language untranslated |
-| `CLAUDE_CONFIG_DIR` | `~/.claude` | Where transcripts are imported from |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Where transcripts are imported from, and where the router looks for `mm-classifier` |
+| `TASKY_MM_CLASSIFIER` | newest installed | Path to muscle-memory's `mm-classifier.mjs` for the model router |
 
 Hooks read these from the environment of the Claude Code process.
 
 ## Limitations
 
+- The model router only routes tasks Tasky launches, not subagents or your interactive sessions,
+  and it cannot be overridden per task yet.
 - Hook payloads are not all documented. Tasky was verified against Claude Code 2.1.272 and falls
   back gracefully when a field is missing, but a future change may reduce what it can match.
 - A prompt you type while the agent is busy is recorded when Claude Code submits it, not when you

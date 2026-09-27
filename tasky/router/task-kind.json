@@ -1,0 +1,451 @@
+{
+  "description": "Kind of work a Tasky task asks for; debug, build and review chain to narrower classifiers",
+  "input": {
+    "title": "title",
+    "body": "body"
+  },
+  "rules": [
+    {
+      "match": {
+        "body": "#fable\\b"
+      },
+      "label": "frontier"
+    },
+    {
+      "match": {
+        "body": "\\b(code review|haz (un )?review|revisi[oó]n de c[oó]digo|revis\\w* (el |la |los |las |su |sus )?(c[oó]digo|diff|pr|cambios|borrador\\w*|eva\\s?\\d|entregas?|l[oó]gica)|r[uú]brica|l[oó]gica de negocios?)\\b"
+      },
+      "label": "review"
+    },
+    {
+      "match": {
+        "body": "\\b(tests?|pytest|vitest|jest|pruebas? (unitarias?|de integraci[oó]n)|cobertura|coverage|testea\\w*)\\b"
+      },
+      "label": "test"
+    },
+    {
+      "match": {
+        "body": "\\b(stack ?trace|traceback|bug|error(es)?|falla(ndo)?|no funciona|no se ve|crash\\w*|excepci[oó]n|se cae|se rompe|roto|broken|fails?|failing|regresi[oó]n|qu[eé] pas[oó])\\b"
+      },
+      "label": "debug"
+    },
+    {
+      "match": {
+        "body": "\\b(arquitectura|architecture|dise[nñ]a(r)? (el|la|un|una) (sistema|arquitectura|plan)|planifica\\w*|plan t[eé]cnico|propuesta t[eé]cnica|migraci[oó]n|roadmap|trade-?offs?)\\b"
+      },
+      "label": "plan"
+    },
+    {
+      "match": {
+        "body": "\\b(d[oó]nde (est[aá]|se)|busca(r)?|encuentra|where is|explora\\w*|mapea\\w*|investiga\\w*|alternativas|revisa este|verifica\\w* (de )?cu[aá]ndo|[uú]ltimo commit|otra rama|find (the|all|where))\\b"
+      },
+      "label": "explore"
+    },
+    {
+      "match": {
+        "body": "\\b(ui|ux|cards?|redise[nñ]\\w*|dise[nñ]o|bonit\\w*|estilos?|layout|m[aá]rgenes|colores|animaci[oó]n\\w*|instalador|feature|funcionalidad|implementa\\w*|agrega\\w*|agurega|a[nñ]ad\\w*|construye|haz(me)? (un|una)|hace (un|una)|replantea\\w*|refactori[zc]a\\w*|refactor|componente|interfaz|endpoint|build (a|the)|add (a|an|the)|implement)\\b"
+      },
+      "label": "build"
+    },
+    {
+      "match": {
+        "body": "\\b(readme|changelog|documenta(ci[oó]n)?|docstrings?|adr|commit|push|release notes?|descripci[oó]n|renombr\\w*|cambiale (de )?nombre|reemplaza|skill\\w*)\\b"
+      },
+      "label": "docs"
+    },
+    {
+      "match": {
+        "body": "(^\\s*¿|\\?\\s*$|\\?\\s|^\\s*(qu[eé]|qui[eé]n|c[oó]mo|por ?qu[eé]|cu[aá]l|explica|resume|what|how|why|hola)\\b)"
+      },
+      "label": "chat"
+    },
+    {
+      "match": {
+        "body": ""
+      },
+      "label": "other"
+    }
+  ],
+  "questions": {
+    "kind": {
+      "type": "choice",
+      "instructions": "What kind of work does the task in `body` ask for?",
+      "criteria": {
+        "plan": "designing an architecture, plan or migration",
+        "debug": "finding and fixing a bug or failure",
+        "build": "building a feature, UI or refactor",
+        "review": "reviewing code or a diff",
+        "test": "writing or running tests",
+        "docs": "docs, README, changelog or a commit",
+        "explore": "finding files or code in a repository",
+        "chat": "a question, explanation or summary",
+        "frontier": "a task explicitly tagged #fable",
+        "other": "none of the other options fits"
+      }
+    }
+  },
+  "decide": {
+    "question": "kind",
+    "minConfidence": 0.6,
+    "routes": {
+      "plan": "plan",
+      "test": "test",
+      "docs": "docs",
+      "explore": "explore",
+      "chat": "chat",
+      "frontier": "frontier"
+    },
+    "next": {
+      "debug": "debug-kind",
+      "build": "build-kind",
+      "review": "review-kind"
+    },
+    "fallback": "default"
+  },
+  "examples": [
+    {
+      "input": {
+        "title": "no me gusto la Ui esta todo verticalizado y creo que debiera ser más horizontal como columnas y una barra superior para poder crear nuevas…",
+        "body": "no me gusto la Ui esta todo verticalizado y creo que debiera ser más horizontal como columnas y una barra superior para poder crear nuevas tareas, una vez creadas tener 3 botones por card, una para ejecutar ahora, otra para encolar una vez la ultima termine y la ultimo boton para delegar a un subagente en paralelo con el mismo contexto, es importante que el orden vertical refleje como se encolan así yo puedo hacer drag and move para cambiar el orden de la cola y tener una separacion horizontal para las que estan encoladas vs las que se estan ejecutando en segundo plano, tambien quiero muchas mejoras de la Ui se ve muy cuadrada nose si me gusta"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "renombre la sesion a tasky main pero aun así no se ve reflejado el nombre en la UI en cambio se ve el sesion id",
+        "body": "renombre la sesion a tasky main pero aun así no se ve reflejado el nombre en la UI en cambio se ve el sesion id"
+      },
+      "expect": "debug"
+    },
+    {
+      "input": {
+        "title": "tenemos que mejorar la UI para aprovechar mejor los margenes y la anchura de las pantallas para ordenar mejor las columnas y tal",
+        "body": "tenemos que mejorar la UI para aprovechar mejor los margenes y la anchura de las pantallas para ordenar mejor las columnas y tal"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "tambien mejoras en las cards cuando estan una debajo de otra a veces tener disintos colores que se repiten en patrones de a 5 colores que l…",
+        "body": "tambien mejoras en las cards cuando estan una debajo de otra a veces tener disintos colores que se repiten en patrones de a 5 colores que luego se repiten es mas facil"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "hola tienes las skills para rastro? y hacer cosas y scripts y demas cosass",
+        "body": "hola tienes las skills para rastro? y hacer cosas y scripts y demas cosass"
+      },
+      "expect": "chat"
+    },
+    {
+      "input": {
+        "title": "/inacap necesito que entres backend seccion P14 revises el borrador de joaquin mendoza",
+        "body": "/inacap necesito que entres backend seccion P14 revises el borrador de joaquin mendoza"
+      },
+      "expect": "review"
+    },
+    {
+      "input": {
+        "title": "pero es solo por esa discrepacncia del readme? solamente?",
+        "body": "pero es solo por esa discrepacncia del readme? solamente?"
+      },
+      "expect": "chat"
+    },
+    {
+      "input": {
+        "title": "dejale un comentario indicale los errores y donde esta cosa de que pueda corregirlo facilmetne",
+        "body": "dejale un comentario indicale los errores y donde esta cosa de que pueda corregirlo facilmetne"
+      },
+      "expect": "other"
+    },
+    {
+      "input": {
+        "title": "oye a UI que paso? yo veo a misma o quizas aya que recompiala y volver a levantarla",
+        "body": "oye a UI que paso? yo veo a misma o quizas aya que recompiala y volver a levantarla"
+      },
+      "expect": "debug"
+    },
+    {
+      "input": {
+        "title": "/layout-inspection necesito un layout inspector dedicado a mejoras de UI el wirframe de la Ui esta mas o menos bien me gusto pero siento qu…",
+        "body": "/layout-inspection necesito un layout inspector dedicado a mejoras de UI el wirframe de la Ui esta mas o menos bien me gusto pero siento que le falta cuadrad y mejorar muchas cosas para mejorar el UI/UX tambien algunoso contrastes o paletas no me gustaron"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "ayuda esto tiene que ver con e pc win +r no se que avce pero me desactivo a teca win y as fecas tambien a ee no puedo poner a mira mis fata…",
+        "body": "ayuda esto tiene que ver con e pc win +r no se que avce pero me desactivo a teca win y as fecas tambien a ee no puedo poner a  mira mis fatas orograficas y mira a etra que fata"
+      },
+      "expect": "chat"
+    },
+    {
+      "input": {
+        "title": "realiza un analisis tu de la UI esta horriblemente fea sobrecargada mala composicion se siente horriblemente pesada a la derecha, se ve tan…",
+        "body": "realiza un analisis tu de la UI esta horriblemente fea sobrecargada mala composicion se siente horriblemente pesada a la derecha, se ve tanto texto en cada card que es sobreestimulante y se siente muy ruidoso, los colores y las formas se sienten poco prolojas entre otros muchos detalles que vas a notas piensa como TDAH y hace tu mismo todas las mejoras UI/UX"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "las cards tienen tanta información textual que se ve ruidoso sabes que? replantea desde 0 toda la UI/UX en base a lo que sea mejor si quier…",
+        "body": "las cards tienen tanta información textual que se ve ruidoso sabes que? replantea desde 0 toda la UI/UX en base a lo que sea mejor si quieres usar una libreria como shadcn mejor"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "replantea como filtrar y mandar tareas respectivamente, porque actualmente veo y tengo un listado inmenso de TAsky muchos uui 2S entre otro…",
+        "body": "replantea como filtrar y mandar tareas respectivamente, porque actualmente veo y tengo un listado inmenso de TAsky muchos uui 2S entre otros y luego de todo eso la sesion; debieramos tener todas las activas como tal"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "/inacap identifica mis clases del día jueves es big data y otra más",
+        "body": "/inacap identifica mis clases del día jueves es big data y otra más"
+      },
+      "expect": "other"
+    },
+    {
+      "input": {
+        "title": "identifica a todos los participantes del curso y redacta dos correos a cada curso respectivamente para anunciar que no habra clases mañana…",
+        "body": "identifica a todos los participantes del curso y redacta dos correos a cada curso respectivamente para anunciar que no habra clases mañana día jueves 17 respectivamente de su ramo"
+      },
+      "expect": "other"
+    },
+    {
+      "input": {
+        "title": "reemplaza moodle por ambiernte d eaprendizaje",
+        "body": "reemplaza moodle por ambiernte d eaprendizaje"
+      },
+      "expect": "docs"
+    },
+    {
+      "input": {
+        "title": "cual es el problema perdon? se conciso",
+        "body": "cual es el problema perdon? se conciso"
+      },
+      "expect": "chat"
+    },
+    {
+      "input": {
+        "title": "repositorio de github mio llamaddo tanka le falta corregir la descripcion",
+        "body": "repositorio de github mio llamaddo tanka le falta corregir la descripcion"
+      },
+      "expect": "docs"
+    },
+    {
+      "input": {
+        "title": "que tipo de caso solicita analizar o que caracteristicas debe tener?",
+        "body": "que tipo de caso solicita analizar o que caracteristicas debe tener?"
+      },
+      "expect": "chat"
+    },
+    {
+      "input": {
+        "title": "al parecer no hay caso explicito basate en rucaray resepctivamente exportadora de frutas tienen servidores de tipo windows, para corre algu…",
+        "body": "al parecer no hay caso explicito basate en rucaray resepctivamente exportadora de frutas tienen servidores de tipo windows, para corre algunas aplicaciones interna de la empresa usan una base de tipo oracle local en sus servidores para algunas maquinas etiquetadoras, tienen algunos sistemas biometricos por dedo con una empresa externa, tampoco gestionan sus propias landing ellos mismos, entre otras carencias, tambien tienen camaras y el servcio lo administran con los servidor de windows que te indique, eso si uno de los problemas que ocurrio es que si el servidor queda abajo por cualquier cosa respectivamente, el servicio de maquina etiquetadora tambien muere y eso es critico para el negocio"
+      },
+      "expect": "docs"
+    },
+    {
+      "input": {
+        "title": "/inacap necesito que vayas a revisar p14 debieran tener la eva2 entregada necesito que las descargues y las revises respecto a la rubrica",
+        "body": "/inacap necesito que vayas a revisar p14 debieran tener la eva2 entregada necesito que las descargues y las revises respecto a la rubrica"
+      },
+      "expect": "review"
+    },
+    {
+      "input": {
+        "title": "revisa alternativas gratuitas de jev se que existe ken https://github.com/aayushch/laya como tambien esta https://github.com/NandhaKishorM/…",
+        "body": "revisa alternativas gratuitas de jev se que existe ken https://github.com/aayushch/laya como tambien esta https://github.com/NandhaKishorM/laya y seguramente otras más la idea es hacer un router que siempre te /home/rixmerz/Downloads/guia-modelos-effort-subagentes.md puedes basarte en eso, la idea es que quizas en el prompt submit usar alguna alternativa de jev que enrute al modelo y esfuerzo exacto para la solicitud respectivmante ultrathink"
+      },
+      "expect": "explore"
+    },
+    {
+      "input": {
+        "title": "pero respecto a su logica de negocios respectivmaente, eso es correcto o no replantealo",
+        "body": "pero respecto a su logica de negocios respectivmaente, eso es correcto o no replantealo"
+      },
+      "expect": "review"
+    },
+    {
+      "input": {
+        "title": "quien nos falta por revisar",
+        "body": "quien nos falta por revisar"
+      },
+      "expect": "chat"
+    },
+    {
+      "input": {
+        "title": "revisa este https://github.com/NandhaKishorM/laya",
+        "body": "revisa este https://github.com/NandhaKishorM/laya"
+      },
+      "expect": "explore"
+    },
+    {
+      "input": {
+        "title": "entonces que recomiendas hacer usar claude code router?",
+        "body": "entonces que recomiendas hacer usar claude code router?"
+      },
+      "expect": "chat"
+    },
+    {
+      "input": {
+        "title": "seguro que no hay otra rama respectivamente?",
+        "body": "seguro que no hay otra rama respectivamente?"
+      },
+      "expect": "explore"
+    },
+    {
+      "input": {
+        "title": "elimina y reinstala https://github.com/Rixmerz/tanka",
+        "body": "elimina y reinstala https://github.com/Rixmerz/tanka"
+      },
+      "expect": "other"
+    },
+    {
+      "input": {
+        "title": "Francisca dijo que ya habia corregido eso verifica de cuando es su ultimo commit o si tiene una rama corregida",
+        "body": "Francisca dijo que ya habia corregido eso verifica de cuando es su ultimo commit o si tiene una rama corregida"
+      },
+      "expect": "explore"
+    },
+    {
+      "input": {
+        "title": "espera entonces como encontraste un bug que realmente no estaba?",
+        "body": "espera entonces como encontraste un bug que realmente no estaba?"
+      },
+      "expect": "chat"
+    },
+    {
+      "input": {
+        "title": "ahora que debiera ejecutar?",
+        "body": "ahora que debiera ejecutar?"
+      },
+      "expect": "chat"
+    },
+    {
+      "input": {
+        "title": "que tenemos actualmente se conciso se que podemos mapear las rutinas en playwright de forma facil parece",
+        "body": "que tenemos actualmente se conciso se que podemos mapear las rutinas en playwright de forma facil parece"
+      },
+      "expect": "chat"
+    },
+    {
+      "input": {
+        "title": "quiero implementar nuevos features como flow link o algo así, cosa de poder transformar las rutinas grabadas o generadas en playwright dire…",
+        "body": "quiero implementar nuevos features como flow link o algo así, cosa de poder transformar las rutinas grabadas o generadas en playwright direcctamente a las llamadas de las apis, esto ahorra mucha memoria y no usaría chronium; y la otra feature nueva es la capacidad de construir una tool proxy de rastro que pueda ejecutar las rutinas ya existen con los parametros que necesitan, así el agente no tiene que volver a navegar sino que es simplificado su consumo no tiene que entender el flujo sino los parametros para que se usa la tool y así, obviamente las rutinas se modifican, se crean nuevas se eliminan etc piensa bien este segundo feature para que no sea un desastre ultrathink"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "procede no te detengas hasta que termines todo",
+        "body": "procede no te detengas hasta que termines todo"
+      },
+      "expect": "other"
+    },
+    {
+      "input": {
+        "title": "si agurega las tool subir contenido y crear tareas para probarlas contra inacap primero",
+        "body": "si agurega las tool subir contenido y crear tareas para probarlas contra inacap primero"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "tambien hay que probar el feature 1",
+        "body": "tambien hay que probar el feature 1"
+      },
+      "expect": "test"
+    },
+    {
+      "input": {
+        "title": "hace una carpeta dentro de Personal llamada Dafu, dentro de esa carpeta quiero que hagas una animación bonita con animaciones y sonidos hec…",
+        "body": "hace una carpeta dentro de Personal llamada Dafu, dentro de esa carpeta quiero que hagas una animación bonita con animaciones y sonidos hecha con tree.js [Image #1] esta es la cara de mi pareja [Image #2] [Image #3] [Image #4] [Image #5] [Image #6] [Image #8] [Image #9] [Image #10] [Image #11] este soy yo [Image #7] [Image #12] hace una nimacion bonita con alpacas, abrazos cosas bonitas, entre otras cosas se creativo ultrathink"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "no debieramos actualizar la skill subagentes o cosas de rastro para que cualquier agente que inicie tenga nocion que rastro tiene esas capa…",
+        "body": "no debieramos actualizar la skill subagentes o cosas de rastro para que cualquier agente que inicie tenga nocion que rastro tiene esas capacidades?"
+      },
+      "expect": "docs"
+    },
+    {
+      "input": {
+        "title": "dale commit y push recuerda subir la version changelog etc",
+        "body": "dale commit y push recuerda subir la version changelog etc"
+      },
+      "expect": "docs"
+    },
+    {
+      "input": {
+        "title": "hace a las alpacas más bonitas y esponjosas quizas no tanto como la foto de referencia que te di sino como alpacas mas genericas bonitas y…",
+        "body": "hace a las alpacas más bonitas y esponjosas quizas no tanto como la foto de referencia que te di sino como alpacas mas genericas bonitas y sponojas"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "vuelve a rediseñar la alpaca desde 0 como una alpaca parecidas a [Image #13]",
+        "body": "vuelve a rediseñar la alpaca desde 0 como una alpaca parecidas a [Image #13]"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "no siempre será necesario implementarlo como tal dentro de los hooks, pero muscle memory debiera poder disponibilizar la creacion de flujos…",
+        "body": "no siempre será necesario implementarlo como tal dentro de los hooks, pero muscle memory debiera poder disponibilizar la creacion de flujos de clasificacion de forma sencilla para el agente de IA y acompañarlo de una skill, esto permitira conectar estos flujos de clasificacion en hooks como en otros flujos que no relacionados con hooks, por lo tanto esta herramienta para crear los flujos de clasificacion de forma sencilla debiera preguntar si los quiere almacenar en muscle memory o en otra ruta"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "hay que hacerun instalador o algo no? tienes que descargarlo e instalarlo",
+        "body": "hay que hacerun instalador o algo no? tienes que descargarlo e instalarlo"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "entonces hay que ponerlo en español no? porque los correos estan en español? quiero clasificar los de inacap, assetplan, bancarios y que ti…",
+        "body": "entonces hay que ponerlo en español no? porque los correos estan en español? quiero clasificar los de inacap, assetplan, bancarios y que tipo de banco enter otros clasificaciones recorre el buzon principal y hace multiples clasificaciones altamente inteligentes"
+      },
+      "expect": "build"
+    },
+    {
+      "input": {
+        "title": "no, investiga a fondo a laya, para saber que formas de uso existe y como usarla realmente segun los formatos canonicos que tiene realmente,…",
+        "body": "no, investiga a fondo a laya, para saber que formas de uso existe y como usarla realmente segun los formatos canonicos que tiene realmente, para poder hacer la skill y demas de mm de forma correcta ultrathink"
+      },
+      "expect": "explore"
+    },
+    {
+      "input": {
+        "title": "elimina y desinstala tanka para volver a reinistalarlo y tal, tambien debiera instanciarse dentro de la ruta ~/.tanka no o algo así?",
+        "body": "elimina y desinstala tanka para volver a reinistalarlo y tal, tambien debiera instanciarse dentro de la ruta ~/.tanka no o algo así?"
+      },
+      "expect": "other"
+    },
+    {
+      "input": {
+        "title": "el CLUADE.md de la ruta home/rixmerz cambiale de nombre a OMEN",
+        "body": "el CLUADE.md de la ruta home/rixmerz cambiale de nombre a OMEN"
+      },
+      "expect": "docs"
+    },
+    {
+      "input": {
+        "title": "hazlo tu directo a main",
+        "body": "hazlo tu directo a main"
+      },
+      "expect": "other"
+    }
+  ],
+  "name": "task-kind"
+}

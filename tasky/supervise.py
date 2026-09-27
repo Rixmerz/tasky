@@ -15,7 +15,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from tasky import scheduler
+from tasky import router, scheduler
 from tasky.config import Config
 from tasky.store import Store
 
@@ -44,6 +44,31 @@ def _finish(config: Config, store: Store, task_id: int) -> None:
         scheduler.kick(store, config, task["cwd"])
 
 
+def _route(config: Config, task_id: int, session_id: str) -> list[str]:
+    """The router's `--model`/`--effort` flags for this task, recorded on it.
+
+    Never raises: routing is an optimisation, and a supervisor that crashed here
+    would leave the task `running` with no worker behind it.
+    """
+    try:
+        with Store.open(config) as store:
+            task = store.get_task(task_id)
+            if task is None or task["session_id"] != session_id:
+                return []
+            settings = router.load_settings(store)
+            decision = router.decide(task, settings["enabled"], settings["models"])
+            if settings["enabled"]:
+                store.update_task(
+                    task_id,
+                    model=decision.model,
+                    effort=decision.effort,
+                    route_reason=decision.reason,
+                )
+            return decision.args
+    except Exception:  # noqa: BLE001 -- see docstring
+        return []
+
+
 def supervise(
     config: Config,
     task_id: int,
@@ -55,6 +80,7 @@ def supervise(
 ) -> int:
     prompt_path = Path(prompt_path)
     log_path = Path(log_path)
+    argv = argv + _route(config, task_id, session_id)
 
     try:
         try:

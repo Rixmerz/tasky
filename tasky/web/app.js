@@ -47,7 +47,7 @@ const PERMISSION_HINTS = {
   bypassPermissions: "Everything, no asking.",
 };
 
-/** @typedef {{id:number,session_id:string|null,parent_id:number|null,kind:string,title:string,body:string,status:string,result:string|null,cwd:string|null,project:string,lane:string|null,run_mode:string|null,permission_mode:string|null,fork_of:string|null,position:number|null,created_at:string,started_at:string|null,finished_at:string|null}} Task */
+/** @typedef {{id:number,session_id:string|null,parent_id:number|null,kind:string,title:string,body:string,status:string,result:string|null,cwd:string|null,project:string,lane:string|null,run_mode:string|null,permission_mode:string|null,fork_of:string|null,model:string|null,effort:string|null,route_reason:string|null,position:number|null,created_at:string,started_at:string|null,finished_at:string|null}} Task */
 
 class UnauthorizedError extends Error {}
 class NetworkError extends Error {}
@@ -102,6 +102,9 @@ const el = {
   toastText: document.getElementById("toast-text"),
   toastAction: document.getElementById("toast-action"),
   projectFilter: document.getElementById("project-filter"),
+  routerEnabled: document.getElementById("router-enabled"),
+  routerModels: document.getElementById("router-models"),
+  routerStatus: document.getElementById("router-status"),
   topbarExtra: document.getElementById("topbar-extra"),
   modeSelect: document.getElementById("quick-add-mode"),
   bypassChip: document.getElementById("bypass-chip"),
@@ -971,6 +974,7 @@ function updateCard(node, task, kind) {
   const title = titleBtn.querySelector(".title");
   const time = node.querySelector(".time");
   const projectTag = node.querySelector(".tag-project");
+  const modelTag = node.querySelector(".tag-model");
   const answerBadge = node.querySelector(".badge-answer");
 
   glyph.textContent = STATUS_GLYPH[task.status] || "";
@@ -992,6 +996,11 @@ function updateCard(node, task, kind) {
   projectTag.hidden = !showProject;
   projectTag.textContent = showProject ? projectLabel(task.cwd) : "";
   projectTag.title = showProject ? task.cwd : "";
+
+  // What the model router chose for this task, when it chose anything.
+  modelTag.hidden = !task.model;
+  modelTag.textContent = task.model ? [task.model, task.effort].filter(Boolean).join(" · ") : "";
+  modelTag.title = task.route_reason || "";
 
   // A waiting task shows how it will run, unless that is the plain default.
   const modeTag = node.querySelector(".tag-mode");
@@ -6248,8 +6257,53 @@ el.tablist.addEventListener("click", (evt) => {
 function setSettingsOpen(open) {
   el.topbarExtra.hidden = !open;
   el.settingsToggle.setAttribute("aria-expanded", String(open));
-  if (open) el.projectFilter.focus();
+  if (open) {
+    el.projectFilter.focus();
+    loadRouter();
+  }
 }
+
+// ---------- model router settings ----------
+
+function renderRouter(router) {
+  el.routerEnabled.checked = router.enabled;
+  el.routerModels.classList.toggle("is-off", !router.enabled);
+  for (const input of el.routerModels.querySelectorAll("input[data-model]")) {
+    input.checked = router.models[input.dataset.model] !== false;
+  }
+  const notes = [];
+  if (!router.classifier) notes.push("mm-classifier not found: install the muscle-memory plugin.");
+  else notes.push("Keyword rules pick the kind; a task no rule recognises keeps the session default.");
+  if (router.enabled && Object.values(router.models).every((allowed) => !allowed)) {
+    notes.push("Every model is off: tasks keep the session default.");
+  }
+  el.routerStatus.textContent = notes.join(" ");
+}
+
+async function loadRouter() {
+  try {
+    renderRouter(await apiGet("/api/router"));
+  } catch (err) {
+    el.routerStatus.textContent = `Router settings unavailable: ${err.message}`;
+  }
+}
+
+async function saveRouter(patch) {
+  try {
+    renderRouter(await apiMutate("PATCH", "/api/router", patch));
+  } catch (err) {
+    showError(err.message);
+    loadRouter();
+  }
+}
+
+el.routerEnabled.addEventListener("change", () => saveRouter({ enabled: el.routerEnabled.checked }));
+
+el.routerModels.addEventListener("change", (evt) => {
+  const input = evt.target;
+  if (!(input instanceof HTMLInputElement) || !input.dataset.model) return;
+  saveRouter({ models: { [input.dataset.model]: input.checked } });
+});
 
 el.settingsToggle.addEventListener("click", (evt) => {
   evt.stopPropagation();

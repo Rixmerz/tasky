@@ -1,0 +1,64 @@
+{
+  "description": "Whether code under review touches security, money or credentials",
+  "input": {
+    "title": "title",
+    "body": "body"
+  },
+  "rules": [
+    {
+      "match": {
+        "body": "\\b(auth\\w*|login|contrase[nñ]a|password|token|pago|payment|cripto\\w*|crypto\\w*|seguridad|security|permisos?|permissions?|secret)\\b"
+      },
+      "label": "critical"
+    },
+    {
+      "match": {
+        "body": ""
+      },
+      "label": "routine"
+    }
+  ],
+  "questions": {
+    "kind": {
+      "type": "choice",
+      "instructions": "Does the code under review in `body` touch security, money or credentials?",
+      "criteria": {
+        "critical": "authentication, payments, cryptography or security",
+        "routine": "ordinary application code"
+      }
+    }
+  },
+  "decide": {
+    "question": "kind",
+    "minConfidence": 0.6,
+    "routes": {
+      "critical": "review-critical",
+      "routine": "review-routine"
+    },
+    "fallback": "review-routine"
+  },
+  "examples": [
+    {
+      "input": {
+        "title": "/inacap necesito que entres backend seccion P14 revises el borrador de joaquin mendoza",
+        "body": "/inacap necesito que entres backend seccion P14 revises el borrador de joaquin mendoza"
+      },
+      "expect": "routine"
+    },
+    {
+      "input": {
+        "title": "/inacap necesito que vayas a revisar p14 debieran tener la eva2 entregada necesito que las descargues y las revises respecto a la rubrica",
+        "body": "/inacap necesito que vayas a revisar p14 debieran tener la eva2 entregada necesito que las descargues y las revises respecto a la rubrica"
+      },
+      "expect": "routine"
+    },
+    {
+      "input": {
+        "title": "pero respecto a su logica de negocios respectivmaente, eso es correcto o no replantealo",
+        "body": "pero respecto a su logica de negocios respectivmaente, eso es correcto o no replantealo"
+      },
+      "expect": "routine"
+    }
+  ],
+  "name": "review-kind"
+}

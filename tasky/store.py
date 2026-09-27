@@ -42,7 +42,7 @@ _ATTEMPT_FIELDS = (
     "task_ids", "commits",
 )
 
-_SCHEMA_VERSION = 10
+_SCHEMA_VERSION = 11
 HISTORY_FTS_REBUILD = """
 DELETE FROM history_fts;
 INSERT INTO history_fts (kind, ref_id, text)
@@ -85,6 +85,9 @@ _TASK_UPDATE_FIELDS = (
     "permission_mode",
     "fork_of",
     "followups",
+    "model",
+    "effort",
+    "route_reason",
 )
 
 _SCHEMA = """
@@ -106,7 +109,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   source TEXT NOT NULL,
   position REAL, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
   lane TEXT, run_mode TEXT, permission_mode TEXT, fork_of TEXT, followups TEXT,
-  deleted_at TEXT
+  deleted_at TEXT, model TEXT, effort TEXT, route_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS lanes (
   cwd TEXT PRIMARY KEY, paused INTEGER NOT NULL DEFAULT 0, reason TEXT
@@ -450,6 +453,7 @@ class Store:
                     self._migrate_v6_to_v7()
                     self._migrate_v7_to_v8()
                     self._migrate_v8_to_v9()
+                    self._migrate_v10_to_v11()
                     self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                 self._conn.commit()
                 return
@@ -527,6 +531,26 @@ class Store:
                 self._conn.execute(
                     f"ALTER TABLE {table} ADD COLUMN specs TEXT NOT NULL DEFAULT '[]'"  # noqa: S608
                 )
+
+    def _migrate_v10_to_v11(self) -> None:
+        """Tasks record what the model router chose for them."""
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(tasks)")}
+        for column in ("model", "effort", "route_reason"):
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT")  # noqa: S608
+
+    def meta_flag(self, key: str, default: bool) -> bool:
+        row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return default if row is None else bool(row["value"])
+
+    def set_meta_flags(self, flags: dict[str, bool]) -> None:
+        """Write several boolean settings in one transaction."""
+        with self._conn:
+            self._conn.executemany(
+                "INSERT INTO meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [(key, int(value)) for key, value in flags.items()],
+            )
 
     def repair(self) -> dict[str, int]:
         """Run the 0.8.0 repairs again, e.g. after old transcripts were copied."""

@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] - 2026-09-27
+
+### Added
+
+- Model router, off by default: each task Tasky launches starts with the `--model` and `--effort`
+  its kind of work calls for (plan, debugging, feature, implementation, UI, refactor, review,
+  tests, docs, exploration, chat), following Anthropic's model × effort guidance. A task the router
+  does not recognise, and every router failure, keeps today's command unchanged.
+- Model router section in the settings panel: a master switch and one switch per model (Fable 5.1,
+  Opus 5, Sonnet 5, Haiku 4.5). A switched-off model is never chosen; the router falls back to the
+  kind's second choice, then to the session default.
+- The routed model and effort on each task row, with the reason on hover; `GET`/`PATCH
+  /api/router`.
+- Router classifiers in `tasky/router/`, run through muscle-memory's `mm-classifier`.
+
+### Changed
+
+- Database schema version 11: tasks gain `model`, `effort` and `route_reason`, added in place.
+
 ## [0.15.0] - 2026-09-25
 
 ### Added

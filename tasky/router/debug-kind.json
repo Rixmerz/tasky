@@ -1,0 +1,63 @@
+{
+  "description": "Whether a debugging task has a clear cause or an unclear, intermittent one",
+  "input": {
+    "title": "title",
+    "body": "body"
+  },
+  "rules": [
+    {
+      "match": {
+        "body": "\\b(intermitente|a veces|aleatori[oa]|flaky|race|concurren\\w*|regresi[oó]n|no s[eé] (por qu[eé]|la causa)|sin (causa|repro)|random(ly)?|sporadic|sometimes|intermittent)\\b"
+      },
+      "label": "unclear"
+    },
+    {
+      "match": {
+        "body": "(stack ?trace|traceback|\\berror:|l[ií]nea \\d+|line \\d+|reproduc\\w*|exit code|c[oó]digo de salida)"
+      },
+      "label": "repro"
+    },
+    {
+      "match": {
+        "body": ""
+      },
+      "label": "repro"
+    }
+  ],
+  "questions": {
+    "kind": {
+      "type": "choice",
+      "instructions": "Is the cause of the failure in `body` clear?",
+      "criteria": {
+        "unclear": "cause unknown, intermittent or hard to reproduce",
+        "repro": "a clear error message or reproducible steps"
+      }
+    }
+  },
+  "decide": {
+    "question": "kind",
+    "minConfidence": 0.6,
+    "routes": {
+      "unclear": "debug-unclear",
+      "repro": "debug-repro"
+    },
+    "fallback": "debug-repro"
+  },
+  "examples": [
+    {
+      "input": {
+        "title": "renombre la sesion a tasky main pero aun así no se ve reflejado el nombre en la UI en cambio se ve el sesion id",
+        "body": "renombre la sesion a tasky main pero aun así no se ve reflejado el nombre en la UI en cambio se ve el sesion id"
+      },
+      "expect": "repro"
+    },
+    {
+      "input": {
+        "title": "oye a UI que paso? yo veo a misma o quizas aya que recompiala y volver a levantarla",
+        "body": "oye a UI que paso? yo veo a misma o quizas aya que recompiala y volver a levantarla"
+      },
+      "expect": "repro"
+    }
+  ],
+  "name": "debug-kind"
+}

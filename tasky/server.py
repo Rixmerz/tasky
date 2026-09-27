@@ -26,6 +26,7 @@ from tasky import (
     history,
     quickdiagram,
     repos,
+    router,
     scheduler,
     smart_search,
     transcripts,
@@ -267,6 +268,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._route_static(path)
         elif method == "PATCH" and path == "/api/lanes":
             self._route_patch_lane(body)
+        elif method == "GET" and path == "/api/router":
+            self._route_get_router()
+        elif method == "PATCH" and path == "/api/router":
+            self._route_patch_router(body)
         else:
             match = _TASK_RUN_RE.match(path)
             if method == "POST" and match:
@@ -1060,6 +1065,39 @@ class _Handler(BaseHTTPRequestHandler):
                 scheduler.kick(store, config, cwd, popen=self.server.popen)
             lane = store.get_lane(cwd)
         self._send_json(200, lane)
+
+    def _router_payload(self, settings: dict) -> dict:
+        classifier = router.find_classifier()
+        return {
+            **settings,
+            "classifier": str(classifier) if classifier else None,
+            "laya": router.laya_up(),
+        }
+
+    def _route_get_router(self) -> None:
+        with Store.open(self.server.config) as store:
+            settings = router.load_settings(store)
+        self._send_json(200, self._router_payload(settings))
+
+    def _route_patch_router(self, body: dict | None) -> None:
+        if not isinstance(body, dict) or not body or set(body) - {"enabled", "models"}:
+            self._error(400, "body must be an object with 'enabled' and/or 'models'")
+            return
+        enabled = body.get("enabled")
+        if enabled is not None and not isinstance(enabled, bool):
+            self._error(400, "enabled must be a boolean")
+            return
+        models = body.get("models")
+        if models is not None and (
+            not isinstance(models, dict)
+            or set(models) - set(router.MODELS)
+            or not all(isinstance(v, bool) for v in models.values())
+        ):
+            self._error(400, f"models must map {', '.join(router.MODELS)} to booleans")
+            return
+        with Store.open(self.server.config) as store:
+            settings = router.save_settings(store, enabled=enabled, models=models)
+        self._send_json(200, self._router_payload(settings))
 
     def _route_import(self) -> None:
         from tasky import importer

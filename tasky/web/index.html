@@ -68,7 +68,7 @@
       <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></svg>
       <span class="history-toggle-label">Architecture</span>
     </button>
-    <button type="button" id="settings-toggle" class="btn btn-icon btn-ghost" aria-expanded="false" aria-controls="topbar-extra" aria-label="Project filter">
+    <button type="button" id="settings-toggle" class="btn btn-icon btn-ghost" aria-expanded="false" aria-controls="topbar-extra" aria-label="Project filter and model router">
       <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
     </button>
     <div id="topbar-extra" class="topbar-extra popover" hidden>
@@ -78,6 +78,20 @@
           <option value="">All projects</option>
         </select>
       </label>
+      <fieldset class="field router-settings" id="router-settings">
+        <legend class="field-label">Model router</legend>
+        <label class="switch-row">
+          <input type="checkbox" role="switch" id="router-enabled">
+          <span>Pick model and effort by kind of task</span>
+        </label>
+        <div class="router-models" id="router-models" role="group" aria-label="Models the router may use">
+          <label class="switch-row"><input type="checkbox" role="switch" data-model="fable"><span>Fable 5.1</span></label>
+          <label class="switch-row"><input type="checkbox" role="switch" data-model="opus"><span>Opus 5</span></label>
+          <label class="switch-row"><input type="checkbox" role="switch" data-model="sonnet"><span>Sonnet 5</span></label>
+          <label class="switch-row"><input type="checkbox" role="switch" data-model="haiku"><span>Haiku 4.5</span></label>
+        </div>
+        <span id="router-status" class="field-hint" role="status"></span>
+      </fieldset>
     </div>
   </div>
 
@@ -476,6 +490,7 @@
       <span class="badge badge-answer" hidden>Needs answer</span>
       <span class="tag tag-mode" hidden></span>
       <span class="tag tag-project" hidden></span>
+      <span class="tag tag-model" hidden></span>
       <span class="time"></span>
       <div class="actions" hidden role="group" aria-label="Start this task">
         <button type="button" class="btn btn-icon btn-ghost act-run">

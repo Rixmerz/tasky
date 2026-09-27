@@ -1,0 +1,171 @@
+{
+  "description": "Which kind of building work a task asks for: feature, planned implementation, UI or refactor",
+  "input": {
+    "title": "title",
+    "body": "body"
+  },
+  "rules": [
+    {
+      "match": {
+        "body": "\\b(refactori[zc]a\\w*|refactor\\w*|renombra\\w*|rename|extrae|extract|limpia(r)? el c[oó]digo|cleanup)\\b"
+      },
+      "label": "refactor"
+    },
+    {
+      "match": {
+        "body": "\\b(ui|ux|cards?|redise[nñ]\\w*|dise[nñ]o|bonit\\w*|estilos?|layout|m[aá]rgenes|colores|animaci[oó]n\\w*|css|responsive|componente|bot[oó]n|pantalla|frontend|html|dashboard|vista|interfaz)\\b"
+      },
+      "label": "ui"
+    },
+    {
+      "match": {
+        "body": "\\b(seg[uú]n el plan|from the plan|la spec|the spec|tasks\\.md|implementa el plan|plan aprobado)\\b"
+      },
+      "label": "implement"
+    },
+    {
+      "match": {
+        "body": "\\b(feature|funcionalidad|end.to.end|de punta a punta|nuevo sistema|integraci[oó]n|integrate)\\b"
+      },
+      "label": "feature"
+    },
+    {
+      "match": {
+        "body": ""
+      },
+      "label": "other"
+    }
+  ],
+  "questions": {
+    "kind": {
+      "type": "choice",
+      "instructions": "What kind of building work does `body` ask for?",
+      "criteria": {
+        "feature": "a new feature across several parts",
+        "implement": "carrying out an existing plan or spec",
+        "ui": "user interface, layout or styling",
+        "refactor": "restructuring code without new behaviour",
+        "other": "none of the other options fits"
+      }
+    }
+  },
+  "decide": {
+    "question": "kind",
+    "minConfidence": 0.6,
+    "routes": {
+      "feature": "feature",
+      "implement": "implement",
+      "ui": "ui",
+      "refactor": "refactor"
+    },
+    "fallback": "implement"
+  },
+  "examples": [
+    {
+      "input": {
+        "title": "no me gusto la Ui esta todo verticalizado y creo que debiera ser más horizontal como columnas y una barra superior para poder crear nuevas…",
+        "body": "no me gusto la Ui esta todo verticalizado y creo que debiera ser más horizontal como columnas y una barra superior para poder crear nuevas tareas, una vez creadas tener 3 botones por card, una para ejecutar ahora, otra para encolar una vez la ultima termine y la ultimo boton para delegar a un subagente en paralelo con el mismo contexto, es importante que el orden vertical refleje como se encolan así yo puedo hacer drag and move para cambiar el orden de la cola y tener una separacion horizontal para las que estan encoladas vs las que se estan ejecutando en segundo plano, tambien quiero muchas mejoras de la Ui se ve muy cuadrada nose si me gusta"
+      },
+      "expect": "ui"
+    },
+    {
+      "input": {
+        "title": "tenemos que mejorar la UI para aprovechar mejor los margenes y la anchura de las pantallas para ordenar mejor las columnas y tal",
+        "body": "tenemos que mejorar la UI para aprovechar mejor los margenes y la anchura de las pantallas para ordenar mejor las columnas y tal"
+      },
+      "expect": "ui"
+    },
+    {
+      "input": {
+        "title": "tambien mejoras en las cards cuando estan una debajo de otra a veces tener disintos colores que se repiten en patrones de a 5 colores que l…",
+        "body": "tambien mejoras en las cards cuando estan una debajo de otra a veces tener disintos colores que se repiten en patrones de a 5 colores que luego se repiten es mas facil"
+      },
+      "expect": "ui"
+    },
+    {
+      "input": {
+        "title": "/layout-inspection necesito un layout inspector dedicado a mejoras de UI el wirframe de la Ui esta mas o menos bien me gusto pero siento qu…",
+        "body": "/layout-inspection necesito un layout inspector dedicado a mejoras de UI el wirframe de la Ui esta mas o menos bien me gusto pero siento que le falta cuadrad y mejorar muchas cosas para mejorar el UI/UX tambien algunoso contrastes o paletas no me gustaron"
+      },
+      "expect": "feature"
+    },
+    {
+      "input": {
+        "title": "realiza un analisis tu de la UI esta horriblemente fea sobrecargada mala composicion se siente horriblemente pesada a la derecha, se ve tan…",
+        "body": "realiza un analisis tu de la UI esta horriblemente fea sobrecargada mala composicion se siente horriblemente pesada a la derecha, se ve tanto texto en cada card que es sobreestimulante y se siente muy ruidoso, los colores y las formas se sienten poco prolojas entre otros muchos detalles que vas a notas piensa como TDAH y hace tu mismo todas las mejoras UI/UX"
+      },
+      "expect": "ui"
+    },
+    {
+      "input": {
+        "title": "las cards tienen tanta información textual que se ve ruidoso sabes que? replantea desde 0 toda la UI/UX en base a lo que sea mejor si quier…",
+        "body": "las cards tienen tanta información textual que se ve ruidoso sabes que? replantea desde 0 toda la UI/UX en base a lo que sea mejor si quieres usar una libreria como shadcn mejor"
+      },
+      "expect": "ui"
+    },
+    {
+      "input": {
+        "title": "replantea como filtrar y mandar tareas respectivamente, porque actualmente veo y tengo un listado inmenso de TAsky muchos uui 2S entre otro…",
+        "body": "replantea como filtrar y mandar tareas respectivamente, porque actualmente veo y tengo un listado inmenso de TAsky muchos uui 2S entre otros y luego de todo eso la sesion; debieramos tener todas las activas como tal"
+      },
+      "expect": "feature"
+    },
+    {
+      "input": {
+        "title": "quiero implementar nuevos features como flow link o algo así, cosa de poder transformar las rutinas grabadas o generadas en playwright dire…",
+        "body": "quiero implementar nuevos features como flow link o algo así, cosa de poder transformar las rutinas grabadas o generadas en playwright direcctamente a las llamadas de las apis, esto ahorra mucha memoria y no usaría chronium; y la otra feature nueva es la capacidad de construir una tool proxy de rastro que pueda ejecutar las rutinas ya existen con los parametros que necesitan, así el agente no tiene que volver a navegar sino que es simplificado su consumo no tiene que entender el flujo sino los parametros para que se usa la tool y así, obviamente las rutinas se modifican, se crean nuevas se eliminan etc piensa bien este segundo feature para que no sea un desastre ultrathink"
+      },
+      "expect": "feature"
+    },
+    {
+      "input": {
+        "title": "si agurega las tool subir contenido y crear tareas para probarlas contra inacap primero",
+        "body": "si agurega las tool subir contenido y crear tareas para probarlas contra inacap primero"
+      },
+      "expect": "feature"
+    },
+    {
+      "input": {
+        "title": "hace una carpeta dentro de Personal llamada Dafu, dentro de esa carpeta quiero que hagas una animación bonita con animaciones y sonidos hec…",
+        "body": "hace una carpeta dentro de Personal llamada Dafu, dentro de esa carpeta quiero que hagas una animación bonita con animaciones y sonidos hecha con tree.js [Image #1] esta es la cara de mi pareja [Image #2] [Image #3] [Image #4] [Image #5] [Image #6] [Image #8] [Image #9] [Image #10] [Image #11] este soy yo [Image #7] [Image #12] hace una nimacion bonita con alpacas, abrazos cosas bonitas, entre otras cosas se creativo ultrathink"
+      },
+      "expect": "feature"
+    },
+    {
+      "input": {
+        "title": "hace a las alpacas más bonitas y esponjosas quizas no tanto como la foto de referencia que te di sino como alpacas mas genericas bonitas y…",
+        "body": "hace a las alpacas más bonitas y esponjosas quizas no tanto como la foto de referencia que te di sino como alpacas mas genericas bonitas y sponojas"
+      },
+      "expect": "ui"
+    },
+    {
+      "input": {
+        "title": "vuelve a rediseñar la alpaca desde 0 como una alpaca parecidas a [Image #13]",
+        "body": "vuelve a rediseñar la alpaca desde 0 como una alpaca parecidas a [Image #13]"
+      },
+      "expect": "ui"
+    },
+    {
+      "input": {
+        "title": "no siempre será necesario implementarlo como tal dentro de los hooks, pero muscle memory debiera poder disponibilizar la creacion de flujos…",
+        "body": "no siempre será necesario implementarlo como tal dentro de los hooks, pero muscle memory debiera poder disponibilizar la creacion de flujos de clasificacion de forma sencilla para el agente de IA y acompañarlo de una skill, esto permitira conectar estos flujos de clasificacion en hooks como en otros flujos que no relacionados con hooks, por lo tanto esta herramienta para crear los flujos de clasificacion de forma sencilla debiera preguntar si los quiere almacenar en muscle memory o en otra ruta"
+      },
+      "expect": "feature"
+    },
+    {
+      "input": {
+        "title": "hay que hacerun instalador o algo no? tienes que descargarlo e instalarlo",
+        "body": "hay que hacerun instalador o algo no? tienes que descargarlo e instalarlo"
+      },
+      "expect": "feature"
+    },
+    {
+      "input": {
+        "title": "entonces hay que ponerlo en español no? porque los correos estan en español? quiero clasificar los de inacap, assetplan, bancarios y que ti…",
+        "body": "entonces hay que ponerlo en español no? porque los correos estan en español? quiero clasificar los de inacap, assetplan, bancarios y que tipo de banco enter otros clasificaciones recorre el buzon principal y hace multiples clasificaciones altamente inteligentes"
+      },
+      "expect": "feature"
+    }
+  ],
+  "name": "build-kind"
+}

@@ -91,7 +91,7 @@ def test_migration_adds_columns_and_lanes_table_and_keeps_rows(tmp_path):
         assert "lanes" in tables
 
         version = store._conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 10
+        assert version == 11
 
         task = store.list_tasks()[0]
         assert task["title"] == "old task"
@@ -124,7 +124,7 @@ def test_fresh_database_gets_version_2_directly(tmp_path):
     db_path = tmp_path / "fresh.db"
     with Store(db_path) as store:
         version = store._conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 10
+        assert version == 11
         columns = {row["name"] for row in store._conn.execute("PRAGMA table_info(tasks)")}
         assert {"lane", "run_mode", "permission_mode", "fork_of"} <= columns
         tables = {
@@ -146,4 +146,27 @@ def test_reopening_a_migrated_database_does_not_re_run_migration(tmp_path):
     # constructor's version guard skips _initialize() entirely).
     with Store(db_path) as store:
         version = store._conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 10
+        assert version == 11
+
+
+def test_v10_database_gains_router_columns(tmp_path):
+    db_path = tmp_path / "v10.db"
+    with Store(db_path) as store:
+        task = store.create_task(kind="prompt", body="keep me", status="queued", source="cli")
+    raw = sqlite3.connect(db_path)
+    try:
+        # Rebuild the database as version 10 left it: no router columns.
+        for column in ("route_reason", "effort", "model"):
+            raw.execute(f"ALTER TABLE tasks DROP COLUMN {column}")
+        raw.execute("PRAGMA user_version = 10")
+        raw.commit()
+    finally:
+        raw.close()
+
+    with Store(db_path) as store:
+        columns = {row["name"] for row in store._conn.execute("PRAGMA table_info(tasks)")}
+        assert {"model", "effort", "route_reason"} <= columns
+        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 11
+        kept = store.get_task(task["id"])
+        assert kept["body"] == "keep me"
+        assert kept["model"] is None
