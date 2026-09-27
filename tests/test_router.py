@@ -298,6 +298,11 @@ _MMC = router.find_classifier()
         ("¿qué recomiendas hacer?", "chat"),
         ("#fable resuelve este problema de frontera", "frontier"),
         ("matalo inacap docente", "default"),
+        ("realiza un analisis complejo de proyecto y comentame que tal", "plan"),
+        ("realiza un analisis tu de la UI esta horriblemente fea", "ui"),
+        ("que tipo de caso solicita analizar o que caracteristicas debe tener?", "chat"),
+        ("realiza un vistazo rapido al readme y comentame de que se trata", "explore"),
+        ("hola de que trata el proyecto", "explore"),
     ],
 )
 def test_committed_definitions_route_real_prompts(body, kind):

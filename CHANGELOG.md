@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.16.1] - 2026-09-27
+
+### Fixed
+
+- Model router: "análisis"/"analiza" of a project routes to plan (Opus `xhigh`) instead of the
+  session default, while an analysis of the UI stays UI work and a question that merely mentions
+  "analizar" stays chat.
+- Model router: reading and summarising ("vistazo", "échale un ojo", "lee el…", "resume", "de qué
+  trata") routes to exploration (Haiku) instead of docs or chat.
+
 ## [0.16.0] - 2026-09-27
 
 ### Added

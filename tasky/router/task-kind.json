@@ -37,7 +37,7 @@
     },
     {
       "match": {
-        "body": "\\b(d[oó]nde (est[aá]|se)|busca(r)?|encuentra|where is|explora\\w*|mapea\\w*|investiga\\w*|alternativas|revisa este|verifica\\w* (de )?cu[aá]ndo|[uú]ltimo commit|otra rama|find (the|all|where))\\b"
+        "body": "\\b(vistazo|[eé]cha(le)? un ojo|lee(r)? (el|la|los|las|este|esta)|res[uú]me(n|lo)?|de qu[eé] (se )?trata|d[oó]nde (est[aá]|se)|busca(r)?|encuentra|where is|explora\\w*|mapea\\w*|investiga\\w*|alternativas|revisa este|verifica\\w* (de )?cu[aá]ndo|[uú]ltimo commit|otra rama|find (the|all|where))\\b"
       },
       "label": "explore"
     },
@@ -46,6 +46,12 @@
         "body": "\\b(ui|ux|cards?|redise[nñ]\\w*|dise[nñ]o|bonit\\w*|estilos?|layout|m[aá]rgenes|colores|animaci[oó]n\\w*|instalador|feature|funcionalidad|implementa\\w*|agrega\\w*|agurega|a[nñ]ad\\w*|construye|haz(me)? (un|una)|hace (un|una)|replantea\\w*|refactori[zc]a\\w*|refactor|componente|interfaz|endpoint|build (a|the)|add (a|an|the)|implement)\\b"
       },
       "label": "build"
+    },
+    {
+      "match": {
+        "body": "\\b(an[aá]lisis|analiza(lo|la|los|las)?|analy[sz]e|audita(lo|la)?|auditor[ií]a)\\b"
+      },
+      "label": "plan"
     },
     {
       "match": {
