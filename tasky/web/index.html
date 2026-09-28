@@ -413,6 +413,17 @@
         </select>
         <span class="field-hint drawer-mode-hint"></span>
       </label>
+      <div class="field drawer-route" role="group" aria-labelledby="drawer-route-label" hidden>
+        <span class="field-label" id="drawer-route-label">Model</span>
+        <div class="drawer-route-row">
+          <select class="select drawer-route-model" aria-label="Model">
+            <option value="">Router decides</option>
+            <option value="default">Session default</option>
+          </select>
+          <select class="select drawer-route-effort" aria-label="Effort" hidden></select>
+        </div>
+        <span class="field-hint drawer-route-hint"></span>
+      </div>
       <div class="drawer-edit" hidden>
         <label class="visually-hidden">Edit task text
           <textarea class="drawer-edit-textarea textarea" rows="4"></textarea>

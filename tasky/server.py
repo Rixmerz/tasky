@@ -69,7 +69,9 @@ _TASK_RESTORE_RE = re.compile(r"^/api/tasks/(\d{1,18})/restore$")
 _SESSION_ID_RE = re.compile(r"^/api/sessions/([^/]+)$")
 _AREA_ID_RE = re.compile(r"^/api/areas/(\d{1,18})$")
 _CARD_ID_RE = re.compile(r"^/api/cards/(\d{1,18})$")
-_TASK_PATCH_FIELDS = ("status", "title", "body", "before_id", "lane", "permission_mode")
+_TASK_PATCH_FIELDS = (
+    "status", "title", "body", "before_id", "lane", "permission_mode", "route",
+)
 _SESSION_PATCH_FIELDS = ("auto_pull", "title")
 
 
@@ -354,6 +356,13 @@ class _Handler(BaseHTTPRequestHandler):
         config = self.server.config
         with Store.open(config) as store:
             state = store.state()
+            settings = router.load_settings(store)
+        # Previews are read from each task's cached kind: no classifier runs here.
+        classifier = router.find_classifier() if settings["enabled"] else None
+        for task in state["tasks"]:
+            if task["status"] == "queued":
+                task["route_preview"] = router.preview(task, settings, classifier)
+        state["router"] = {**settings, "efforts": list(router.EFFORTS)}
         state["version"] = __version__
         state["config"] = {
             "queue_prefix": config.queue_prefix,
@@ -850,6 +859,7 @@ class _Handler(BaseHTTPRequestHandler):
             )
             if permission_mode:
                 task = store.update_task(task["id"], permission_mode=permission_mode)
+            self.server.kick_previews(store)
         self._send_json(201, task)
 
     def _permission_problem(self, permission_mode: object) -> str | None:
@@ -906,6 +916,12 @@ class _Handler(BaseHTTPRequestHandler):
                     self._error(400, problem)
                     return
                 fields["permission_mode"] = body["permission_mode"]
+            if "route" in body:
+                pin = _route_pin(body["route"])
+                if isinstance(pin, str):
+                    self._error(400, pin)
+                    return
+                fields["pinned_model"], fields["pinned_effort"] = pin
             for key in ("status", "title", "body"):
                 if key not in body:
                     continue
@@ -923,6 +939,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
 
             task = store.update_task(task_id, **fields)
+            if {"title", "body", "route"} & set(body):
+                self.server.kick_previews(store)
         self._send_json(200, task)
 
     def _route_delete_task(self, task_id: int) -> None:
@@ -1097,6 +1115,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         with Store.open(self.server.config) as store:
             settings = router.save_settings(store, enabled=enabled, models=models)
+            self.server.kick_previews(store)
         self._send_json(200, self._router_payload(settings))
 
     def _route_import(self) -> None:
@@ -1138,6 +1157,7 @@ class _Server(ThreadingHTTPServer):
     _diagram_links: dict[str, tuple[Path, float]]
     _quick: set[str]
     _quick_lock: threading.Lock
+    _previews_lock: threading.Lock
 
     def claim_quick(self, repo: str) -> bool:
         with self._quick_lock:
@@ -1190,8 +1210,30 @@ class _Server(ThreadingHTTPServer):
                 if title and title != session["title"]:
                     store.update_session(session["id"], title=title)
             scheduler.kick(store, self.config, popen=self.popen)
+            self.kick_previews(store)
         finally:
             self._titles_lock.release()
+
+    def kick_previews(self, store: Store) -> None:
+        """Classify stale waiting tasks in one background thread, when the router is on.
+
+        Never blocks the caller: a kick while a pass is running is dropped, and the next
+        version poll (see `sync_titles`) starts another pass for anything it missed.
+        """
+        if not store.meta_flag("router_enabled", False):
+            return
+        if not self._previews_lock.acquire(blocking=False):
+            return
+        threading.Thread(target=self._refresh_previews, daemon=True).start()
+
+    def _refresh_previews(self) -> None:
+        try:
+            with Store.open(self.config) as store:
+                router.refresh_previews(store, router.load_settings(store))
+        except Exception:  # noqa: BLE001, S110 -- a preview is advisory; never take the server down
+            pass
+        finally:
+            self._previews_lock.release()
 
     def current_token(self) -> str | None:
         """Return the token to check requests against, re-reading the token
@@ -1211,6 +1253,28 @@ class _Server(ThreadingHTTPServer):
             self._token_cache_value = load_token(self.config, create=False)
             self._token_cache_key = key if self._token_cache_value is not None else None
         return self._token_cache_value
+
+
+def _route_pin(value: object) -> tuple[str | None, str | None] | str:
+    """`(pinned_model, pinned_effort)` for a PATCH `route` value, or why it is invalid.
+
+    `null` lets the router decide, `"default"` keeps the session default, and
+    `{"model": m, "effort": e}` pins a model (`effort` optional; Haiku takes none).
+    """
+    if value is None:
+        return None, None
+    if value == router.SESSION_DEFAULT:
+        return router.SESSION_DEFAULT, None
+    if not isinstance(value, dict) or not value or set(value) - {"model", "effort"}:
+        return 'route must be null, "default" or {"model", "effort"}'
+    model, effort = value.get("model"), value.get("effort")
+    if model not in router.MODELS:
+        return f"route model must be one of {', '.join(router.MODELS)}"
+    if effort is not None and effort not in router.EFFORTS:
+        return f"route effort must be one of {', '.join(router.EFFORTS)}"
+    if model == "haiku" and effort is not None:
+        return "haiku takes no effort"
+    return model, effort
 
 
 def _backfill_messages(config: Config) -> None:
@@ -1238,6 +1302,7 @@ def make_server(
     server._diagram_links = {}
     server._quick = set()
     server._quick_lock = threading.Lock()
+    server._previews_lock = threading.Lock()
     server._titles_synced_at = float("-inf")
     if token is not None:
         # Tests pin a token and never touch the file; treat it as the only

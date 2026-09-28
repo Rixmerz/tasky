@@ -42,7 +42,7 @@ _ATTEMPT_FIELDS = (
     "task_ids", "commits",
 )
 
-_SCHEMA_VERSION = 11
+_SCHEMA_VERSION = 12
 HISTORY_FTS_REBUILD = """
 DELETE FROM history_fts;
 INSERT INTO history_fts (kind, ref_id, text)
@@ -88,6 +88,11 @@ _TASK_UPDATE_FIELDS = (
     "model",
     "effort",
     "route_reason",
+    "pinned_model",
+    "pinned_effort",
+    "preview_key",
+    "preview_kind",
+    "preview_note",
 )
 
 _SCHEMA = """
@@ -109,7 +114,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   source TEXT NOT NULL,
   position REAL, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
   lane TEXT, run_mode TEXT, permission_mode TEXT, fork_of TEXT, followups TEXT,
-  deleted_at TEXT, model TEXT, effort TEXT, route_reason TEXT
+  deleted_at TEXT, model TEXT, effort TEXT, route_reason TEXT,
+  pinned_model TEXT, pinned_effort TEXT, preview_key TEXT, preview_kind TEXT, preview_note TEXT
 );
 CREATE TABLE IF NOT EXISTS lanes (
   cwd TEXT PRIMARY KEY, paused INTEGER NOT NULL DEFAULT 0, reason TEXT
@@ -454,6 +460,7 @@ class Store:
                     self._migrate_v7_to_v8()
                     self._migrate_v8_to_v9()
                     self._migrate_v10_to_v11()
+                    self._migrate_v11_to_v12()
                     self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
                 self._conn.commit()
                 return
@@ -536,6 +543,15 @@ class Store:
         """Tasks record what the model router chose for them."""
         existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(tasks)")}
         for column in ("model", "effort", "route_reason"):
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT")  # noqa: S608
+
+    def _migrate_v11_to_v12(self) -> None:
+        """Tasks carry the user's model choice and the router's cached preview of its kind."""
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(tasks)")}
+        for column in (
+            "pinned_model", "pinned_effort", "preview_key", "preview_kind", "preview_note",
+        ):
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT")  # noqa: S608
 

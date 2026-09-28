@@ -461,7 +461,14 @@ effort level its kind of work calls for, following Anthropic's model × effort g
   chosen for a task that carries the `#fable` tag.
 - **Anything the router does not recognise keeps the session default** — exactly the command
   Tasky runs with the router off. So does every failure: classifier missing, slow or broken.
-- The chosen model and effort show on the task's row; hover it for the reason.
+- **See the route before running.** Tasks waiting in Inbox and Up next show the model they would
+  start on (`opus · xhigh`, `haiku`, or `default` for the session default); hover for the kind.
+  Tasky classifies each waiting task once in the background and caches its kind, so switching a
+  model off updates every row at once. Once a task has run, its row shows what it ran on.
+- **Choose the model yourself.** In a waiting task's details, *Model* offers *Router decides*,
+  *Session default* or any model with an effort. Your choice replaces the router for that task,
+  and applies even with the router off or that model switched off — the switches only steer the
+  router's own picks. The row outlines a model you chose, and the task records "your choice".
 - The kind comes from keyword rules (Spanish and English) in `tasky/router/*.json`, classifier
   definitions run by the [muscle-memory](https://github.com/Rixmerz/muscle-memory) plugin's
   `mm-classifier`. The router needs `node` and that plugin installed; Tasky itself still needs

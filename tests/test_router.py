@@ -278,6 +278,167 @@ def test_supervise_survives_a_failing_classifier(store, config, tmp_path, monkey
     assert store.get_task(task["id"])["route_reason"].startswith("no route: classifier failed")
 
 
+# --- pins: the user's own model for one task ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("pin", "args", "applied", "reason"),
+    [
+        (("opus", "xhigh"), ["--model", "opus", "--effort", "xhigh"], ("opus", "xhigh"),
+         "opus xhigh, your choice"),
+        (("sonnet", "high"), ["--model", "sonnet"], ("sonnet", "high"), "sonnet high, your choice"),
+        (("sonnet", None), ["--model", "sonnet"], ("sonnet", "high"), "sonnet high, your choice"),
+        (("haiku", "max"), ["--model", "haiku"], ("haiku", None), "haiku, your choice"),
+        (("default", None), [], (None, None), "session default, your choice"),
+    ],
+)
+def test_a_pin_replaces_classification_router_on_or_off(classifier, pin, args, applied, reason):
+    run = _runner(_chain(("plan", "rule"), outcome="plan"))
+    task = {"body": "diseña la arquitectura", "pinned_model": pin[0], "pinned_effort": pin[1]}
+    for enabled in (True, False):
+        decision = router.decide(task, enabled, ALL, env=classifier, runner=run)
+        assert decision.args == args
+        assert (decision.model, decision.effort) == applied
+        assert decision.reason == reason and decision.pinned is True
+    assert run.calls == []
+
+
+def test_a_pin_ignores_the_model_switches(classifier):
+    off = dict.fromkeys(router.MODELS, False)
+    task = {"pinned_model": "fable", "pinned_effort": "high"}
+    assert router.decide(task, True, off, env=classifier).args == ["--model", "fable"]
+
+
+def test_a_pin_to_an_unknown_model_is_ignored(classifier):
+    run = _runner(_chain(("plan", "rule"), outcome="plan"))
+    task = {"body": "x", "pinned_model": "gpt", "pinned_effort": "high"}
+    assert router.decide(task, False, ALL, env=classifier, runner=run) == router.Decision()
+    routed = router.decide(task, True, ALL, env=classifier, runner=run)
+    assert routed.args == ["--model", "opus", "--effort", "xhigh"] and not routed.pinned
+
+
+# --- previews ----------------------------------------------------------------------------------
+
+ON = {"enabled": True, "models": ALL}
+
+
+def _queued(store, body, **fields):
+    task = store.create_task(kind="prompt", body=body, status="queued", source="ui")
+    return store.update_task(task["id"], **fields) if fields else task
+
+
+def test_refresh_previews_classifies_each_waiting_task_once(store, classifier):
+    plan = _queued(store, "diseña la arquitectura")
+    _queued(store, "pinned", pinned_model="opus")
+    done = store.create_task(kind="prompt", body="old", status="done", source="ui")
+    run = _runner(_chain(("plan", "rule"), outcome="plan"))
+
+    assert router.refresh_previews(store, ON, env=classifier, runner=run) == 1
+    assert len(run.calls) == 1  # neither the pinned nor the finished task was classified
+    cached = store.get_task(plan["id"])
+    assert (cached["preview_kind"], cached["preview_note"]) == ("plan", "rules")
+    assert store.get_task(done["id"])["preview_key"] is None
+
+    assert router.refresh_previews(store, ON, env=classifier, runner=run) == 0
+    store.update_task(plan["id"], body="otra cosa")
+    assert router.refresh_previews(store, ON, env=classifier, runner=run) == 1
+    assert len(run.calls) == 2
+
+
+def test_refresh_previews_does_nothing_with_the_router_off(store, classifier):
+    _queued(store, "diseña la arquitectura")
+    run = _runner(_chain(("plan", "rule"), outcome="plan"))
+    off = {"enabled": False, "models": ALL}
+    assert router.refresh_previews(store, off, env=classifier, runner=run) == 0
+    assert run.calls == []
+
+
+def test_refresh_previews_caches_a_failure_until_the_classifier_changes(store, tmp_path):
+    task = _queued(store, "algo")
+    missing = {"TASKY_MM_CLASSIFIER": str(tmp_path / "missing.mjs")}
+    assert router.refresh_previews(store, ON, env=missing) == 1
+    assert router.refresh_previews(store, ON, env=missing) == 0
+    cached = store.get_task(task["id"])
+    assert cached["preview_kind"] is None and "not found" in cached["preview_note"]
+    assert router.preview(cached, ON, None)["model"] is None
+
+    installed = tmp_path / "mm-classifier.mjs"
+    installed.write_text("", encoding="utf-8")
+    run = _runner(_chain(("docs", "rule"), outcome="docs"))
+    env = {"TASKY_MM_CLASSIFIER": str(installed)}
+    assert router.refresh_previews(store, ON, env=env, runner=run) == 1
+    assert store.get_task(task["id"])["preview_kind"] == "docs"
+
+
+def test_preview_follows_the_switches_without_classifying_again(store, classifier):
+    path = router.find_classifier(classifier)
+    task = _queued(store, "diseña la arquitectura")
+    run = _runner(_chain(("plan", "rule"), outcome="plan"))
+    router.refresh_previews(store, ON, env=classifier, runner=run)
+    task = store.get_task(task["id"])
+    assert router.preview(task, ON, path) == {
+        "source": "router", "model": "opus", "effort": "xhigh", "reason": "plan (rules)",
+    }
+    no_opus = {"enabled": True, "models": {**ALL, "opus": False}}
+    assert router.preview(task, no_opus, path)["model"] == "sonnet"
+    neither = {"enabled": True, "models": {**ALL, "opus": False, "sonnet": False}}
+    shown = router.preview(task, neither, path)
+    assert shown["model"] is None and "switched off" in shown["reason"]
+    assert router.preview(task, {"enabled": False, "models": ALL}, path) is None
+    # Edited text: the cached kind no longer applies until the next pass.
+    assert router.preview({**task, "body": "otra"}, ON, path)["source"] == "pending"
+    assert len(run.calls) == 1
+
+
+def test_preview_shows_a_pin_even_with_the_router_off():
+    off = {"enabled": False, "models": ALL}
+    shown = router.preview({"pinned_model": "haiku", "pinned_effort": None}, off, None)
+    assert shown == {"source": "pinned", "model": "haiku", "effort": None, "reason": "your choice"}
+    session = router.preview({"pinned_model": "default"}, off, None)
+    assert session["source"] == "pinned" and session["model"] is None
+
+
+def test_supervise_honours_a_pin_without_classifying(store, config, tmp_path, monkeypatch):
+    router.save_settings(store, enabled=True)
+    task = _running(store, tmp_path, "diseña la arquitectura")
+    store.update_task(task["id"], pinned_model="sonnet", pinned_effort="low")
+    classified = []
+
+    def classify(*args, **kwargs):
+        classified.append(args)
+        return "plan", "rules"
+
+    monkeypatch.setattr(router, "classify", classify)
+    argv = _supervise(config, store.get_task(task["id"]), monkeypatch)
+    assert argv == [
+        "claude", "-p", "--session-id", "sess-1", "--model", "sonnet", "--effort", "low",
+    ]
+    assert classified == []
+    recorded = store.get_task(task["id"])
+    assert (recorded["model"], recorded["effort"]) == ("sonnet", "low")
+    assert recorded["route_reason"] == "sonnet low, your choice"
+
+
+def test_supervise_honours_a_pin_with_the_router_off(store, config, tmp_path, monkeypatch):
+    task = _running(store, tmp_path, "hola")
+    store.update_task(task["id"], pinned_model="opus", pinned_effort="max")
+    argv = _supervise(config, store.get_task(task["id"]), monkeypatch)
+    assert argv == ["claude", "-p", "--session-id", "sess-1", "--model", "opus", "--effort", "max"]
+    assert store.get_task(task["id"])["route_reason"] == "opus max, your choice"
+
+
+def test_supervise_session_default_pin_keeps_argv_untouched(store, config, tmp_path, monkeypatch):
+    router.save_settings(store, enabled=True)
+    task = _running(store, tmp_path, "diseña la arquitectura")
+    store.update_task(task["id"], pinned_model="default")
+    plan = _chain(("plan", "rule"), outcome="plan")
+    argv = _supervise(config, store.get_task(task["id"]), monkeypatch, plan)
+    assert argv == ["claude", "-p", "--session-id", "sess-1"]
+    recorded = store.get_task(task["id"])
+    assert recorded["model"] is None
+    assert recorded["route_reason"] == "session default, your choice"
+
+
 # --- the committed definitions, run through the real classifier when it is installed ------------
 
 _MMC = router.find_classifier()
