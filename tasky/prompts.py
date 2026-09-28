@@ -112,6 +112,44 @@ def normalize(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
+# Whole-message nudges that only push an existing, already-known turn along
+# and name no new work of their own -- "next" and "dale" are left out on
+# purpose, since real Tasky history shows both used as one-word commands that
+# each do distinct work ("next" stepping through a list of items).
+_CONTINUATION_PHRASES = frozenset(
+    {
+        "--continue",
+        "continue",
+        "please continue",
+        "keep going",
+        "go on",
+        "carry on",
+        "resume",
+        "sigue",
+        "continua",
+        "continúa",
+    }
+)
+
+# "vuelve a <one word>" ("open it again", "vuelve a abrila") and the English
+# "try (it/that) again" / "do it/that again" -- anchored so a real request that
+# only happens to start the same way ("vuelve a rediseñar la alpaca...") does
+# not match: the whole message must be nothing but the nudge.
+_CONTINUATION_RE = re.compile(r"^(vuelve a \S+|try( it| that)? again|do (it|that) again)$")
+
+
+def is_continuation_nudge(text: str) -> bool:
+    """A short message that only says "keep going", naming no new work.
+
+    Used to fold a message like "--continue" or "vuelve a abrila" into the
+    task it nudges instead of letting it become a task of its own.
+    """
+    stripped = normalize(text).strip(" .!?¡¿")
+    if not stripped:
+        return False
+    return stripped in _CONTINUATION_PHRASES or bool(_CONTINUATION_RE.match(stripped))
+
+
 def same_request(before: str, after: str) -> bool:
     """Whether ``after`` is ``before`` sent again, as is, extended or lightly edited."""
     a, b = normalize(before), normalize(after)

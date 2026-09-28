@@ -216,6 +216,39 @@ def test_delete_task(store):
     assert store.delete_task(task["id"]) is False
 
 
+def test_hide_tasks_hides_each_and_its_children(store):
+    a = store.create_task(kind="prompt", body="a", status="interrupted", source="hook")
+    b = store.create_task(kind="prompt", body="b", status="queued", source="hook")
+    child = store.create_task(kind="delegation", body="c", status="done", source="hook",
+                              parent_id=a["id"])
+
+    hidden = store.hide_tasks([a["id"], b["id"]])
+
+    assert sorted(hidden) == sorted([a["id"], b["id"]])
+    assert store.get_task(a["id"])["deleted_at"]
+    assert store.get_task(b["id"])["deleted_at"]
+    assert store.get_task(b["id"])["status"] == "cancelled"  # a hidden queued task is cancelled
+    assert store.get_task(child["id"])["deleted_at"]
+
+
+def test_hide_tasks_skips_ids_that_do_not_exist(store):
+    a = store.create_task(kind="prompt", body="a", status="failed", source="hook")
+    assert store.hide_tasks([a["id"], 999999]) == [a["id"]]
+    assert store.hide_tasks([]) == []
+
+
+def test_restore_tasks_restores_each(store):
+    a = store.create_task(kind="prompt", body="a", status="failed", source="hook")
+    b = store.create_task(kind="prompt", body="b", status="interrupted", source="hook")
+    store.hide_tasks([a["id"], b["id"]])
+
+    restored = store.restore_tasks([a["id"], b["id"]])
+
+    assert {t["id"] for t in restored} == {a["id"], b["id"]}
+    assert store.get_task(a["id"])["deleted_at"] is None
+    assert store.get_task(b["id"])["deleted_at"] is None
+
+
 def test_list_tasks_filters_by_status(store):
     store.create_task(kind="prompt", body="a", status="queued", source="cli")
     store.create_task(kind="prompt", body="b", status="running", source="hook")

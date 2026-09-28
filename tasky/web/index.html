@@ -361,10 +361,19 @@
   </section>
 
   <section id="col-attention" class="column column-attention" aria-labelledby="attention-heading">
-    <h2 id="attention-heading" tabindex="-1"><span>Needs attention</span><span class="col-count" id="attention-count">0</span></h2>
+    <h2 id="attention-heading" tabindex="-1">
+      <span class="attention-heading-title"><span>Needs attention</span><span class="col-count" id="attention-count">0</span></span>
+      <button type="button" id="attention-archive-stale" class="btn btn-ghost btn-sm attention-archive-btn" hidden>Archive older than a day</button>
+    </h2>
+    <div id="attention-archive-confirm" class="attention-archive-confirm" hidden>
+      <span id="attention-archive-confirm-text" class="arch-confirm-ask"></span>
+      <button type="button" id="attention-archive-confirm-yes" class="btn btn-sm arch-danger">Archive</button>
+      <button type="button" id="attention-archive-confirm-no" class="btn btn-ghost btn-sm">Cancel</button>
+    </div>
     <div class="column-body">
       <p id="attention-empty" class="empty-state" hidden>Nothing needs you.</p>
       <div id="attention-list" class="card-list"></div>
+      <div id="attention-groups" class="card-list" hidden></div>
     </div>
   </section>
 
