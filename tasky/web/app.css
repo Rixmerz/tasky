@@ -259,22 +259,21 @@ code {
   color: var(--attn);
 }
 
-/* A session still running hooks from an older tasky. */
-.badge-warn,
-.old-hooks-mark {
+/* A session still running hooks from an older tasky (full detail: the drawer's session line). */
+.badge-warn {
   background: var(--attn-bg);
   border-color: transparent;
   color: var(--attn);
 }
 
+/* Same fact, quieter: the hooks banner above the board already spells it
+   out, so a group heading or recap card only needs a dot to point at it. */
 .old-hooks-mark {
   flex-shrink: 0;
-  padding: 1px 6px;
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 500;
-  line-height: 1.4;
-  white-space: nowrap;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--attn);
 }
 
 .badge-danger {
@@ -586,6 +585,30 @@ body:has(#board[hidden]) .board-top {
   margin: 4px 0 2px;
   padding-left: 18px;
   color: var(--foreground);
+}
+
+.hooks-banner-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 2px 0;
+}
+
+.hooks-banner-item-name {
+  flex: 1;
+  min-width: 10ch;
+}
+
+.hooks-banner-item-actions {
+  display: inline-flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.hooks-banner-item-actions .link-btn {
+  color: var(--attn);
+  font-weight: 500;
 }
 
 .hooks-banner-dismiss,

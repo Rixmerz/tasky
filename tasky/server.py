@@ -60,6 +60,7 @@ _STATIC_FILES = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/app.css": ("app.css", "text/css; charset=utf-8"),
     "/digest.js": ("digest.js", "text/javascript; charset=utf-8"),
+    "/notices.js": ("notices.js", "text/javascript; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
 }
 _TASK_ID_RE = re.compile(r"^/api/tasks/(\d{1,18})$")

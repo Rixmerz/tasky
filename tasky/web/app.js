@@ -1,6 +1,15 @@
 // Tasky dashboard client. No build step, no dependencies.
 
 import { parseDigest, summarize, renderDigest } from "./digest.js";
+import {
+  isSessionStale,
+  staleSessions,
+  ranVersionLabel,
+  staleVersionsKey,
+  hooksNoticeVisible,
+  pickLatestRecaps,
+  resumeCommand,
+} from "./notices.js";
 
 const POLL_MS = 2000;
 const DONE_PAGE_SIZE = 20;
@@ -11,8 +20,7 @@ const SNIPPET_AFTER = 140;
 const TOKEN_STORAGE_KEY = "tasky.token";
 const MODE_STORAGE_KEY = "tasky.permissionMode";
 const TAB_STORAGE_KEY = "tasky.mobileColumn";
-const SESSION_ID_RE = /^[A-Za-z0-9-]{1,64}$/;
-const UNSAFE_CWD_CHARS = /['\\\x00-\x1f\x7f]/;
+const HOOKS_DISMISS_KEY = "tasky.hooksBannerDismissedVersions";
 const TAB_ORDER = ["inbox", "upnext", "running", "attention", "done"];
 
 const STATUS_GLYPH = {
@@ -1157,15 +1165,9 @@ function renderSessionLine(container, task) {
   }
 
   const copyBtn = container.querySelector(".copy-resume");
-  const validId = SESSION_ID_RE.test(session.id);
+  const { validId, command, label } = resumeCommand(session);
   copyBtn.hidden = !validId;
   if (!validId) return;
-
-  const cwdSafe = !!session.cwd && !UNSAFE_CWD_CHARS.test(session.cwd);
-  const command = cwdSafe
-    ? `cd '${session.cwd}' && claude --resume ${session.id}`
-    : `claude --resume ${session.id}`;
-  const label = cwdSafe ? "Copy resume command" : "Copy resume command (run it in the project folder)";
 
   if (copyBtn.dataset.copied !== "1") {
     copyBtn.textContent = label;
@@ -1808,13 +1810,16 @@ function buildDoneGroups(tasks) {
  * A group's rows: its task cards plus the recaps its session got that day,
  * newest first by when each happened. `floor` keeps recaps from reaching
  * past the oldest task on the page while older ones are still paged out.
+ * `topRecapIds` are the recaps already shown in the "Latest recap" panel
+ * above the board -- Done doesn't say them again, only its older ones.
  */
-function doneGroupItems(group, floor) {
+function doneGroupItems(group, floor, topRecapIds) {
   const items = group.tasks.map((t) => ({ task: t, at: taskMoment(t) }));
   if (group.sessionId) {
     for (const r of state.recaps || []) {
       if (r.session_id !== group.sessionId || localDayKey(r.ts) !== group.dayKey) continue;
       if (floor && r.ts < floor) continue;
+      if (topRecapIds && topRecapIds.has(r.id)) continue;
       items.push({ recap: r, at: r.ts });
     }
   }
@@ -1830,7 +1835,10 @@ function renderDoneGroups(tasks, hasOlder) {
   }
   const floor = hasOlder && tasks.length ? taskMoment(tasks[tasks.length - 1]) : "";
   const today = localDayKey();
-  const update = (node, day) => updateDoneDay(node, day, { tints, floor, today });
+  // The top panel is computed once here, before either it or Done render,
+  // so both agree on exactly which recaps count as "already shown".
+  const topRecapIds = new Set(latestRecaps().map((r) => r.id));
+  const update = (node, day) => updateDoneDay(node, day, { tints, floor, today, topRecapIds });
   reconcileList(el.doneList, days, (d) => `day-${d.key}`, (day) => {
     const node = createDoneDay();
     update(node, day);
@@ -1873,7 +1881,7 @@ function createDoneGroup() {
     '<svg class="chevron" aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>' +
     '<span class="swatch" aria-hidden="true"></span>' +
     '<span class="done-group-title"></span>' +
-    '<span class="old-hooks-mark" hidden>older tasky</span>' +
+    '<span class="old-hooks-mark" hidden></span>' +
     '<span class="done-group-facts"></span>';
   heading.appendChild(btn);
   const list = document.createElement("div");
@@ -1914,11 +1922,14 @@ function updateDoneGroup(node, group, ctx) {
   const oldMark = node.querySelector(".old-hooks-mark");
   const old = hasOldHooks(session);
   oldMark.hidden = !old;
+  // Quiet dot, not the sentence: the hooks banner above already spells it out.
   oldMark.title = old ? oldHooksText(session) : "";
+  if (old) oldMark.setAttribute("aria-label", oldHooksText(session));
+  else oldMark.removeAttribute("aria-label");
 
   reconcileList(
     list,
-    doneGroupItems(group, ctx.floor),
+    doneGroupItems(group, ctx.floor, ctx.topRecapIds),
     (item) => (item.task ? item.task.id : `recap-${item.recap.id}`),
     (item) => (item.task ? createCard(item.task, "done") : createRecapRow(item.recap, "Recap", true, "div")),
     (itemNode, item) => {
@@ -1935,38 +1946,72 @@ function updateDoneGroup(node, group, ctx) {
 
 /** A live session whose hooks predate this server: it still records the old, wrong way. */
 function hasOldHooks(session) {
-  return !!session && session.state === "active" && session.hook_version !== state.version;
+  return isSessionStale(session, state.version);
 }
 
 function oldHooksText(session) {
-  const ran = session.hook_version ? `v${session.hook_version}` : `before ${state.version}`;
+  const ran = ranVersionLabel(session, state.version);
   return `Running an older tasky (${ran}). Restart this Claude Code session to pick up the fixes.`;
 }
 
-let hooksBannerDismissed = false;
 let hooksBannerKey = "";
 
-/** One slim warning above the board while any live session still runs old hooks. */
+/**
+ * One notice above the board while any live session still runs old hooks,
+ * naming which ones and how to fix each: copy its resume command, or jump
+ * to its latest task. Dismissing it persists across refresh, keyed by
+ * which old versions are around -- restarting some of several sessions on
+ * an already-known old build doesn't bring it back; a version it hasn't
+ * already reported does.
+ */
 function renderHooksBanner() {
-  const stale = state.version ? state.sessions.filter(hasOldHooks) : [];
-  el.hooksBanner.hidden = hooksBannerDismissed || stale.length === 0;
-  if (el.hooksBanner.hidden) return;
-  const names = stale.map((sess) => sessionLabel(sess, sess.cwd));
+  const stale = staleSessions(state.sessions, state.version);
+  const dismissedKey = readLocal(HOOKS_DISMISS_KEY) || "";
+  const visible = hooksNoticeVisible(stale, state.version, dismissedKey);
+  el.hooksBanner.hidden = !visible;
+  if (!visible) return;
   const key = stale.map((sess) => `${sess.id}:${sess.hook_version}:${sess.title}`).join("|");
   if (key === hooksBannerKey) return;
   hooksBannerKey = key;
-  const versions = new Set(stale.map((sess) => (sess.hook_version ? `v${sess.hook_version}` : `before ${state.version}`)));
+  const versions = new Set(stale.map((sess) => ranVersionLabel(sess, state.version)));
   const who = stale.length === 1 ? "1 session is" : `${stale.length} sessions are`;
   const them = stale.length === 1 ? "it" : "them";
   el.hooksBannerText.textContent =
     `${who} running an older tasky (${[...versions].join(" / ")}). Restart ${them} to pick up the fixes.`;
-  el.hooksBanner.title = names.join("\n");
   el.hooksBannerList.textContent = "";
   for (const sess of stale) {
     const li = document.createElement("li");
+    li.className = "hooks-banner-item";
+    const name = document.createElement("span");
+    name.className = "hooks-banner-item-name";
     // An untitled session is named by its project already; its id tells it apart.
-    li.textContent = `${sessionLabel(sess, sess.cwd)} · ${sess.title ? projectLabel(sess.cwd) : sess.id.slice(0, 8)}`;
-    li.title = sess.cwd || "";
+    name.textContent = `${sessionLabel(sess, sess.cwd)} · ${sess.title ? projectLabel(sess.cwd) : sess.id.slice(0, 8)}`;
+    name.title = sess.cwd || "";
+    li.appendChild(name);
+
+    const actions = document.createElement("span");
+    actions.className = "hooks-banner-item-actions";
+    const { validId, command, label } = resumeCommand(sess);
+    if (validId) {
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "link-btn";
+      copyBtn.textContent = "Copy resume command";
+      copyBtn.title = label;
+      copyBtn.addEventListener("click", () => copyResumeCommand(command, copyBtn, "Copy resume command"));
+      actions.appendChild(copyBtn);
+    }
+    const target = latestTaskOfSession(sess.id);
+    if (target) {
+      const openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.className = "link-btn";
+      openBtn.textContent = "Open";
+      openBtn.title = "Open this session's latest task";
+      openBtn.addEventListener("click", () => openDrawer(target.id));
+      actions.appendChild(openBtn);
+    }
+    li.appendChild(actions);
     el.hooksBannerList.appendChild(li);
   }
 }
@@ -1979,7 +2024,8 @@ el.hooksBannerMore.addEventListener("click", () => {
 });
 
 el.hooksBannerDismiss.addEventListener("click", () => {
-  hooksBannerDismissed = true;
+  const stale = staleSessions(state.sessions, state.version);
+  writeLocal(HOOKS_DISMISS_KEY, staleVersionsKey(stale, state.version));
   el.hooksBanner.hidden = true;
 });
 
@@ -2008,18 +2054,7 @@ function relativeAgo(iso) {
  * project filter like the columns do.
  */
 function latestRecaps() {
-  const recaps = (state.recaps || []).filter((r) => !projectFilter || r.cwd === projectFilter);
-  const seen = new Set();
-  const picked = [];
-  for (const r of recaps) {
-    const session = sessionsById.get(r.session_id);
-    if (!session || session.state !== "active" || seen.has(r.session_id)) continue;
-    seen.add(r.session_id);
-    picked.push(r);
-    if (picked.length === RECAPS_SHOWN) break;
-  }
-  if (picked.length === 0 && recaps.length > 0) picked.push(recaps[0]);
-  return picked;
+  return pickLatestRecaps(state.recaps, sessionsById, projectFilter, RECAPS_SHOWN);
 }
 
 /** The task a recap leads back to: its session's newest turn on the board. */
@@ -2082,8 +2117,10 @@ function createRecapCard(recap) {
   if (hasOldHooks(session)) {
     const mark = document.createElement("span");
     mark.className = "old-hooks-mark";
-    mark.textContent = "older tasky";
-    mark.title = oldHooksText(session);
+    const text = oldHooksText(session);
+    // Quiet dot, not the sentence: the hooks banner above already spells it out.
+    mark.title = text;
+    mark.setAttribute("aria-label", text);
     head.appendChild(mark);
   }
   const at = document.createElement("time");

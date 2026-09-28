@@ -355,6 +355,14 @@ def test_static_digest_module(running_server, conn):
     assert body == b"export const x = 1;"
 
 
+def test_static_notices_module(running_server, conn):
+    (running_server.web_dir / "notices.js").write_text("export const y = 2;")
+    resp, body = _request_raw(conn, "GET", "/notices.js")
+    assert resp.status == 200
+    assert resp.getheader("Content-Type") == "text/javascript; charset=utf-8"
+    assert body == b"export const y = 2;"
+
+
 def test_static_missing_file_404(conn):
     # web_dir has all three files; ask for a path that's not registered
     resp, parsed = _request(conn, "GET", "/missing.png")
