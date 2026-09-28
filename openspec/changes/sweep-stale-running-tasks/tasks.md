@@ -16,7 +16,7 @@
       parallel task does not touch a lane, existing `result` preserved and reason appended, an
       already-ended session is swept regardless of elapsed time, second sweep is a no-op, `0`
       disables the sweep, session ends once its last running task is swept, a session with another
-      live task stays active
+      live task stays active, `_Server.sync_titles` actually calls the sweep
 - [x] 2.2 Full suite, `ruff check .`, `node --test tests/web/digest.test.mjs`
 
 ## 3. Docs

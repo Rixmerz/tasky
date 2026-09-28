@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from tasky import stale
+from tasky.server import make_server
 
 _NOW = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
 _NOW_TS = _NOW.timestamp()
@@ -257,6 +258,22 @@ def test_session_ends_once_its_last_running_task_is_swept(store, config, tmp_pat
     stale.sweep(store, _stale_config(config, hours=24), now=_NOW_TS)
 
     assert store.get_session("sess-1")["state"] == "ended"
+
+
+def test_server_periodic_tick_runs_the_sweep(store, config, tmp_path):
+    """The sweep is only useful wired into the server's periodic sync tick
+    (``_Server.sync_titles``, called from every ``/api/version`` poll): this
+    is the one line that makes it run in production, so it gets its own
+    test rather than relying on ``sweep()`` alone staying correct."""
+    task = _running_task(store, tmp_path, hours_ago=100)
+    _old_session(store, tmp_path, hours_ago=100)
+    srv = make_server(_stale_config(config, hours=24), port=0)
+    try:
+        srv.sync_titles(store)
+    finally:
+        srv.server_close()
+
+    assert store.get_task(task["id"])["status"] == "interrupted"
 
 
 def test_session_with_another_live_task_stays_active(store, config, tmp_path):
