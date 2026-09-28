@@ -2169,7 +2169,10 @@ function renderAttentionArchive(tasks) {
 
   const btn = el.attentionArchiveBtn;
   btn.hidden = stale.length === 0;
-  btn.textContent = `Archive ${plural(stale.length, "task")} older than a day`;
+  // Short enough to sit beside the column title; the full sentence is the tooltip.
+  btn.textContent = `Archive ${stale.length} old`;
+  btn.title = `Archive ${plural(stale.length, "task")} older than a day`;
+  btn.setAttribute("aria-label", btn.title);
   btn.dataset.ids = JSON.stringify(stale.map((t) => t.id));
 
   const confirming = attentionArchiveConfirming && stale.length > 0;

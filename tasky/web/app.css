@@ -397,6 +397,15 @@ code {
   opacity: 0.6;
 }
 
+/* A narrow waiting card (Inbox, Up next) cannot fit title, route tag, time and
+   three actions on one line: the title keeps the first line to itself and the
+   rest moves under it. */
+@container card (max-width: 360px) {
+  .title-btn:has(~ .actions:not([hidden])) {
+    flex-basis: 100%;
+  }
+}
+
 .drawer-route-row {
   display: flex;
   gap: 8px;
@@ -882,11 +891,15 @@ button.recap-card-box:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 0;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .attention-archive-btn {
-  flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 500;
 }
 
@@ -1252,6 +1265,7 @@ button.recap-card-box:hover {
   flex: 1;
   min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 6px;
   container-type: inline-size;
