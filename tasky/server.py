@@ -70,6 +70,9 @@ _SESSION_ID_RE = re.compile(r"^/api/sessions/([^/]+)$")
 _AREA_ID_RE = re.compile(r"^/api/areas/(\d{1,18})$")
 _CARD_ID_RE = re.compile(r"^/api/cards/(\d{1,18})$")
 _TASK_PATCH_FIELDS = ("status", "title", "body", "before_id", "lane", "permission_mode")
+# A generous cap: the board never has anywhere near this many attention items
+# to archive in one bulk action, so this only bounds a malformed request.
+_TASK_BULK_MAX = 500
 _SESSION_PATCH_FIELDS = ("auto_pull", "title")
 
 
@@ -262,6 +265,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._route_create_area(body)
         elif method == "POST" and path == "/api/tasks":
             self._route_create_task(body)
+        elif method == "POST" and path == "/api/tasks/hide":
+            self._route_hide_tasks(body)
+        elif method == "POST" and path == "/api/tasks/restore":
+            self._route_restore_tasks(body)
         elif method == "POST" and path == "/api/import":
             self._route_import()
         elif method == "GET" and path in _STATIC_FILES:
@@ -942,6 +949,39 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(404, "task not found")
             return
         self._send_json(200, task)
+
+    def _task_id_list(self, body: dict) -> list[int] | None:
+        """``body["ids"]`` as a list of plain (non-bool) ints, or None if malformed."""
+        raw = body.get("ids")
+        if not isinstance(raw, list) or not raw or len(raw) > _TASK_BULK_MAX:
+            return None
+        ids = []
+        for value in raw:
+            if not isinstance(value, int) or isinstance(value, bool):
+                return None
+            ids.append(value)
+        return ids
+
+    def _route_hide_tasks(self, body: dict) -> None:
+        # Bulk sibling of DELETE /api/tasks/<id>: same soft-delete semantics
+        # (hides delegations too, cancels a queued task), for the "Archive
+        # everything older than a day" board action.
+        ids = self._task_id_list(body)
+        if ids is None:
+            self._error(400, "ids must be a non-empty list of task ids")
+            return
+        with Store.open(self.server.config) as store:
+            hidden = store.hide_tasks(ids)
+        self._send_json(200, {"hidden": hidden})
+
+    def _route_restore_tasks(self, body: dict) -> None:
+        ids = self._task_id_list(body)
+        if ids is None:
+            self._error(400, "ids must be a non-empty list of task ids")
+            return
+        with Store.open(self.server.config) as store:
+            tasks = store.restore_tasks(ids)
+        self._send_json(200, {"tasks": tasks})
 
     def _route_run_task(self, task_id: int, body: dict) -> None:
         permission_mode = body.get("permission_mode")

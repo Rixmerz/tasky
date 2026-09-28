@@ -912,3 +912,94 @@ def test_old_cancelled_prompt_is_kept(store, config):
     _submit(store, config, "p2", "deploy")
 
     assert len(store.list_tasks(kind="prompt")) == 2
+
+
+# -- continuation nudges ("--continue", "sigue", "vuelve a abrila") -------------
+
+
+def test_continue_after_an_interrupted_turn_folds_into_it(store, config):
+    _submit(store, config, "p1", "migrate the invoices table")
+    first = store.latest_prompt_task("s1")
+    store.update_task(first["id"], status="interrupted")
+
+    _submit(store, config, "p2", "--continue")
+
+    tasks = store.list_tasks(kind="prompt")
+    assert len(tasks) == 1
+    reopened = store.get_task(first["id"])
+    assert reopened["status"] == "running"
+    assert reopened["prompt_id"] == "p2"
+    assert [f["text"] for f in reopened["followups"]] == ["--continue"]
+
+
+def test_spanish_nudge_folds_into_a_failed_turn(store, config):
+    _submit(store, config, "p1", "revisa el layout del dashboard")
+    first = store.latest_prompt_task("s1")
+    store.update_task(first["id"], status="failed")
+
+    _submit(store, config, "p2", "vuelve a abrila")
+
+    tasks = store.list_tasks(kind="prompt")
+    assert len(tasks) == 1
+    assert store.get_task(first["id"])["status"] == "running"
+
+
+def test_similar_but_longer_message_is_not_treated_as_a_nudge(store, config):
+    # "vuelve a rediseñar la alpaca..." only starts the same way as the nudge
+    # pattern; it names real new work and must get its own task.
+    _submit(store, config, "p1", "draw a logo")
+    first = store.latest_prompt_task("s1")
+    store.update_task(first["id"], status="interrupted")
+
+    _submit(store, config, "p2", "vuelve a rediseñar la alpaca desde cero")
+
+    assert len(store.list_tasks(kind="prompt")) == 2
+
+
+def test_nudge_with_no_previous_turn_still_becomes_a_task(store, config):
+    _submit(store, config, "p1", "--continue")
+
+    tasks = store.list_tasks(kind="prompt")
+    assert len(tasks) == 1
+    assert tasks[0]["body"] == "--continue"
+
+
+def test_nudge_after_a_cleanly_finished_turn_is_kept_as_its_own_task(store, config):
+    # Only an interrupted/failed turn is reopened by a nudge; one that ended
+    # cleanly was not stuck, so "--continue" after it is its own new task.
+    _submit(store, config, "p1", "run the tests")
+    handle(
+        _event("Stop", prompt_id="p1", last_assistant_message="all green"), store, config, {}
+    )
+
+    _submit(store, config, "p2", "--continue")
+
+    assert len(store.list_tasks(kind="prompt")) == 2
+
+
+def test_repeated_one_word_command_is_not_treated_as_a_nudge(store, config):
+    # Real history: "next" is used as a one-word command stepping through a
+    # list of distinct items -- it must not fold away like "--continue" does.
+    _submit(store, config, "p1", "review card one")
+    first = store.latest_prompt_task("s1")
+    store.update_task(first["id"], status="interrupted")
+
+    _submit(store, config, "p2", "next")
+
+    assert len(store.list_tasks(kind="prompt")) == 2
+
+
+def test_nudge_reaches_stop_and_the_reopened_task_finishes(store, config):
+    _submit(store, config, "p1", "fix the flaky test")
+    first = store.latest_prompt_task("s1")
+    store.update_task(first["id"], status="interrupted")
+
+    _submit(store, config, "p2", "--continue")
+    handle(
+        _event("Stop", prompt_id="p2", last_assistant_message="fixed it"), store, config, {}
+    )
+
+    reopened = store.get_task(first["id"])
+    assert reopened["status"] == "done"
+    assert reopened["result"] == "fixed it"
+    assert len(store.list_tasks(kind="prompt")) == 1

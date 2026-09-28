@@ -597,6 +597,82 @@ def test_delete_task_not_found(conn, auth_headers):
     assert resp.status == 404
 
 
+# -- POST /api/tasks/hide and /api/tasks/restore (bulk) --------------------------
+
+
+def test_bulk_hide_tasks(store, conn, auth_headers, tmp_path):
+    a = store.create_task(kind="prompt", body="a", status="interrupted", source="hook",
+                           cwd=str(tmp_path))
+    b = store.create_task(kind="prompt", body="b", status="failed", source="hook",
+                           cwd=str(tmp_path))
+    child = store.create_task(kind="delegation", body="c", status="done", source="hook",
+                              parent_id=a["id"])
+
+    resp, parsed = _request(
+        conn, "POST", "/api/tasks/hide", body={"ids": [a["id"], b["id"]]},
+        headers=auth_headers,
+    )
+
+    assert resp.status == 200
+    assert sorted(parsed["hidden"]) == sorted([a["id"], b["id"]])
+    assert store.get_task(a["id"])["deleted_at"]
+    assert store.get_task(b["id"])["deleted_at"]
+    assert store.get_task(child["id"])["deleted_at"]
+    _, state = _request(conn, "GET", "/api/state", headers=auth_headers)
+    visible_ids = {t["id"] for t in state["tasks"]}
+    assert a["id"] not in visible_ids
+    assert b["id"] not in visible_ids
+
+
+def test_bulk_hide_ignores_unknown_ids(store, conn, auth_headers, tmp_path):
+    a = store.create_task(kind="prompt", body="a", status="failed", source="hook",
+                           cwd=str(tmp_path))
+
+    resp, parsed = _request(
+        conn, "POST", "/api/tasks/hide", body={"ids": [a["id"], 999999]},
+        headers=auth_headers,
+    )
+
+    assert resp.status == 200
+    assert parsed["hidden"] == [a["id"]]
+
+
+def test_bulk_hide_rejects_a_malformed_body(conn, auth_headers):
+    for body in ({}, {"ids": []}, {"ids": "x"}, {"ids": [1, "x"]}, {"ids": [True]}):
+        resp, _ = _request(conn, "POST", "/api/tasks/hide", body=body, headers=auth_headers)
+        assert resp.status == 400
+
+
+def test_bulk_hide_route_without_token_401(store, conn, tmp_path):
+    task = store.create_task(kind="prompt", body="a", status="failed", source="hook",
+                              cwd=str(tmp_path))
+    resp, _ = _request(
+        conn, "POST", "/api/tasks/hide", body={"ids": [task["id"]]},
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status == 401
+    assert store.get_task(task["id"])["deleted_at"] is None
+
+
+def test_bulk_restore_tasks(store, conn, auth_headers, tmp_path):
+    a = store.create_task(kind="prompt", body="a", status="failed", source="hook",
+                           cwd=str(tmp_path))
+    b = store.create_task(kind="prompt", body="b", status="interrupted", source="hook",
+                           cwd=str(tmp_path))
+    _request(conn, "POST", "/api/tasks/hide", body={"ids": [a["id"], b["id"]]},
+             headers=auth_headers)
+
+    resp, parsed = _request(
+        conn, "POST", "/api/tasks/restore", body={"ids": [a["id"], b["id"]]},
+        headers=auth_headers,
+    )
+
+    assert resp.status == 200
+    assert {t["id"] for t in parsed["tasks"]} == {a["id"], b["id"]}
+    assert store.get_task(a["id"])["deleted_at"] is None
+    assert store.get_task(b["id"])["deleted_at"] is None
+
+
 # -- POST /api/tasks/<id>/run ---------------------------------------------------
 
 

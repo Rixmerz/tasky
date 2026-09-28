@@ -835,6 +835,43 @@ button.recap-card-box:hover {
   flex-shrink: 0;
 }
 
+.attention-heading-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.attention-archive-btn {
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+/* A confirm strip in place of a browser dialog, dismissed by either button. */
+.attention-archive-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--attn-bg);
+  flex-shrink: 0;
+}
+
+.attention-archive-confirm .arch-confirm-ask {
+  flex: 1;
+  min-width: 0;
+  color: var(--foreground);
+  font-weight: 400;
+}
+
+/* Reused from Done's session groups, without a day header above them: pin
+   each group's own heading to the very top of the scroll area instead of
+   Done's 30px (the height of the day header it does not have here). */
+#attention-groups .done-group-heading {
+  top: 0;
+}
+
 .col-count {
   font-family: var(--font-mono);
   font-size: 11.5px;

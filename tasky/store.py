@@ -1102,6 +1102,46 @@ class Store:
         self._conn.commit()
         return self.get_task(task_id)
 
+    def hide_tasks(self, task_ids: Iterable[int]) -> list[int]:
+        """``hide_task`` for many ids in one transaction; returns the ids that existed."""
+        ids = list(dict.fromkeys(task_ids))
+        if not ids:
+            return []
+        placeholders = ", ".join("?" for _ in ids)
+        existing = {
+            row["id"]
+            for row in self._conn.execute(
+                f"SELECT id FROM tasks WHERE id IN ({placeholders})",  # noqa: S608 -- placeholders only
+                ids,
+            )
+        }
+        found = [i for i in ids if i in existing]
+        if found:
+            found_placeholders = ", ".join("?" for _ in found)
+            at = now_iso()
+            self._conn.execute(
+                "UPDATE tasks SET deleted_at = COALESCE(deleted_at, ?), "  # noqa: S608
+                "status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END "
+                f"WHERE id IN ({found_placeholders}) OR parent_id IN ({found_placeholders})",
+                (at, *found, *found),
+            )
+            self._conn.commit()
+        return found
+
+    def restore_tasks(self, task_ids: Iterable[int]) -> list[dict]:
+        """``restore_task`` for many ids in one transaction; returns the restored tasks."""
+        ids = list(dict.fromkeys(task_ids))
+        if not ids:
+            return []
+        placeholders = ", ".join("?" for _ in ids)
+        self._conn.execute(
+            "UPDATE tasks SET deleted_at = NULL "  # noqa: S608
+            f"WHERE id IN ({placeholders}) OR parent_id IN ({placeholders})",
+            (*ids, *ids),
+        )
+        self._conn.commit()
+        return [task for task in (self.get_task(i) for i in ids) if task is not None]
+
     def delete_task(self, task_id: int) -> bool:
         cursor = self._conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         self._conn.commit()

@@ -18,7 +18,13 @@ from typing import Any, TextIO
 
 from tasky import __version__, repos, transcripts
 from tasky.config import Config, now_iso
-from tasky.prompts import classify, parse_notifications, queue_request, same_request
+from tasky.prompts import (
+    classify,
+    is_continuation_nudge,
+    parse_notifications,
+    queue_request,
+    same_request,
+)
 from tasky.store import Store
 
 _FAILED_NOTIFICATION_STATUSES = ("failed", "killed")
@@ -273,6 +279,23 @@ def _user_prompt_submit(
         if not store.is_subagent_prompt(session_id, classified.text):
             store.add_followup(turn["id"], classified.text)
         return None
+
+    # A bare "--continue"/"sigue"/"vuelve a abrila" names no work of its own:
+    # it only pushes the session's last stuck turn along, so it folds into
+    # that turn instead of becoming a Needs-attention row of its own. Claude
+    # Code hands this a fresh prompt id (the previous turn already ended), so
+    # it never reaches the `turn is not None` branch above.
+    if is_continuation_nudge(classified.text):
+        previous = store.latest_prompt_task(session_id)
+        if (
+            previous is not None
+            and previous["source"] == "hook"
+            and previous["status"] in ("interrupted", "failed")
+        ):
+            store.add_followup(previous["id"], classified.text)
+            store.update_task(previous["id"], status="running", prompt_id=prompt_id)
+            store.update_session(session_id, pull_chain=0)
+            return None
 
     _drop_cancelled_copy(event, classified.text, store, config)
     store.create_task(

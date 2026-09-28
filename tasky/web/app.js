@@ -70,6 +70,7 @@ let resultDigestById = new Map();
 let projectFilter = "";
 let multiProject = false;
 let doneShown = DONE_PAGE_SIZE;
+let currentAttentionTasks = []; // last renderAll()'s attention list, for the archive button's handlers
 let pollTimer = null;
 let pollInFlight = false;
 let refreshInFlight = false;
@@ -142,7 +143,13 @@ const el = {
   parallelEmpty: document.getElementById("parallel-empty"),
   laneBanners: document.getElementById("lane-banners"),
   attentionList: document.getElementById("attention-list"),
+  attentionGroups: document.getElementById("attention-groups"),
   attentionEmpty: document.getElementById("attention-empty"),
+  attentionArchiveBtn: document.getElementById("attention-archive-stale"),
+  attentionArchiveConfirm: document.getElementById("attention-archive-confirm"),
+  attentionArchiveConfirmText: document.getElementById("attention-archive-confirm-text"),
+  attentionArchiveConfirmYes: document.getElementById("attention-archive-confirm-yes"),
+  attentionArchiveConfirmNo: document.getElementById("attention-archive-confirm-no"),
   doneList: document.getElementById("done-list"),
   doneEmpty: document.getElementById("done-empty"),
   doneShowMore: document.getElementById("done-show-more"),
@@ -1931,6 +1938,181 @@ function updateDoneGroup(node, group, ctx) {
   }
 }
 
+// ---------- attention: project groups + "archive older than a day" ----------
+//
+// A board with several projects mixed into one Needs attention column reads
+// as noise, so once it holds more than one project's worth of cards they are
+// grouped the way Done already groups its own cards -- the same collapsible
+// section (done-group), swatch and tint cycle, just keyed by project instead
+// of by day and session, and with none of Done's recap rows. One project
+// stays a plain flat list: a lone header would only add clutter.
+
+const ATTENTION_STALE_MS = 24 * 60 * 60 * 1000; // "older than a day"
+let attentionGroupSeq = 0;
+let attentionGroupOpen = {};
+let attentionArchiveConfirming = false;
+
+/** Attention cards past their first day: the "Archive older" button's targets. */
+function attentionStaleTasks(tasks) {
+  const cutoff = Date.now() - ATTENTION_STALE_MS;
+  return tasks.filter((t) => {
+    const at = new Date(t.finished_at || t.created_at).getTime();
+    return Number.isFinite(at) && at < cutoff;
+  });
+}
+
+function buildAttentionGroups(tasks) {
+  const groups = [];
+  const byLabel = new Map();
+  for (const t of tasks) {
+    const label = projectLabel(t.cwd) || "Unknown project";
+    let group = byLabel.get(label);
+    if (!group) {
+      group = { key: label, label, cwd: t.cwd, tasks: [] };
+      byLabel.set(label, group);
+      groups.push(group);
+    }
+    group.tasks.push(t);
+  }
+  return groups;
+}
+
+/** Renders the flat list or the per-project groups, whichever the mix of projects calls for. */
+function renderAttentionColumn(tasks) {
+  const groups = buildAttentionGroups(tasks);
+  const grouped = groups.length > 1;
+  el.attentionList.hidden = grouped;
+  el.attentionGroups.hidden = !grouped;
+  if (!grouped) {
+    reconcileList(el.attentionList, tasks, (t) => t.id, createCardFor("attention"), updateCardFor("attention"));
+    applyTints(el.attentionList);
+    return;
+  }
+  const tints = new Map();
+  groups.forEach((g, i) => tints.set(g.key, i % TINT_COUNT));
+  const update = (node, g) => updateAttentionGroup(node, g, tints);
+  reconcileList(el.attentionGroups, groups, (g) => g.key, (g) => {
+    const node = createAttentionGroup();
+    update(node, g);
+    return node;
+  }, update);
+}
+
+function createAttentionGroup() {
+  const node = document.createElement("div");
+  node.className = "done-group";
+  const listId = `attention-group-${++attentionGroupSeq}`;
+  const heading = document.createElement("h4");
+  heading.className = "done-group-heading";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "done-group-toggle";
+  btn.setAttribute("aria-controls", listId);
+  btn.innerHTML =
+    '<svg class="chevron" aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>' +
+    '<span class="swatch" aria-hidden="true"></span>' +
+    '<span class="done-group-title"></span>' +
+    '<span class="done-group-facts"></span>';
+  heading.appendChild(btn);
+  const list = document.createElement("div");
+  list.className = "card-list done-group-list";
+  list.id = listId;
+  btn.addEventListener("click", () => {
+    const open = btn.getAttribute("aria-expanded") !== "true";
+    attentionGroupOpen[node.dataset.groupKey] = open;
+    btn.setAttribute("aria-expanded", String(open));
+    list.hidden = !open;
+  });
+  node.append(heading, list);
+  return node;
+}
+
+function updateAttentionGroup(node, group, tints) {
+  node.dataset.groupKey = group.key;
+  const tint = TINT_CLASSES[tints.get(group.key) || 0];
+  node.classList.remove(...TINT_CLASSES);
+  node.classList.add(tint);
+
+  const btn = node.querySelector(".done-group-toggle");
+  const list = node.querySelector(".done-group-list");
+  // Open by default: a folded group would hide the urgent items it groups.
+  const stored = attentionGroupOpen[group.key];
+  const open = typeof stored === "boolean" ? stored : true;
+  btn.setAttribute("aria-expanded", String(open));
+  list.hidden = !open;
+
+  node.querySelector(".done-group-title").textContent = group.label;
+  btn.title = group.cwd || group.label;
+  node.querySelector(".done-group-facts").textContent = plural(group.tasks.length, "task");
+
+  reconcileList(list, group.tasks, (t) => t.id, createCardFor("attention"), updateCardFor("attention"));
+  for (const card of list.querySelectorAll(":scope > .card")) {
+    card.classList.remove(...TINT_CLASSES);
+    card.classList.add("tinted", tint);
+  }
+}
+
+/** The header button and the confirm strip that replaces a browser confirm() dialog. */
+function renderAttentionArchive(tasks) {
+  const stale = attentionStaleTasks(tasks);
+  if (stale.length === 0) attentionArchiveConfirming = false;
+
+  const btn = el.attentionArchiveBtn;
+  btn.hidden = stale.length === 0;
+  btn.textContent = `Archive ${plural(stale.length, "task")} older than a day`;
+  btn.dataset.ids = JSON.stringify(stale.map((t) => t.id));
+
+  const confirming = attentionArchiveConfirming && stale.length > 0;
+  el.attentionArchiveConfirm.hidden = !confirming;
+  if (confirming) {
+    el.attentionArchiveConfirmText.textContent =
+      `Archive ${plural(stale.length, "task")} older than a day? They stay in history and search.`;
+  }
+}
+
+el.attentionArchiveBtn.addEventListener("click", () => {
+  attentionArchiveConfirming = true;
+  renderAttentionArchive(currentAttentionTasks);
+});
+
+el.attentionArchiveConfirmNo.addEventListener("click", () => {
+  attentionArchiveConfirming = false;
+  renderAttentionArchive(currentAttentionTasks);
+});
+
+el.attentionArchiveConfirmYes.addEventListener("click", () => {
+  attentionArchiveConfirming = false;
+  let ids = [];
+  try {
+    ids = JSON.parse(el.attentionArchiveBtn.dataset.ids || "[]");
+  } catch {
+    ids = [];
+  }
+  archiveStaleAttention(ids);
+});
+
+async function archiveStaleAttention(ids) {
+  if (!ids.length) return;
+  try {
+    const res = await apiMutate("POST", "/api/tasks/hide", { ids });
+    const hidden = (res && res.hidden) || ids;
+    showToast(`${plural(hidden.length, "task")} archived`, "Undo", () => restoreTasks(hidden));
+    await refresh();
+  } catch (err) {
+    handleApiError(err);
+  }
+}
+
+async function restoreTasks(ids) {
+  try {
+    await apiMutate("POST", "/api/tasks/restore", { ids });
+    announce(`${plural(ids.length, "task")} restored`);
+    await refresh();
+  } catch (err) {
+    handleApiError(err);
+  }
+}
+
 // ---------- old hooks ----------
 
 /** A live session whose hooks predate this server: it still records the old, wrong way. */
@@ -2196,9 +2378,10 @@ function renderAll() {
   reconcileList(el.parallelList, parallelTasks, (t) => t.id, createCardFor("parallel"), updateCardFor("parallel"));
   applyTints(el.parallelList);
 
+  currentAttentionTasks = attentionTasks;
   el.attentionEmpty.hidden = attentionTasks.length !== 0;
-  reconcileList(el.attentionList, attentionTasks, (t) => t.id, createCardFor("attention"), updateCardFor("attention"));
-  applyTints(el.attentionList);
+  renderAttentionColumn(attentionTasks);
+  renderAttentionArchive(attentionTasks);
 
   const doneVisible = doneAll.slice(0, doneShown);
   el.doneEmpty.hidden = doneAll.length !== 0;
