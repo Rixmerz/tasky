@@ -105,6 +105,7 @@ const el = {
   routerEnabled: document.getElementById("router-enabled"),
   routerModels: document.getElementById("router-models"),
   routerStatus: document.getElementById("router-status"),
+  modelSpend: document.getElementById("model-spend"),
   topbarExtra: document.getElementById("topbar-extra"),
   modeSelect: document.getElementById("quick-add-mode"),
   bypassChip: document.getElementById("bypass-chip"),
@@ -2112,6 +2113,7 @@ el.recapsToggle.addEventListener("click", () => {
 function renderAll() {
   renderProjectFilterOptions();
   renderQuickAddOptions();
+  renderModelSpend(state.tokens_by_model);
   updateModeUI();
 
   const visible = topLevelTasks().filter(matchesFilter);
@@ -6261,6 +6263,27 @@ function setSettingsOpen(open) {
     el.projectFilter.focus();
     loadRouter();
   }
+}
+
+// ---------- model spend ----------
+
+const MODEL_SPEND_ORDER = ["fable", "opus", "sonnet", "haiku", "other"];
+
+/** "Opus 301k · Sonnet 8k · Haiku 1k" for one bucket of tokens_by_model, families with no output left out. */
+function modelSpendParts(bucket) {
+  return MODEL_SPEND_ORDER.filter((family) => bucket && bucket[family] && bucket[family].output > 0).map(
+    (family) => `${modelLabel(family)} ${formatCount(bucket[family].output)}`,
+  );
+}
+
+/** The router settings hint: today's spend on the line, the last 7 days on hover. */
+function renderModelSpend(tokensByModel) {
+  if (!el.modelSpend) return;
+  const today = modelSpendParts(tokensByModel && tokensByModel.today);
+  const week = modelSpendParts(tokensByModel && tokensByModel.week);
+  el.modelSpend.textContent = today.length ? `Today: ${today.join(" · ")} out` : "";
+  el.modelSpend.title = week.length ? `Last 7 days: ${week.join(" · ")} out` : "";
+  el.modelSpend.hidden = today.length === 0;
 }
 
 // ---------- model router settings ----------

@@ -9,13 +9,14 @@ import re
 import sqlite3
 import time
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from tasky import areas as area_rules
 from tasky.config import Config, now_iso
 from tasky.prompts import SESSION_COMMANDS, classify, make_title, normalize, same_request
+from tasky.router import MODELS
 
 # Store.task_areas results for finished turns, per database: (areas signature, prompt → areas).
 _TASK_AREAS_CACHE: dict[str, tuple[tuple, dict[str, list[dict]]]] = {}
@@ -360,6 +361,22 @@ def _usage_totals(row: sqlite3.Row) -> dict[str, int]:
         "cache_read": int(row["cache_read"] or 0),
         "cache_write": int(row["cache_write"] or 0),
     }
+
+
+def _model_family(model: str | None) -> str:
+    """Buckets a transcript's raw model id ("claude-opus-5-5") into a router family.
+
+    A row with no model recorded (older than the transcript re-read that started keeping it),
+    or a synthetic entry with no real API call, lands in "other" instead of being dropped, so
+    totals still add up.
+    """
+    if not model:
+        return "other"
+    lowered = model.lower()
+    for family in MODELS:
+        if family in lowered:
+            return family
+    return "other"
 
 
 def _split_script(script: str) -> list[str]:
@@ -1646,6 +1663,41 @@ class Store:
             )
         }
 
+    def tokens_by_model(
+        self, *, now: datetime | None = None
+    ) -> dict[str, dict[str, dict[str, int]]]:
+        """Token totals per model family, for today and the trailing 7 days, in local time.
+
+        Buckets each assistant message by the real model the transcript recorded for it
+        (``usage.model``), not the router's later choice, so interactive turns the router
+        never touched still count. ``now`` SHALL be an aware datetime when passed (tests
+        pin it); it defaults to the local wall clock. A message with no model recorded, or
+        a synthetic entry with no real API call, lands in the "other" family.
+        """
+        # A fixed-offset tz from astimezone() can put local midnight an hour off on a DST
+        # change day; not worth pulling in zoneinfo for a dashboard glance figure.
+        now = now or datetime.now().astimezone()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=6)
+        result: dict[str, dict[str, dict[str, int]]] = {}
+        for label, floor in (("today", today_start), ("week", week_start)):
+            bound = floor.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+            buckets: dict[str, dict[str, int]] = {}
+            for row in self._conn.execute(
+                "SELECT model, SUM(input) AS input, SUM(output) AS output, "
+                "SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write "
+                "FROM usage WHERE ts >= ? GROUP BY model",
+                (bound,),
+            ):
+                bucket = buckets.setdefault(
+                    _model_family(row["model"]),
+                    {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                )
+                for key, value in _usage_totals(row).items():
+                    bucket[key] += value
+            result[label] = buckets
+        return result
+
     def add_messages(self, rows: list[dict]) -> int:
         """Insert messages not stored yet (by uuid); returns how many were new."""
         added = 0
@@ -2626,4 +2678,5 @@ class Store:
             "recaps": self.recaps(limit=200),
             "tasks": tasks,
             "lanes": self.list_lanes(),
+            "tokens_by_model": self.tokens_by_model(),
         }
