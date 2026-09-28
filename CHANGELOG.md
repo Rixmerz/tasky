@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.17.0] - 2026-09-28
+
+### Added
+
+- Model router: tasks waiting in Inbox and Up next show the model and effort they would start on
+  (`opus · xhigh`, `haiku`, or `default`). Each task's kind is classified once in the background and
+  cached, so switching a model off updates every row at once and the dashboard never waits.
+- Model router: choose a waiting task's model yourself from its details (Router decides, Session
+  default, or a model plus effort). Your choice replaces the router for that task, applies even with
+  the router off or that model switched off, and is recorded as "your choice".
+- Today's token spend by model family (Opus, Sonnet, Haiku, Fable) under the router settings, with
+  the last 7 days on hover, bucketed from each message's real model rather than the router's choice.
+- Needs attention: "Archive older than a day" in the column header, confirmed in the page, with Undo;
+  cards are grouped by project when more than one is present. Bulk `POST /api/tasks/hide` and
+  `/api/tasks/restore`.
+
+### Changed
+
+- A Running task with no sign of life — no newer prompt, no growth in its session transcript or
+  worker log — for `TASKY_STALE_RUNNING_HOURS` (default 24, `0` disables) moves to Needs attention as
+  Stopped mid-work, with how long it was idle. A swept queue task pauses its project's run queue; a
+  worker that is still moving is never touched.
+- A bare continuation nudge (`--continue`, `sigue`, `continúa`, `go on`, `vuelve a …`) after an
+  interrupted or failed turn reopens that turn instead of becoming a stuck task of its own.
+- Outdated sessions are named once, in one notice with a resume command to copy and a link to each
+  session's latest task; dismissing it lasts until a version it has not covered appears. Elsewhere the
+  "older tasky" badge is a quiet dot with a tooltip.
+- A recap shown in "Latest recap" no longer repeats inside its Done group.
+- Database schema version 12: tasks gain `pinned_model`, `pinned_effort` and route preview columns.
+
 ## [0.16.1] - 2026-09-27
 
 ### Fixed
