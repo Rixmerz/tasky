@@ -46,6 +46,7 @@ class Config:
     dead_end_items: int = 5
     card_language: str = ""
     card_translate: bool = True
+    stale_running_hours: int = 24
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Config:
@@ -83,6 +84,7 @@ class Config:
             card_language=_str_env(env, "TASKY_LANGUAGE", ""),
             card_translate=env.get("TASKY_CARDS_TRANSLATE", "").strip().lower()
             not in ("0", "false", "no"),
+            stale_running_hours=max(0, _int_env(env, "TASKY_STALE_RUNNING_HOURS", 24)),
         )
 
 
