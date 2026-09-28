@@ -17,6 +17,15 @@ than the configured threshold. A single long tool call with no evidence
 newer than the threshold looks the same as a dead process by this signal;
 `TASKY_STALE_RUNNING_HOURS` is the knob to make that call for a given
 machine, and `0` disables the sweep entirely.
+
+Session-level evidence cannot tell one turn from the next, so a session the
+user keeps using would protect a turn it left `running` days ago forever. Two
+task-level facts close that gap. A session runs one turn at a time and folds
+messages typed mid-turn into that turn, so a running prompt with a newer
+prompt after it in the same session has ended: it is swept at once. A running
+delegation whose parent task has ended and that is itself older than the
+threshold has outlived any real subagent: it is swept too. Neither says the
+session is gone, so neither ends the session.
 """
 
 from __future__ import annotations
@@ -54,6 +63,37 @@ def _last_sign_of_life(task: dict, session: dict | None, config: Config) -> floa
     candidates.append(_mtime(config.log_dir / f"task-{task['id']}.log"))
     known = [c for c in candidates if c is not None]
     return max(known) if known else 0.0
+
+
+def _superseded(task: dict, newest_prompt_at: dict[str, float]) -> bool:
+    """A running prompt that its own session has already moved past."""
+    started = _parse_iso(task.get("created_at") or "")
+    newest = newest_prompt_at.get(task.get("session_id") or "")
+    return (
+        task.get("kind") == "prompt"
+        and task.get("parent_id") is None
+        and started is not None
+        and newest is not None
+        and newest > started
+    )
+
+
+def _orphaned(
+    store: Store, task: dict, config: Config, now: float, threshold_s: float
+) -> bool:
+    """A delegation whose parent task has ended and that has itself shown no sign of
+    life -- its start, its own worker log -- for longer than the threshold."""
+    if task.get("kind") != "delegation" or task.get("parent_id") is None:
+        return False
+    own = [
+        _parse_iso(task.get("started_at") or task.get("created_at") or ""),
+        _mtime(config.log_dir / f"task-{task['id']}.log"),
+    ]
+    known = [t for t in own if t is not None]
+    if not known or now - max(known) <= threshold_s:
+        return False
+    parent = store.get_task(task["parent_id"])
+    return parent is None or parent["status"] != "running"
 
 
 def _format_span(seconds: float) -> str:
@@ -98,7 +138,19 @@ def sweep(store: Store, config: Config, *, now: float | None = None) -> list[dic
     moved: list[dict] = []
     touched_sessions: set[str] = set()
 
-    for task in store.list_tasks(status="running", include_hidden=True):
+    running = store.list_tasks(status="running", include_hidden=True)
+    newest_prompt_at: dict[str, float] = {}
+    for session_id in {t["session_id"] for t in running if t.get("session_id")}:
+        for other in store.list_tasks(session_id=session_id, include_hidden=True):
+            if other.get("kind") != "prompt" or other.get("parent_id") is not None:
+                continue
+            created = _parse_iso(other.get("created_at") or "")
+            if created is not None and created > newest_prompt_at.get(session_id, 0.0):
+                newest_prompt_at[session_id] = created
+
+    # Prompts first, so a delegation sees whether its parent was just swept.
+    running.sort(key=lambda t: t.get("kind") != "prompt")
+    for task in running:
         session_id = task.get("session_id")
         if session_id is not None and session_id not in sessions:
             sessions[session_id] = store.get_session(session_id)
@@ -107,10 +159,16 @@ def sweep(store: Store, config: Config, *, now: float | None = None) -> list[dic
         session_ended = bool(session and session["state"] == "ended")
         last_life = _last_sign_of_life(task, session, config)
         elapsed = now - last_life
-        if not session_ended and elapsed <= threshold_s:
+        idle = session_ended or elapsed > threshold_s
+        if idle:
+            reason = _reason(elapsed)
+        elif _superseded(task, newest_prompt_at):
+            reason = "its session has moved on to a newer prompt; this turn ended without reporting"
+        elif _orphaned(store, task, config, now, threshold_s):
+            reason = "its parent task ended and it never reported back"
+        else:
             continue
 
-        reason = _reason(elapsed)
         note = f"{_NOTE_PREFIX} {reason}"
         existing = task.get("result") or ""
         result = f"{existing}\n\n{note}" if existing else note
@@ -121,7 +179,7 @@ def sweep(store: Store, config: Config, *, now: float | None = None) -> list[dic
                 task["cwd"], paused=True, reason=f"task #{task['id']} interrupted: {reason}"
             )
 
-        if session_id:
+        if session_id and idle:
             touched_sessions.add(session_id)
         moved.append(store.get_task(task["id"]))
 

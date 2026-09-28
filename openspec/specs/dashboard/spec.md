@@ -304,7 +304,11 @@ has shown no sign of life — no newer session activity, no growth in its sessio
 no growth in its worker's log file — for longer than a configurable threshold SHALL move to Needs
 attention as interrupted, with a reason stating how long it has been idle; a task whose session or
 worker still shows activity SHALL stay running regardless of how long it has been running, and the
-sweep SHALL never move a task that has already finished. When Needs attention
+sweep SHALL never move a task that has already finished. Because a session runs one turn at a time,
+a running prompt with a newer prompt after it in the same session SHALL move to Needs attention at
+once, however active the session still is, without ending the session; a running delegation whose
+parent task has ended and that has itself shown no sign of life for longer than the threshold SHALL
+move too. When Needs attention
 holds cards from more than one project, they SHALL be grouped by project, collapsed and expanded
 independently of each other; with a single project the column SHALL stay a flat list. The column
 header SHALL offer an action, confirmed in the page rather than by a browser dialog, that hides every
@@ -355,6 +359,16 @@ attention card older than a day at once, and that action SHALL only appear when 
 #### Scenario: Threshold not yet reached
 - **WHEN** a running task has shown no sign of life for less than the configured threshold
 - **THEN** the task stays in Running
+
+#### Scenario: A turn the session has moved past
+- **WHEN** a session the user is still using has a running prompt from days ago and newer prompts
+  after it
+- **THEN** that old prompt moves to Needs attention as interrupted, and the session stays active
+
+#### Scenario: A background agent still at work is left alone
+- **WHEN** a delegation's parent turn has ended but the delegation started, or last wrote to its
+  worker log, less than the threshold ago
+- **THEN** the delegation stays in Running
 
 #### Scenario: Finished task is left alone
 - **WHEN** a task has already finished (done, failed, interrupted or cancelled)

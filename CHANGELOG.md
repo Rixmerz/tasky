@@ -25,7 +25,9 @@ All notable changes to this project are documented here. The format follows
 - A Running task with no sign of life — no newer prompt, no growth in its session transcript or
   worker log — for `TASKY_STALE_RUNNING_HOURS` (default 24, `0` disables) moves to Needs attention as
   Stopped mid-work, with how long it was idle. A swept queue task pauses its project's run queue; a
-  worker that is still moving is never touched.
+  worker that is still moving is never touched. A turn its own session has moved past (a newer
+  prompt came after it) is swept at once, however active the session still is, and so is a
+  subagent whose parent turn ended and that has been silent past the threshold.
 - A bare continuation nudge (`--continue`, `sigue`, `continúa`, `go on`, `vuelve a …`) after an
   interrupted or failed turn reopens that turn instead of becoming a stuck task of its own.
 - Outdated sessions are named once, in one notice with a resume command to copy and a link to each

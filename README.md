@@ -116,7 +116,9 @@ laptop that never woke up — does not stay `Running` forever: once nothing show
 `TASKY_STALE_RUNNING_HOURS`, it moves to Needs attention as **Stopped mid-work**, with "no activity
 for …; its session or worker is gone" as its reason. A single long tool call or a genuinely
 long-running headless worker is not swept: any of those signals still growing keeps it `Running`
-regardless of how long it has been going.
+regardless of how long it has been going. A session runs one turn at a time, so a turn its session
+has already moved past (a newer prompt came after it) is swept at once, even while you keep using
+that session; so is a subagent whose parent turn ended and that has been silent past the threshold.
 
 Create tasks from the bar at the top. Its "to" picker lists your active sessions first (sending a
 task to one ties it to that session), then each active project, and everything else under "Other".

@@ -296,3 +296,88 @@ def test_session_with_another_live_task_stays_active(store, config, tmp_path):
     assert store.get_task(parent["id"])["status"] == "interrupted"
     assert store.get_task(delegation["id"])["status"] == "running"
     assert store.get_session("sess-1")["state"] == "active"
+
+
+# -- a session that is still in use: task-level evidence ---------------------------------------
+
+
+def _prompt(store, tmp_path, *, hours_ago, status="running", session_id="sess-1"):
+    return store.create_task(
+        kind="prompt",
+        body="x",
+        status=status,
+        source="hook",
+        cwd=str(tmp_path),
+        session_id=session_id,
+        created_at=_iso(hours_ago),
+        started_at=_iso(hours_ago),
+    )
+
+
+def test_superseded_prompt_is_swept_even_while_its_session_is_active(store, config, tmp_path):
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("{}", encoding="utf-8")
+    os.utime(transcript, (_NOW_TS, _NOW_TS))  # the session is being used right now
+    _old_session(store, tmp_path, hours_ago=0.1, transcript_path=str(transcript))
+    old = _prompt(store, tmp_path, hours_ago=100)
+    _prompt(store, tmp_path, hours_ago=2, status="done")
+
+    moved = stale.sweep(store, _stale_config(config), now=_NOW_TS)
+
+    assert [t["id"] for t in moved] == [old["id"]]
+    swept = store.get_task(old["id"])
+    assert swept["status"] == "interrupted"
+    assert "moved on to a newer prompt" in swept["result"]
+    assert store.get_session("sess-1")["state"] == "active"
+
+
+def test_latest_prompt_of_an_active_session_stays_running(store, config, tmp_path):
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("{}", encoding="utf-8")
+    os.utime(transcript, (_NOW_TS, _NOW_TS))
+    _old_session(store, tmp_path, hours_ago=0.1, transcript_path=str(transcript))
+    _prompt(store, tmp_path, hours_ago=100, status="done")
+    latest = _prompt(store, tmp_path, hours_ago=30)
+
+    assert stale.sweep(store, _stale_config(config), now=_NOW_TS) == []
+    assert store.get_task(latest["id"])["status"] == "running"
+
+
+def test_orphaned_delegation_is_swept_with_its_superseded_parent(store, config, tmp_path):
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("{}", encoding="utf-8")
+    os.utime(transcript, (_NOW_TS, _NOW_TS))
+    _old_session(store, tmp_path, hours_ago=0.1, transcript_path=str(transcript))
+    parent = _prompt(store, tmp_path, hours_ago=100)
+    child = _running_task(store, tmp_path, kind="delegation", parent_id=parent["id"], hours_ago=99)
+    _prompt(store, tmp_path, hours_ago=2, status="done")
+
+    moved = stale.sweep(store, _stale_config(config), now=_NOW_TS)
+
+    assert {t["id"] for t in moved} == {parent["id"], child["id"]}
+    assert "never reported back" in store.get_task(child["id"])["result"]
+
+
+def test_young_delegation_of_a_finished_parent_is_left_alone(store, config, tmp_path):
+    # A background agent may keep working after the turn that launched it ended.
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("{}", encoding="utf-8")
+    os.utime(transcript, (_NOW_TS, _NOW_TS))
+    _old_session(store, tmp_path, hours_ago=0.1, transcript_path=str(transcript))
+    parent = _prompt(store, tmp_path, hours_ago=3, status="done")
+    child = _running_task(store, tmp_path, kind="delegation", parent_id=parent["id"], hours_ago=3)
+
+    assert stale.sweep(store, _stale_config(config), now=_NOW_TS) == []
+    assert store.get_task(child["id"])["status"] == "running"
+
+
+def test_delegation_of_a_running_parent_is_left_alone(store, config, tmp_path):
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("{}", encoding="utf-8")
+    os.utime(transcript, (_NOW_TS, _NOW_TS))
+    _old_session(store, tmp_path, hours_ago=0.1, transcript_path=str(transcript))
+    parent = _prompt(store, tmp_path, hours_ago=30)
+    child = _running_task(store, tmp_path, kind="delegation", parent_id=parent["id"], hours_ago=30)
+
+    assert stale.sweep(store, _stale_config(config), now=_NOW_TS) == []
+    assert store.get_task(child["id"])["status"] == "running"
