@@ -31,6 +31,12 @@ assistive technology and a hover tooltip, not by repeating the notice's sentence
   starts, also on 0.16.0
 - **THEN** the banner stays hidden
 
+#### Scenario: Dismissal survives every session on one of several dismissed versions restarting
+- **WHEN** the user dismisses the outdated-hooks banner while it names both version 0.16.0 and
+  sessions with no recorded version, and every 0.16.0 session is then restarted, leaving only
+  sessions with no recorded version
+- **THEN** the banner stays hidden, because both versions it now names were already covered
+
 #### Scenario: A newly outdated version reopens the notice
 - **WHEN** the user dismisses the outdated-hooks banner while a session runs version 0.16.0, and a
   session on version 0.15.0 is then detected

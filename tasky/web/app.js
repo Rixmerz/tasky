@@ -1881,7 +1881,7 @@ function createDoneGroup() {
     '<svg class="chevron" aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>' +
     '<span class="swatch" aria-hidden="true"></span>' +
     '<span class="done-group-title"></span>' +
-    '<span class="old-hooks-mark" hidden></span>' +
+    '<span class="old-hooks-mark" role="img" hidden></span>' +
     '<span class="done-group-facts"></span>';
   heading.appendChild(btn);
   const list = document.createElement("div");
@@ -2117,6 +2117,7 @@ function createRecapCard(recap) {
   if (hasOldHooks(session)) {
     const mark = document.createElement("span");
     mark.className = "old-hooks-mark";
+    mark.setAttribute("role", "img");
     const text = oldHooksText(session);
     // Quiet dot, not the sentence: the hooks banner above already spells it out.
     mark.title = text;

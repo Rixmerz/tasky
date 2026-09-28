@@ -29,9 +29,9 @@ export function ranVersionLabel(session, version) {
 
 /**
  * A key standing for "which old versions are around right now" (sorted, so
- * session order doesn't matter). Restarting some of several sessions that
- * share an already-known old version doesn't change this key -- only a
- * version the key doesn't already cover does.
+ * session order doesn't matter). Stored on dismiss and compared against as
+ * a set of covered versions, not as a whole-string match -- see
+ * hooksNoticeVisible.
  */
 export function staleVersionsKey(stale, version) {
   const labels = new Set(stale.map((s) => ranVersionLabel(s, version)));
@@ -40,13 +40,16 @@ export function staleVersionsKey(stale, version) {
 
 /**
  * Whether the outdated-hooks banner has something worth saying: there is
- * at least one stale session, and its set of old versions is not exactly
- * the one the user already dismissed. Dismissing persists per version, not
- * per session, so it survives a refresh and doesn't return just because a
- * session on an already-known old build started or ended.
+ * at least one stale session running a version the dismissed key doesn't
+ * already cover. This is a subset check, not equality, so restarting some
+ * of several sessions that share an already-known old version shrinks the
+ * live set without reopening the banner -- only a version the dismissed
+ * key doesn't mention does that.
  */
 export function hooksNoticeVisible(stale, version, dismissedKey) {
-  return stale.length > 0 && staleVersionsKey(stale, version) !== dismissedKey;
+  if (stale.length === 0) return false;
+  const dismissed = new Set(dismissedKey ? dismissedKey.split("|") : []);
+  return stale.some((s) => !dismissed.has(ranVersionLabel(s, version)));
 }
 
 /**

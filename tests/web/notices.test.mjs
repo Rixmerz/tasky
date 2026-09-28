@@ -103,6 +103,16 @@ test("restarting some of several sessions on an already-dismissed version keeps 
   assert.equal(hooksNoticeVisible(remaining, "0.16.1", dismissedKey), false);
 });
 
+test("restarting every session on one of two dismissed versions keeps the other quiet", () => {
+  // Dismissed while two distinct old versions were around.
+  const stale = [session({ id: "a", hook_version: "0.16.0" }), session({ id: "b", hook_version: null })];
+  const dismissedKey = staleVersionsKey(stale, "0.16.1");
+  assert.equal(dismissedKey, "before 0.16.1|v0.16.0");
+  // Every v0.16.0 session restarted; only the "before 0.16.1" ones are left.
+  const remaining = [session({ id: "c", hook_version: null })];
+  assert.equal(hooksNoticeVisible(remaining, "0.16.1", dismissedKey), false);
+});
+
 test("a new old version reopens a dismissed notice", () => {
   const first = [session({ id: "a", hook_version: "0.16.0" })];
   const dismissedKey = staleVersionsKey(first, "0.16.1");
