@@ -3,9 +3,11 @@ from __future__ import annotations
 import multiprocessing
 import sqlite3
 import tempfile
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from tasky.config import now_iso
 from tasky.store import Store
 
 
@@ -894,3 +896,90 @@ def test_search_tasks_filters_by_cwd_orders_by_recency_and_limits(store):
 def test_search_tasks_blank_query_returns_nothing(store):
     store.create_task(kind="prompt", body="anything", status="done", source="hook")
     assert store.search_tasks("   ") == []
+
+
+# -- tokens_by_model ------------------------------------------------------------------------
+
+
+def _usage_row(message_id, model, ts, *, output=100, input_=0, session_id="s1"):
+    return {
+        "message_id": message_id,
+        "session_id": session_id,
+        "prompt_id": None,
+        "model": model,
+        "input": input_,
+        "output": output,
+        "cache_read": 0,
+        "cache_write": 0,
+        "ts": ts,
+        "sidechain": False,
+    }
+
+
+def _iso(dt) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def test_tokens_by_model_buckets_families_and_unknown_models(store):
+    now = datetime(2026, 9, 28, 12, 0, 0, tzinfo=timezone(timedelta(hours=-3)))
+    ts = _iso(now.replace(hour=10))
+    store.add_usage(
+        [
+            _usage_row("m1", "claude-opus-5-5", ts, output=300),
+            _usage_row("m2", "CLAUDE-OPUS-5-5", ts, output=7),  # mixed case, same family
+            _usage_row("m3", "claude-sonnet-5", ts, output=20),
+            _usage_row("m4", "claude-haiku-4-5-20251001", ts, output=5),
+            # older naming, still haiku
+            _usage_row("m5", "claude-3-5-haiku-20241022", ts, output=1),
+            _usage_row("m6", "claude-fable-5-1", ts, output=40),
+            _usage_row("m7", "<synthetic>", ts, output=0),  # no real API call
+            _usage_row("m8", None, ts, output=9),  # no model recorded
+        ]
+    )
+    today = store.tokens_by_model(now=now)["today"]
+    assert today["opus"]["output"] == 307
+    assert today["sonnet"]["output"] == 20
+    assert today["haiku"]["output"] == 6
+    assert today["fable"]["output"] == 40
+    assert today["other"]["output"] == 9
+    assert set(today["opus"]) == {"input", "output", "cache_read", "cache_write"}
+
+
+def test_tokens_by_model_today_is_the_local_calendar_day(store):
+    now = datetime(2026, 9, 28, 12, 0, 0, tzinfo=timezone(timedelta(hours=-3)))
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday = _iso(today_start - timedelta(seconds=1))
+    store.add_usage(
+        [
+            _usage_row("y1", "claude-sonnet-5", yesterday, output=50),
+            _usage_row("t1", "claude-sonnet-5", _iso(today_start), output=70),
+        ]
+    )
+    today = store.tokens_by_model(now=now)["today"]
+    assert today["sonnet"]["output"] == 70
+
+
+def test_tokens_by_model_week_is_the_trailing_seven_local_days(store):
+    now = datetime(2026, 9, 28, 12, 0, 0, tzinfo=timezone(timedelta(hours=-3)))
+    week_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=6)
+    before_week = _iso(week_start - timedelta(seconds=1))
+    store.add_usage(
+        [
+            _usage_row("w1", "claude-opus-5-5", before_week, output=999),
+            _usage_row("w2", "claude-opus-5-5", _iso(week_start), output=11),
+        ]
+    )
+    week = store.tokens_by_model(now=now)["week"]
+    assert week["opus"]["output"] == 11
+
+
+def test_tokens_by_model_ignores_rows_without_a_timestamp(store):
+    store.add_usage([_usage_row("n1", "claude-opus-5-5", None, output=42)])
+    result = store.tokens_by_model()
+    assert result["today"] == {}
+    assert result["week"] == {}
+
+
+def test_tokens_by_model_defaults_to_the_current_local_day(store):
+    store.add_usage([_usage_row("c1", "claude-sonnet-5", now_iso(), output=15)])
+    assert store.tokens_by_model()["today"]["sonnet"]["output"] == 15

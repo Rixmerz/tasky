@@ -381,6 +381,9 @@ def test_state_marks_the_latest_task_and_ships_stats_recaps_and_tokens(store, lo
     assert by_id[older["id"]]["stats"]["files"] == 1
     assert by_id[older["id"]]["stats"]["tokens"]["output"] == 7
     assert state["recaps"][0]["text"] == "Recap text"
+    # The fixture's usage row is dated 2026-09-01, so it never lands in "today"/"week" of state();
+    # this just locks that the key is always present, even when it is empty.
+    assert state["tokens_by_model"] == {"today": {}, "week": {}}
     [session] = state["sessions"]
     assert session["tokens"]["output"] == 7 and session["hook_version"] == "0.8.0"
 
