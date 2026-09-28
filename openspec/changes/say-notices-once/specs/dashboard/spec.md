@@ -13,7 +13,16 @@ notice SHALL persist across a refresh, keyed by which old versions are currently
 stays dismissed while sessions on an already-known old version start or end and reappears only for
 a version it had not already covered. Elsewhere on the board -- a Done group heading, a recap card
 -- an outdated session SHALL be marked by a quiet indicator carrying the same information for
-assistive technology and a hover tooltip, not by repeating the notice's sentence as visible text.
+assistive technology and a hover tooltip, not by repeating the notice's sentence as visible text. A running task that
+has shown no sign of life — no newer session activity, no growth in its session's transcript file,
+no growth in its worker's log file — for longer than a configurable threshold SHALL move to Needs
+attention as interrupted, with a reason stating how long it has been idle; a task whose session or
+worker still shows activity SHALL stay running regardless of how long it has been running, and the
+sweep SHALL never move a task that has already finished. When Needs attention
+holds cards from more than one project, they SHALL be grouped by project, collapsed and expanded
+independently of each other; with a single project the column SHALL stay a flat list. The column
+header SHALL offer an action, confirmed in the page rather than by a browser dialog, that hides every
+attention card older than a day at once, and that action SHALL only appear when such a card exists.
 
 #### Scenario: One recap, not two
 - **WHEN** an open session's newest recap is shown in the "Latest recap" panel above the columns
@@ -46,3 +55,38 @@ assistive technology and a hover tooltip, not by repeating the notice's sentence
 - **WHEN** a Done group's session is running hooks older than the dashboard
 - **THEN** its heading shows a small dot, not the words "older tasky", and the dot's tooltip and
   accessible name carry the full explanation
+
+#### Scenario: Task with no sign of life moves to Needs attention
+- **WHEN** a running task's session has had no newer prompt, its session's transcript file has not
+  grown, and its worker's log has not grown for longer than the configured threshold
+- **THEN** the task moves to Needs attention as interrupted, with a reason naming how long it has
+  been idle and that its session or worker is gone
+
+#### Scenario: Long-running worker is not swept
+- **WHEN** a running task's session or worker log keeps growing past the configured threshold
+- **THEN** the task stays in Running, however long it has been running
+
+#### Scenario: Threshold not yet reached
+- **WHEN** a running task has shown no sign of life for less than the configured threshold
+- **THEN** the task stays in Running
+
+#### Scenario: Finished task is left alone
+- **WHEN** a task has already finished (done, failed, interrupted or cancelled)
+- **THEN** the sweep leaves it exactly as it was, whatever its age
+
+#### Scenario: Grouped by project
+- **WHEN** Needs attention holds cards from two different projects
+- **THEN** the cards are shown in two collapsible groups, one per project, each toggled on its own
+
+#### Scenario: One project stays flat
+- **WHEN** every card in Needs attention belongs to the same project
+- **THEN** the cards are shown as a plain list with no group header
+
+#### Scenario: Archive older than a day
+- **WHEN** the user presses the column's archive action and confirms it in the page
+- **THEN** every attention card whose age is at least a day is hidden at once, and the action offers a
+  way back for what it just hid
+
+#### Scenario: Nothing to archive
+- **WHEN** every card in Needs attention is less than a day old
+- **THEN** the column's archive action does not appear
