@@ -45,7 +45,7 @@ def _finish(config: Config, store: Store, task_id: int) -> None:
 
 
 def _route(config: Config, task_id: int, session_id: str) -> list[str]:
-    """The router's `--model`/`--effort` flags for this task, recorded on it.
+    """The router's `--model`/`--effort` flags for this task (or the user's pin), recorded on it.
 
     Never raises: routing is an optimisation, and a supervisor that crashed here
     would leave the task `running` with no worker behind it.
@@ -57,7 +57,8 @@ def _route(config: Config, task_id: int, session_id: str) -> list[str]:
                 return []
             settings = router.load_settings(store)
             decision = router.decide(task, settings["enabled"], settings["models"])
-            if settings["enabled"]:
+            # A task the user pinned records that choice even with the router off.
+            if settings["enabled"] or decision.pinned:
                 store.update_task(
                     task_id,
                     model=decision.model,

@@ -91,7 +91,7 @@ def test_migration_adds_columns_and_lanes_table_and_keeps_rows(tmp_path):
         assert "lanes" in tables
 
         version = store._conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 11
+        assert version == 12
 
         task = store.list_tasks()[0]
         assert task["title"] == "old task"
@@ -124,7 +124,7 @@ def test_fresh_database_gets_version_2_directly(tmp_path):
     db_path = tmp_path / "fresh.db"
     with Store(db_path) as store:
         version = store._conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 11
+        assert version == 12
         columns = {row["name"] for row in store._conn.execute("PRAGMA table_info(tasks)")}
         assert {"lane", "run_mode", "permission_mode", "fork_of"} <= columns
         tables = {
@@ -146,7 +146,7 @@ def test_reopening_a_migrated_database_does_not_re_run_migration(tmp_path):
     # constructor's version guard skips _initialize() entirely).
     with Store(db_path) as store:
         version = store._conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 11
+        assert version == 12
 
 
 def test_v10_database_gains_router_columns(tmp_path):
@@ -166,7 +166,34 @@ def test_v10_database_gains_router_columns(tmp_path):
     with Store(db_path) as store:
         columns = {row["name"] for row in store._conn.execute("PRAGMA table_info(tasks)")}
         assert {"model", "effort", "route_reason"} <= columns
-        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 12
         kept = store.get_task(task["id"])
         assert kept["body"] == "keep me"
         assert kept["model"] is None
+
+
+def test_v11_database_gains_pin_and_preview_columns(tmp_path):
+    db_path = tmp_path / "v11.db"
+    new = ("pinned_model", "pinned_effort", "preview_key", "preview_kind", "preview_note")
+    with Store(db_path) as store:
+        task = store.create_task(kind="prompt", body="keep me", status="queued", source="cli")
+        store.update_task(task["id"], model="opus", effort="xhigh", route_reason="plan (rules)")
+    raw = sqlite3.connect(db_path)
+    try:
+        # Rebuild the database as version 11 left it: no pin or preview columns.
+        for column in new:
+            raw.execute(f"ALTER TABLE tasks DROP COLUMN {column}")
+        raw.execute("PRAGMA user_version = 11")
+        raw.commit()
+    finally:
+        raw.close()
+
+    with Store(db_path) as store:
+        columns = {row["name"] for row in store._conn.execute("PRAGMA table_info(tasks)")}
+        assert set(new) <= columns
+        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 12
+        kept = store.get_task(task["id"])
+        assert (kept["body"], kept["model"], kept["route_reason"]) == (
+            "keep me", "opus", "plan (rules)",
+        )
+        assert kept["pinned_model"] is None and kept["preview_key"] is None

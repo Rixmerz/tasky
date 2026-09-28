@@ -624,7 +624,7 @@ def test_wal_mode_and_schema_version_persist_on_disk(store):
         mode = raw.execute("PRAGMA journal_mode").fetchone()[0]
         version = raw.execute("PRAGMA user_version").fetchone()[0]
         assert mode.lower() == "wal"
-        assert version == 11
+        assert version == 12
     finally:
         raw.close()
 

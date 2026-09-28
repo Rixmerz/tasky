@@ -55,7 +55,7 @@ const PERMISSION_HINTS = {
   bypassPermissions: "Everything, no asking.",
 };
 
-/** @typedef {{id:number,session_id:string|null,parent_id:number|null,kind:string,title:string,body:string,status:string,result:string|null,cwd:string|null,project:string,lane:string|null,run_mode:string|null,permission_mode:string|null,fork_of:string|null,model:string|null,effort:string|null,route_reason:string|null,position:number|null,created_at:string,started_at:string|null,finished_at:string|null}} Task */
+/** @typedef {{id:number,session_id:string|null,parent_id:number|null,kind:string,title:string,body:string,status:string,result:string|null,cwd:string|null,project:string,lane:string|null,run_mode:string|null,permission_mode:string|null,fork_of:string|null,model:string|null,effort:string|null,route_reason:string|null,pinned_model:string|null,pinned_effort:string|null,route_preview?:{source:string,model:string|null,effort:string|null,reason:string}|null,position:number|null,created_at:string,started_at:string|null,finished_at:string|null}} Task */
 
 class UnauthorizedError extends Error {}
 class NetworkError extends Error {}
@@ -69,6 +69,7 @@ let state = {
   tasks: [],
   lanes: [],
   config: { queue_prefix: "++", max_chain: 5, port: 7733, allow_bypass: false },
+  router: { enabled: false, models: {}, efforts: [] },
 };
 let tasksById = new Map();
 let sessionsById = new Map();
@@ -184,6 +185,10 @@ const el = {
   drawerMode: document.querySelector("#drawer .drawer-mode"),
   drawerModeSelect: document.querySelector("#drawer .drawer-mode-select"),
   drawerModeHint: document.querySelector("#drawer .drawer-mode-hint"),
+  drawerRoute: document.querySelector("#drawer .drawer-route"),
+  drawerRouteModel: document.querySelector("#drawer .drawer-route-model"),
+  drawerRouteEffort: document.querySelector("#drawer .drawer-route-effort"),
+  drawerRouteHint: document.querySelector("#drawer .drawer-route-hint"),
   drawerTaskSection: document.querySelector("#drawer .drawer-task-section"),
   drawerResultWrap: document.querySelector("#drawer .drawer-result-wrap"),
   drawerResultDigest: document.querySelector("#drawer .drawer-result-digest"),
@@ -1013,10 +1018,21 @@ function updateCard(node, task, kind) {
   projectTag.textContent = showProject ? projectLabel(task.cwd) : "";
   projectTag.title = showProject ? task.cwd : "";
 
-  // What the model router chose for this task, when it chose anything.
-  modelTag.hidden = !task.model;
-  modelTag.textContent = task.model ? [task.model, task.effort].filter(Boolean).join(" · ") : "";
-  modelTag.title = task.route_reason || "";
+  // A waiting task shows what it would run on (the router's preview or the
+  // user's pin); any other shows what the router chose when it ran.
+  if (kind === "inbox" || kind === "upnext") {
+    const preview = task.route_preview || null;
+    const label = routeLabel(preview);
+    modelTag.hidden = !label;
+    modelTag.textContent = label;
+    modelTag.title = routeTitle(preview, label);
+    modelTag.dataset.source = preview ? preview.source : "";
+  } else {
+    modelTag.hidden = !task.model;
+    modelTag.textContent = task.model ? [task.model, task.effort].filter(Boolean).join(" · ") : "";
+    modelTag.title = task.route_reason || "";
+    modelTag.dataset.source = "";
+  }
 
   // A waiting task shows how it will run, unless that is the plain default.
   const modeTag = node.querySelector(".tag-mode");
@@ -1042,6 +1058,84 @@ function updateCard(node, task, kind) {
   renderAreaChips(node.querySelector(".card-areas"), task.areas, 2);
   renderPrimaryActions(node, task, kind);
   renderOverflowMenu(node, task, kind);
+}
+
+/** `opus · xhigh`, `haiku`, `default` (session default), `…` (not classified yet), or "". */
+function routeLabel(preview) {
+  if (!preview) return "";
+  if (preview.source === "pending") return "…";
+  return preview.model ? [preview.model, preview.effort].filter(Boolean).join(" · ") : "default";
+}
+
+function routeTitle(preview, label) {
+  if (!preview) return "";
+  if (preview.source === "pending") return "The router is classifying this task";
+  const target = label === "default" ? "the session default" : label;
+  if (preview.source === "pinned") return `Runs on ${target}: your choice`;
+  return `The router would run this on ${target}: ${preview.reason}`;
+}
+
+/** The PATCH `route` value for the drawer's model and effort selects. */
+function routeFromSelects(model, effort) {
+  if (!model) return null;
+  if (model === "default") return "default";
+  return model === "haiku" ? { model } : { model, effort: effort || "high" };
+}
+
+function renderDrawerRoute(task, canRoute) {
+  el.drawerRoute.hidden = !canRoute;
+  if (!canRoute) return;
+  const router = state.router || { enabled: false, models: {}, efforts: [] };
+  const modelSelect = el.drawerRouteModel;
+  const effortSelect = el.drawerRouteEffort;
+  // Model options come from the server's list, so only models Tasky knows are offered.
+  for (const opt of Array.from(modelSelect.options)) {
+    if (opt.dataset.model) opt.remove();
+  }
+  for (const model of Object.keys(router.models || {})) {
+    const opt = document.createElement("option");
+    opt.value = model;
+    opt.dataset.model = model;
+    const off = router.enabled && router.models[model] === false;
+    opt.textContent = model.charAt(0).toUpperCase() + model.slice(1) + (off ? " (off for the router)" : "");
+    modelSelect.appendChild(opt);
+  }
+  if (effortSelect.options.length !== (router.efforts || []).length) {
+    effortSelect.textContent = "";
+    for (const effort of router.efforts || []) {
+      const opt = document.createElement("option");
+      opt.value = effort;
+      opt.textContent = effort === "high" ? "high (default)" : effort;
+      effortSelect.appendChild(opt);
+    }
+  }
+  const pinned = task.pinned_model || "";
+  modelSelect.value = pinned;
+  const takesEffort = !!pinned && pinned !== "default" && pinned !== "haiku";
+  effortSelect.hidden = !takesEffort;
+  effortSelect.value = task.pinned_effort || "high";
+
+  const preview = task.route_preview || null;
+  let hint;
+  if (pinned) {
+    hint = "Your choice for this task: used even with the router off or this model switched off.";
+  } else if (!router.enabled) {
+    hint = "The router is off: this task runs on the session default.";
+  } else if (preview && preview.source === "router") {
+    const label = routeLabel(preview);
+    hint = `Router: ${preview.reason} → ${label === "default" ? "session default" : label}.`;
+  } else {
+    hint = "The router is classifying this task.";
+  }
+  el.drawerRouteHint.textContent = hint;
+
+  const save = () => {
+    const model = modelSelect.value;
+    effortSelect.hidden = !model || model === "default" || model === "haiku";
+    setTaskRoute(task.id, routeFromSelects(model, effortSelect.value));
+  };
+  modelSelect.onchange = save;
+  effortSelect.onchange = save;
 }
 
 function renderHandle(node, task, kind) {
@@ -1488,6 +1582,7 @@ function renderDrawerContent(task, editing) {
     el.drawerModeHint.textContent = PERMISSION_HINTS[el.drawerModeSelect.value] || "";
     el.drawerModeSelect.onchange = () => setTaskPermissionMode(task.id, el.drawerModeSelect.value);
   }
+  renderDrawerRoute(task, canMode);
   // The Task section only exists when it adds to the header: a body longer
   // than the title, or an edit or mode control.
   el.drawerTaskSection.hidden = el.drawerBody.hidden && !canEdit && !canMode;
@@ -2613,6 +2708,20 @@ async function setTaskPermissionMode(id, mode) {
   try {
     await apiMutate("PATCH", `/api/tasks/${id}`, { permission_mode: mode });
     announce(`Permission mode set to ${PERMISSION_LABELS[mode] || mode}`);
+    await refresh();
+    refreshDrawerIfOpen();
+  } catch (err) {
+    handleApiError(err);
+    refreshDrawerIfOpen();
+  }
+}
+
+async function setTaskRoute(id, route) {
+  try {
+    await apiMutate("PATCH", `/api/tasks/${id}`, { route });
+    if (route === null) announce("The router decides the model");
+    else if (route === "default") announce("Runs on the session default");
+    else announce(`Model set to ${[route.model, route.effort].filter(Boolean).join(" ")}`);
     await refresh();
     refreshDrawerIfOpen();
   } catch (err) {
@@ -6538,6 +6647,9 @@ async function loadRouter() {
 async function saveRouter(patch) {
   try {
     renderRouter(await apiMutate("PATCH", "/api/router", patch));
+    // Switches live outside the task rows, so the board's revision does not
+    // move: fetch the state again for the rows' previews to follow.
+    await refresh();
   } catch (err) {
     showError(err.message);
     loadRouter();
