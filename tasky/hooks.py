@@ -293,6 +293,11 @@ def _user_prompt_submit(
             and previous["status"] in ("interrupted", "failed")
         ):
             store.add_followup(previous["id"], classified.text)
+            # A nudge can arrive after the user archived the stuck turn (the
+            # dashboard's bulk archive, or a plain delete): un-hide it too, or
+            # the reopened turn and its reply would be invisible on the board.
+            if previous["deleted_at"]:
+                store.restore_task(previous["id"])
             store.update_task(previous["id"], status="running", prompt_id=prompt_id)
             store.update_session(session_id, pull_chain=0)
             return None

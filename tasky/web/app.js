@@ -1963,13 +1963,16 @@ function attentionStaleTasks(tasks) {
 
 function buildAttentionGroups(tasks) {
   const groups = [];
-  const byLabel = new Map();
+  const byKey = new Map();
   for (const t of tasks) {
-    const label = projectLabel(t.cwd) || "Unknown project";
-    let group = byLabel.get(label);
+    // Keyed by the actual directory, not its label: two checkouts that
+    // happen to share a basename (e.g. two "app" clones) must stay apart,
+    // the same way Done's session groups never merge on a shared label.
+    const key = t.cwd || "";
+    let group = byKey.get(key);
     if (!group) {
-      group = { key: label, label, cwd: t.cwd, tasks: [] };
-      byLabel.set(label, group);
+      group = { key, label: projectLabel(t.cwd) || "Unknown project", cwd: t.cwd, tasks: [] };
+      byKey.set(key, group);
       groups.push(group);
     }
     group.tasks.push(t);

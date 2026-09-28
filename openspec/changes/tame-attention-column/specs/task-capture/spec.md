@@ -5,8 +5,9 @@
 A new prompt turn whose whole text only pushes an earlier turn along and names no work of its own (for
 example "--continue", "sigue", "continúa", "go on", or "vuelve a <verb>") SHALL NOT become a task of
 its own when the session's most recent prompt task is `interrupted` or `failed`: it SHALL instead be
-added as a follow-up of that task and reopen it to `running`. A nudge with no earlier prompt task in
-the session, or whose earlier prompt task ended in `done`, SHALL become a task of its own as usual. A
+added as a follow-up of that task and reopen it to `running`, un-hiding it first if the user had
+archived or deleted it from the dashboard in the meantime. A nudge with no earlier prompt task in the
+session, or whose earlier prompt task ended in `done`, SHALL become a task of its own as usual. A
 message that merely begins the same way as a nudge but goes on to name real work SHALL NOT be treated
 as a nudge.
 
@@ -14,6 +15,12 @@ as a nudge.
 - **WHEN** a turn "migrate the invoices table" is `interrupted` and the next prompt in that session is
   "--continue"
 - **THEN** no new task is created, the interrupted task is `running` again with "--continue" as a
+  follow-up
+
+#### Scenario: Nudge un-hides an archived turn
+- **WHEN** an interrupted turn was hidden from the dashboard and the next prompt in that session is
+  "--continue"
+- **THEN** the turn is un-hidden, reopened to `running`, and back on the board with the nudge as a
   follow-up
 
 #### Scenario: Nudge reopens a failed turn

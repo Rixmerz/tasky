@@ -1003,3 +1003,21 @@ def test_nudge_reaches_stop_and_the_reopened_task_finishes(store, config):
     assert reopened["status"] == "done"
     assert reopened["result"] == "fixed it"
     assert len(store.list_tasks(kind="prompt")) == 1
+
+
+def test_nudge_unhides_a_turn_archived_from_the_dashboard(store, config):
+    # The board's "Archive older than a day" action (or a plain Delete) only
+    # soft-hides a task; a later nudge must still reopen it and bring it back
+    # onto the board, or the resumed turn and its reply become invisible.
+    _submit(store, config, "p1", "clean up the export job")
+    first = store.latest_prompt_task("s1")
+    store.update_task(first["id"], status="interrupted")
+    store.hide_task(first["id"])
+    assert store.get_task(first["id"])["deleted_at"] is not None
+
+    _submit(store, config, "p2", "--continue")
+
+    reopened = store.get_task(first["id"])
+    assert reopened["status"] == "running"
+    assert reopened["deleted_at"] is None
+    assert len(store.list_tasks(kind="prompt")) == 1
