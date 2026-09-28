@@ -486,6 +486,9 @@ effort level its kind of work calls for, following Anthropic's model × effort g
   kind for 18.
 - Classification runs in the detached worker, so the dashboard never waits for it; a routed
   worker starts about a second later.
+- **See where the tokens go.** Under the router switches, "Today: Opus 29k · Sonnet 110k · Haiku 345
+  out" totals today's output tokens by model family, from the model each message really used —
+  interactive sessions included, not only routed tasks. Hover it for the last 7 days.
 
 ## How it works
 

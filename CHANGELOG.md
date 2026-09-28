@@ -19,6 +19,7 @@ All notable changes to this project are documented here. The format follows
 - Needs attention: "Archive older than a day" in the column header, confirmed in the page, with Undo;
   cards are grouped by project when more than one is present. Bulk `POST /api/tasks/hide` and
   `/api/tasks/restore`.
+- Narrow waiting cards give the title its own line, with the route tag, time and actions below it.
 
 ### Changed
 
