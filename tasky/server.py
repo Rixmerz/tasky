@@ -29,6 +29,7 @@ from tasky import (
     router,
     scheduler,
     smart_search,
+    stale,
     transcripts,
     worker,
 )
@@ -1168,14 +1169,18 @@ class _Server(ThreadingHTTPServer):
         return entry[0]
 
     def sync_titles(self, store: Store, *, interval: float = 3.0) -> None:
-        """Copy session names set with /rename into the ledger, and advance
-        every project's run queue.
+        """Copy session names set with /rename into the ledger, sweep tasks
+        with no sign of life to Needs attention, and advance every project's
+        run queue.
 
-        Both run from the version poll at most every ``interval`` seconds
-        (design.md decision 2's "periodic sync"). A changed title or a
-        started task bumps the revision so open dashboards refresh. Only
-        unfinished or still unnamed sessions are followed for titles, so an
-        imported history is scanned once, not every poll.
+        All three run from the version poll at most every ``interval``
+        seconds (design.md decision 2's "periodic sync"). A changed title, a
+        swept task or a started task bumps the revision so open dashboards
+        refresh. Only unfinished or still unnamed sessions are followed for
+        titles, so an imported history is scanned once, not every poll. The
+        stale sweep runs before the queue is kicked, so a project whose
+        serial task the sweep just interrupted is paused, not immediately
+        handed its next queued task (see ``tasky.stale``).
         """
         now = time.monotonic()
         if not self._titles_lock.acquire(blocking=False):
@@ -1190,6 +1195,7 @@ class _Server(ThreadingHTTPServer):
                 title = self.titles.title(session["transcript_path"])
                 if title and title != session["title"]:
                     store.update_session(session["id"], title=title)
+            stale.sweep(store, self.config)
             scheduler.kick(store, self.config, popen=self.popen)
         finally:
             self._titles_lock.release()

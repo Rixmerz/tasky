@@ -110,6 +110,14 @@ recaps** shows the summary Claude Code wrote when you last came back to each ope
 recaps also appear in Done among the tasks where they happened. A yellow bar names open sessions
 that still run an older tasky's hooks: restart them.
 
+A `Running` task whose session or worker went away without reporting back — a crash, a hard reset, a
+laptop that never woke up — does not stay `Running` forever: once nothing shows it is still moving
+(no new prompt, no growth in its session transcript, no growth in its worker's log) for longer than
+`TASKY_STALE_RUNNING_HOURS`, it moves to Needs attention as **Stopped mid-work**, with "no activity
+for …; its session or worker is gone" as its reason. A single long tool call or a genuinely
+long-running headless worker is not swept: any of those signals still growing keeps it `Running`
+regardless of how long it has been going.
+
 Create tasks from the bar at the top. Its "to" picker lists your active sessions first (sending a
 task to one ties it to that session), then each active project, and everything else under "Other".
 Next to it, pick the permission mode the task will run with; it is kept on the task, so its run
@@ -570,6 +578,7 @@ What it does not protect against:
 | `TASKY_HISTORY_MODEL` | `sonnet` | Default model for history syncs |
 | `TASKY_HISTORY_MAX_BATCHES` | `8` | Batches one sync reads before stopping; press again for more |
 | `TASKY_DEAD_END_ITEMS` | `5` | Failed attempts added at session start; `0` turns it off |
+| `TASKY_STALE_RUNNING_HOURS` | `24` | Hours a `Running` task can show no sign of life before it moves to Needs attention; `0` turns it off |
 | `TASKY_LANGUAGE` | unset | Language of the cards (`es`, `Spanish`…); unset, your prompts tell it |
 | `TASKY_CARDS_TRANSLATE` | `1` | `0` leaves a card Haiku wrote in another language untranslated |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Where transcripts are imported from, and where the router looks for `mm-classifier` |
