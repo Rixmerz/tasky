@@ -33,7 +33,7 @@ INSTRUCTIONS = (
     "failed must not be applied again. After a fix is confirmed to work or not, record_attempt. "
     "get_architecture names the repository's areas, their folders, specs and open problems. "
     "search_cards finds the work items (issue-tracker cards with acceptance criteria) the tasks "
-    "were grouped into."
+    "were grouped into. board says what is running, queued and needs attention right now."
 )
 
 TOOLS: list[dict[str, Any]] = [
@@ -82,6 +82,12 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {"query": {"type": "string"}, "scope": _SCOPE},
             "required": ["query"],
         },
+    },
+    {
+        "name": "board",
+        "description": "What is running, queued and needs attention (failed or stopped "
+        "mid-work) in this repository now: a count per column, then the newest titles.",
+        "inputSchema": {"type": "object", "properties": {"scope": _SCOPE}},
     },
     {
         "name": "last_session",
@@ -297,6 +303,8 @@ def call_tool(store: Store, name: str, args: dict) -> str:
         if not hits:
             return "No matching messages."
         return "\n\n".join(_format_hit(store, h) for h in hits)
+    if name == "board":
+        return _board(store, _scope_repo(store, args))
     if name == "last_session":
         count = min(max(_int(args, "count", 1), 1), 5)
         repo = _scope_repo(store, args)
@@ -310,6 +318,43 @@ def call_tool(store: Store, name: str, args: dict) -> str:
 
 HISTORY_HITS = 20
 CARD_HITS = 20
+BOARD_TITLES = 5
+
+#: The dashboard's live columns, by the statuses each holds. "Asked you" is left
+#: out: it reads the newest reply of an open session at render time, which is the
+#: dashboard's to compute, and a count without it is still the true count of the
+#: other two reasons.
+BOARD_COLUMNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("running", ("running",)),
+    ("queued", ("queued",)),
+    ("needs attention", ("interrupted", "failed")),
+)
+
+
+def _board(store: Store, repo: str | None) -> str:
+    """One line of counts a status line can show whole, then each column's newest titles.
+
+    Prompts only: a delegation runs inside its prompt, as the dashboard nests it,
+    and counting both would show one piece of work twice.
+    """
+    cwds = None if repo is None else set(store.repo_cwds(repo))
+    columns = [
+        (label, [t for t in store.list_tasks(status=statuses, kind="prompt")
+                 if cwds is None or t["cwd"] in cwds])
+        for label, statuses in BOARD_COLUMNS
+    ]
+    lines = [", ".join(f"{label} {len(tasks)}" for label, tasks in columns)]
+    for label, tasks in columns:
+        if not tasks:
+            continue
+        lines.append(f"{label}:")
+        lines += [
+            f"  task #{t['id']} [{t['status']}] {t['title'] or (t['body'] or '')[:80]}"
+            for t in tasks[:BOARD_TITLES]
+        ]
+        if len(tasks) > BOARD_TITLES:
+            lines.append(f"  (+{len(tasks) - BOARD_TITLES} more)")
+    return "\n".join(lines)
 
 
 def _fold(text: str) -> str:
