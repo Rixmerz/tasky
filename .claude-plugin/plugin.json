@@ -13,5 +13,16 @@
     "adhd",
     "productivity"
   ],
-  "mcpServers": "./.mcp.json"
+  "mcpServers": "./.mcp.json",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "refresh_seconds": {
+      "type": "number",
+      "title": "Board refresh (seconds)",
+      "description": "How often the terminal board asks tasky again between turns, so a background worker finishing shows up on the status line. 0 reads only at turn boundaries. Needs Claude Code 2.1.287 or later.",
+      "default": 60,
+      "min": 0,
+      "max": 3600
+    }
+  }
 }

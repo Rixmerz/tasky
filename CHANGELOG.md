@@ -11,11 +11,11 @@ All notable changes to this project are documented here. The format follows
 - MCP tool `board`: what is running, queued and needs attention (failed or stopped mid-work) in this
   repository now. The first line is the counts, `running 1, queued 2, needs attention 1`, then the
   five newest titles per column. It counts prompts, as the dashboard's columns do.
-- `tasky-mod`, an opt-in second plugin under `mod/` (a Claude Code mod, 2.1.287 or later): the board's
+- The board in the terminal: a Claude Code mod (2.1.287 or later) that ships inside tasky, under
+  `hooks/mod/`, with no separate plugin to install. It puts the board's
   counts on the status line (`tasky ▶1 ⏸2 ⚠1`, nothing when the board is empty) and the board in a pane
   through the `tasky-board` command. It reads at every turn's end and every `refresh_seconds` (60 by
-  default) between turns. A mod runs with no sandbox, so it ships as its own plugin and is installed
-  only when asked: `/plugin install tasky-mod@tasky`.
+  default) between turns; `refresh_seconds` is a tasky plugin option.
 
 ## [0.17.0] - 2026-09-28
 

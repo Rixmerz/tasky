@@ -8,7 +8,7 @@ export type Board = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'tasky-mod': {
+    tasky: {
       board: Board | null
     }
   }

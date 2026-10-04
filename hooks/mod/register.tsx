@@ -1,4 +1,4 @@
-// tasky-mod: the board, without leaving the terminal.
+// The mod: tasky's board, without leaving the terminal.
 //
 // Tasky's dashboard is a browser tab, and a tab is one more place attention has
 // to go. This reads the same board through tasky's own `board` MCP tool and
@@ -10,14 +10,14 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Board } from '../types'
+import type { Board } from '../../types'
 import { boardLine, serverFor, toBoard } from './board'
 
 const PANE = 'tasky-board'
 const COMMAND = 'tasky-board'
 const FALLBACK = ['plugin_tasky_tasky', 'tasky']
 
-const board = atom({ plugin: 'tasky-mod', key: 'board' } as const, null as Board | null)
+const board = atom({ plugin: 'tasky', key: 'board' } as const, null as Board | null)
 
 async function refresh($: EngineInterface): Promise<void> {
   let servers = FALLBACK
