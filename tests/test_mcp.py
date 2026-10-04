@@ -163,3 +163,37 @@ def test_record_attempt_both_ways_and_its_errors(config, ledger):
 
 def test_unknown_tool_is_an_error_result(config):
     assert _call(config, "nope")[0] is True
+
+
+def test_board_counts_this_repos_prompts_by_column(config):
+    with Store.open(config) as store:
+        store.create_task(kind="prompt", body="migrate invoices", status="running",
+                          source="hook", cwd="/p")
+        parent = store.create_task(kind="prompt", body="write the parser", status="queued",
+                                   source="cli", cwd="/p")
+        store.create_task(kind="delegation", body="read the spec", status="running",
+                          source="hook", cwd="/p", parent_id=parent["id"])
+        store.create_task(kind="prompt", body="deploy staging", status="failed",
+                          source="hook", cwd="/p")
+        store.create_task(kind="prompt", body="the other repo's work", status="running",
+                          source="hook", cwd="/other")
+        repos.ensure(store, ["/p", "/other"])
+
+    error, text = _call(config, "board")
+    assert not error
+    first, *rest = text.splitlines()
+    # The first line is what a status line shows, so it stands on its own.
+    assert first == "running 1, queued 1, needs attention 1"
+    assert any("migrate invoices" in line for line in rest)
+    assert not any("read the spec" in line for line in rest), "a delegation is not a column entry"
+    assert "the other repo's work" not in text
+
+    assert _call(config, "board", scope="all")[1].splitlines()[0] == (
+        "running 2, queued 1, needs attention 1"
+    )
+
+
+def test_an_empty_board_is_one_line(config):
+    error, text = _call(config, "board")
+    assert not error
+    assert text == "running 0, queued 0, needs attention 0"

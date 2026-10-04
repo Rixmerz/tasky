@@ -1,0 +1,4 @@
+# Written by Claude Code each time it loads the mod from a folder: the API
+# declarations and the tsconfig the editor reads. Regenerated, never edited.
+.claude-plugin/types/
+tsconfig.json

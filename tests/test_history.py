@@ -431,6 +431,7 @@ def test_mcp_handshake_and_tool_list(config):
     assert names == {
         "search_history", "get_problem", "dead_ends", "search_tasks", "record_attempt",
         "search_conversations", "last_session", "get_architecture", "search_cards", "get_card",
+        "board",
     }
     assert replies[2]["error"]["code"] == -32601
 

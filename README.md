@@ -295,7 +295,8 @@ Reading the history is free. It also reaches the agent in two ways:
   `get_architecture` names the repository's areas (see below). `search_cards` finds the cards
   of the Compact dashboard by words (every word, then any word), status or scope, and
   `get_card` returns one in full: objective, description, criteria (stated or inferred), tasks,
-  commits, problems, milestones and files.
+  commits, problems, milestones and files. `board` says what is running, queued and needs
+  attention in the repository right now.
 
 `search_history` climbs a fixed ladder of free steps and stops at the first one with results, so
 it never turns into a hunt: every word as written, plus the problems and milestones of any area
@@ -415,6 +416,26 @@ that failed, milestones and recent tasks. The CLI is `tasky architecture [--map]
 
 `tasky status --short` prints `▶2 ⏸3 ⚠1` (running, queued, needs attention) and reads only the local
 database. Add it to your own status line command if you want the numbers always visible.
+
+### The board in the terminal: tasky-mod
+
+`tasky-mod` is a second, opt-in plugin in this repository (under `mod/`). It is a Claude Code
+[mod](https://code.claude.com/docs/en/plugins/mods/reference), which needs Claude Code 2.1.287 or
+later. It reads the board through the `board` MCP tool and shows it where you already are, so the
+dashboard tab is one less place to look:
+
+- the status line shows `tasky ▶1 ⏸2 ⚠1` while anything is running, queued or needs attention, and
+  nothing when the board is empty;
+- the `tasky-board` command opens the board in a pane, with the newest titles per column.
+
+It reads again at the end of every turn and, between turns, every `refresh_seconds` (60 by default,
+`0` for turn boundaries only), so a background worker that finishes shows up without a prompt. It
+counts prompts, as the dashboard's columns do; `tasky status` counts their subagents too. A mod runs
+inside Claude Code with no sandbox, which is why it is a separate plugin:
+
+```text
+/plugin install tasky-mod@tasky
+```
 
 ### Updating
 
@@ -623,6 +644,7 @@ Hooks read these from the environment of the Claude Code process.
 ```sh
 pytest -q
 ruff check .
+claude plugin test mod                     # the mod's own tests, against the engine
 claude --plugin-dir . -p "hello"          # try the plugin without installing it
 TASKY_HOME=$(mktemp -d) ./bin/tasky serve  # dashboard against an empty database
 ```
