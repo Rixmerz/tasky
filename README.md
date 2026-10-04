@@ -417,11 +417,11 @@ that failed, milestones and recent tasks. The CLI is `tasky architecture [--map]
 `tasky status --short` prints `▶2 ⏸3 ⚠1` (running, queued, needs attention) and reads only the local
 database. Add it to your own status line command if you want the numbers always visible.
 
-### The board in the terminal: tasky-mod
+### The board in the terminal
 
-`tasky-mod` is a second, opt-in plugin in this repository (under `mod/`). It is a Claude Code
-[mod](https://code.claude.com/docs/en/plugins/mods/reference), which needs Claude Code 2.1.287 or
-later. It reads the board through the `board` MCP tool and shows it where you already are, so the
+Tasky ships a Claude Code [mod](https://code.claude.com/docs/en/plugins/mods/reference) under
+`hooks/mod/`, loaded from the same `hooks/hooks.json` as its command hooks. It needs Claude Code
+2.1.287 or later, and there is nothing extra to install. It reads the board through the `board` MCP tool and shows it where you already are, so the
 dashboard tab is one less place to look:
 
 - the status line shows `tasky ▶1 ⏸2 ⚠1` while anything is running, queued or needs attention, and
@@ -430,12 +430,9 @@ dashboard tab is one less place to look:
 
 It reads again at the end of every turn and, between turns, every `refresh_seconds` (60 by default,
 `0` for turn boundaries only), so a background worker that finishes shows up without a prompt. It
-counts prompts, as the dashboard's columns do; `tasky status` counts their subagents too. A mod runs
-inside Claude Code with no sandbox, which is why it is a separate plugin:
-
-```text
-/plugin install tasky-mod@tasky
-```
+counts prompts, as the dashboard's columns do; `tasky status` counts their subagents too. Set
+`refresh_seconds` from `/plugin`. A mod runs inside Claude Code with no sandbox, with the same reach
+tasky's command hooks already have.
 
 ### Updating
 
@@ -644,7 +641,7 @@ Hooks read these from the environment of the Claude Code process.
 ```sh
 pytest -q
 ruff check .
-claude plugin test mod                     # the mod's own tests, against the engine
+claude plugin test .                       # the mod's own tests, against the engine
 claude --plugin-dir . -p "hello"          # try the plugin without installing it
 TASKY_HOME=$(mktemp -d) ./bin/tasky serve  # dashboard against an empty database
 ```

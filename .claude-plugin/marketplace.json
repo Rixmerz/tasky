@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "tasky",
-  "description": "Tasky and its opt-in terminal mod.",
+  "description": "Tasky: a visual task ledger for Claude Code.",
   "owner": {
     "name": "Tasky contributors"
   },
@@ -10,11 +10,6 @@
       "name": "tasky",
       "description": "Visual task ledger for Claude Code sessions, fed by hooks at zero token cost.",
       "source": "./"
-    },
-    {
-      "name": "tasky-mod",
-      "description": "Tasky's board in the terminal: counts on the status line and the board in a pane. A Claude Code mod (2.1.287 or later); runs unsandboxed, so it is opt-in.",
-      "source": "./mod"
     }
   ]
 }

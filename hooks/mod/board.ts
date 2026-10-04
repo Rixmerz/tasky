@@ -1,6 +1,6 @@
 // Pure functions over what tasky's `board` tool answers (tasky/mcp.py).
 
-import type { Board } from '../types'
+import type { Board } from '../../types'
 
 const COUNTS = /^running (\d+), queued (\d+), needs attention (\d+)$/
 

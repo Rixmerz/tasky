@@ -7,10 +7,11 @@
 
 ## 2. Mod
 
-- [x] 2.1 `mod/` plugin `tasky-mod`: status line from the counts line, cleared when the board is
+- [x] 2.1 Mod in `hooks/mod/`, inside the tasky plugin: status line from the counts line, cleared when the board is
       empty; `tasky-board` command opening a pane; reads at session start, at every turn's end and on
       a `refresh_seconds` timer
-- [x] 2.2 Mod tests under `claude plugin test mod`: parsing, the status line following the board
+- [x] 2.2 Mod tests under `claude plugin test .`: parsing, the status line following the board
       across a timer tick and a turn's end, the pane drawn on terminal and desktop, `refresh_seconds`
       0, and an unreachable tasky leaving the session untouched
-- [x] 2.3 Marketplace entry, README section, CHANGELOG
+- [x] 2.3 `modules` in `hooks/hooks.json`, `refresh_seconds` in tasky's `userConfig`, README section,
+      CHANGELOG

@@ -5,7 +5,7 @@
 The MCP server SHALL offer `board`: for this repository, or every repository with `scope` set to
 `all`, a first line giving the count of prompt tasks running, queued, and needing attention (failed or
 interrupted), followed by the newest titles of each non-empty column. Delegations SHALL NOT be counted,
-as the dashboard nests them under their prompt. An opt-in mod, `tasky-mod`, SHALL show those counts on
+as the dashboard nests them under their prompt. Tasky's mod SHALL show those counts on
 Claude Code's status line while any is above zero and show nothing otherwise, and SHALL show the board
 in a pane on request. It SHALL read the board at the end of every turn and, unless set to 0, every
 configured number of seconds between turns. A board that cannot be read SHALL leave the session

@@ -60,7 +60,7 @@ describe('in the engine', () => {
 
     for (const surface of ['terminal', 'desktop'] as const) {
       const pane = await $.ui.mount({
-        plugin: 'tasky-mod',
+        plugin: 'tasky',
         surface,
         component: 'Pane',
         requestId: 'tasky-board',
